@@ -1,0 +1,1213 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Buscador de Libros - La Casa del Libro</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            min-height: 100vh;
+            color: #e0e0e0;
+            padding: 30px 20px;
+        }
+
+        .container {
+            max-width: 1100px;
+            margin: 0 auto;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 36px;
+        }
+
+        header h1 {
+            font-size: 2.2rem;
+            font-weight: 700;
+            color: #fff;
+            letter-spacing: -0.5px;
+        }
+
+        header h1 span {
+            background: linear-gradient(90deg, #e94560, #f5a623);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        header p {
+            color: #aaa;
+            margin-top: 6px;
+            font-size: 0.95rem;
+        }
+
+        /* ── TAB NAVIGATION ────────────────────────────────── */
+        .tabs {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 24px;
+            background: rgba(255, 255, 255, 0.04);
+            border-radius: 12px;
+            padding: 4px;
+        }
+
+        .tab-btn {
+            flex: 1;
+            padding: 12px 20px;
+            border: none;
+            background: transparent;
+            color: #888;
+            font-family: inherit;
+            font-size: 0.95rem;
+            font-weight: 600;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .tab-btn:hover {
+            color: #ccc;
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .tab-btn.active {
+            background: rgba(233, 69, 96, 0.2);
+            color: #e94560;
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+            animation: fadeIn 0.3s ease;
+        }
+
+        /* ── CARDS ─────────────────────────────────────────── */
+        .card {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            padding: 28px;
+            margin-bottom: 24px;
+        }
+
+        .card-title {
+            font-size: 1.1rem;
+            font-weight: 700;
+            color: #fff;
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        /* ── FORM ELEMENTS ─────────────────────────────────── */
+        .search-row {
+            display: flex;
+            gap: 12px;
+        }
+
+        .input-field {
+            flex: 1;
+            padding: 14px 18px;
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 10px;
+            color: #fff;
+            font-size: 1rem;
+            font-family: inherit;
+            transition: border-color 0.2s, background 0.2s;
+            outline: none;
+        }
+
+        .input-field::placeholder {
+            color: #888;
+        }
+
+        .input-field:focus {
+            border-color: #e94560;
+            background: rgba(255, 255, 255, 0.12);
+        }
+
+        select.input-field {
+            cursor: pointer;
+            appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%23888' viewBox='0 0 16 16'%3E%3Cpath d='M8 11L3 6h10z'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 14px center;
+            padding-right: 36px;
+        }
+
+        select.input-field option {
+            background: #1a1a2e;
+            color: #e0e0e0;
+        }
+
+        .btn {
+            padding: 14px 28px;
+            color: #fff;
+            border: none;
+            border-radius: 10px;
+            font-size: 0.95rem;
+            font-weight: 600;
+            cursor: pointer;
+            font-family: inherit;
+            transition: transform 0.15s, box-shadow 0.15s;
+            white-space: nowrap;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #e94560, #c0392b);
+        }
+
+        .btn-primary:hover {
+            box-shadow: 0 6px 20px rgba(233, 69, 96, 0.4);
+        }
+
+        .btn-danger {
+            background: linear-gradient(135deg, #c0392b, #8e2420);
+        }
+
+        .btn-danger:hover {
+            box-shadow: 0 6px 20px rgba(192, 57, 43, 0.4);
+        }
+
+        .btn-success {
+            background: linear-gradient(135deg, #27ae60, #1e8449);
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none !important;
+        }
+
+        /* ── LOADING ───────────────────────────────────────── */
+        #loading {
+            display: none;
+            text-align: center;
+            padding: 40px;
+            color: #aaa;
+        }
+
+        .spinner {
+            width: 42px;
+            height: 42px;
+            border: 3px solid rgba(233, 69, 96, 0.2);
+            border-top-color: #e94560;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin: 0 auto 16px;
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(16px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes pulse {
+
+            0%,
+            100% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.5;
+            }
+        }
+
+        /* ── RESULT CARD ───────────────────────────────────── */
+        .result-card {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            overflow: hidden;
+            animation: fadeIn 0.4s ease;
+        }
+
+        .result-header {
+            padding: 24px 28px 20px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+            display: flex;
+            gap: 24px;
+            align-items: flex-start;
+        }
+
+        .book-cover-img {
+            width: 130px;
+            min-width: 130px;
+            border-radius: 10px;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+            object-fit: cover;
+            transition: transform 0.2s;
+        }
+
+        .book-cover-img:hover {
+            transform: scale(1.04);
+        }
+
+        .book-cover-placeholder {
+            width: 130px;
+            min-width: 130px;
+            height: 190px;
+            border-radius: 10px;
+            background: rgba(255, 255, 255, 0.07);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 2.5rem;
+        }
+
+        .book-info {
+            flex: 1;
+        }
+
+        .book-title {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: #fff;
+            line-height: 1.3;
+            margin-bottom: 6px;
+        }
+
+        .book-author {
+            font-size: 1rem;
+            color: #e94560;
+            font-weight: 500;
+        }
+
+        .book-editorial {
+            font-size: 0.9rem;
+            color: #aaa;
+            margin-top: 4px;
+        }
+
+        .price-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-top: 16px;
+            flex-wrap: wrap;
+        }
+
+        .price-current {
+            font-size: 1.8rem;
+            font-weight: 700;
+            color: #2ecc71;
+        }
+
+        .price-original {
+            font-size: 1rem;
+            color: #888;
+            text-decoration: line-through;
+        }
+
+        .discount-badge {
+            background: #e94560;
+            color: #fff;
+            padding: 3px 10px;
+            border-radius: 20px;
+            font-size: 0.82rem;
+            font-weight: 600;
+        }
+
+        .origin-badge {
+            background: rgba(255, 255, 255, 0.1);
+            color: #ccc;
+            padding: 3px 12px;
+            border-radius: 20px;
+            font-size: 0.82rem;
+        }
+
+        .synopsis-section {
+            padding: 20px 28px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        .section-label {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 1.2px;
+            color: #e94560;
+            font-weight: 600;
+            margin-bottom: 10px;
+        }
+
+        .synopsis-text {
+            line-height: 1.7;
+            color: #ccc;
+            font-size: 0.95rem;
+        }
+
+        .ficha-section {
+            padding: 20px 28px;
+        }
+
+        .ficha-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0;
+        }
+
+        .ficha-row {
+            display: flex;
+            padding: 8px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            gap: 12px;
+        }
+
+        .ficha-key {
+            font-size: 0.82rem;
+            color: #888;
+            min-width: 130px;
+            flex-shrink: 0;
+        }
+
+        .ficha-val {
+            font-size: 0.88rem;
+            color: #ddd;
+            font-weight: 500;
+        }
+
+        .btn-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            margin: 20px 28px 24px;
+            padding: 12px 22px;
+            background: linear-gradient(135deg, #e94560, #c0392b);
+            color: #fff;
+            border-radius: 10px;
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 0.9rem;
+            transition: transform 0.15s, box-shadow 0.15s;
+        }
+
+        .btn-link:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(233, 69, 96, 0.4);
+        }
+
+        .error-box {
+            background: rgba(231, 76, 60, 0.15);
+            border: 1px solid rgba(231, 76, 60, 0.3);
+            border-radius: 12px;
+            padding: 20px 24px;
+            color: #e74c3c;
+            font-weight: 500;
+        }
+
+        /* ── BULK SCRAPER PROGRESS ─────────────────────────── */
+        .progress-panel {
+            display: none;
+            margin-top: 20px;
+        }
+
+        .progress-panel.active {
+            display: block;
+        }
+
+        .progress-bar-container {
+            background: rgba(255, 255, 255, 0.08);
+            border-radius: 10px;
+            height: 14px;
+            overflow: hidden;
+            margin-bottom: 16px;
+        }
+
+        .progress-bar-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #e94560, #f5a623);
+            border-radius: 10px;
+            transition: width 0.5s ease;
+            min-width: 4px;
+        }
+
+        .progress-stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+
+        .stat-box {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 10px;
+            padding: 14px;
+            text-align: center;
+        }
+
+        .stat-number {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: #fff;
+        }
+
+        .stat-number.green {
+            color: #2ecc71;
+        }
+
+        .stat-number.yellow {
+            color: #f5a623;
+        }
+
+        .stat-number.red {
+            color: #e94560;
+        }
+
+        .stat-number.blue {
+            color: #3498db;
+        }
+
+        .stat-label {
+            font-size: 0.75rem;
+            color: #888;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-top: 4px;
+        }
+
+        .current-book {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 10px;
+            padding: 12px 16px;
+            font-size: 0.9rem;
+            color: #ccc;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+
+        .current-book .dot {
+            width: 8px;
+            height: 8px;
+            background: #2ecc71;
+            border-radius: 50%;
+            animation: pulse 1.5s infinite;
+            flex-shrink: 0;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .status-badge.running {
+            background: rgba(46, 204, 113, 0.2);
+            color: #2ecc71;
+        }
+
+        .status-badge.completed {
+            background: rgba(52, 152, 219, 0.2);
+            color: #3498db;
+        }
+
+        .status-badge.stopped {
+            background: rgba(245, 166, 35, 0.2);
+            color: #f5a623;
+        }
+
+        .status-badge.error {
+            background: rgba(233, 69, 96, 0.2);
+            color: #e94560;
+        }
+
+        /* ── LIBRARY TABLE ─────────────────────────────────── */
+        .library-table-wrap {
+            overflow-x: auto;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        .library-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.88rem;
+        }
+
+        .library-table th {
+            background: rgba(255, 255, 255, 0.06);
+            color: #aaa;
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 0.72rem;
+            letter-spacing: 0.8px;
+            padding: 12px 14px;
+            text-align: left;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+            white-space: nowrap;
+        }
+
+        .library-table td {
+            padding: 10px 14px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            color: #ccc;
+            max-width: 250px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .library-table tr:hover td {
+            background: rgba(255, 255, 255, 0.03);
+        }
+
+        .library-table td a {
+            color: #e94560;
+            text-decoration: none;
+        }
+
+        .library-table td a:hover {
+            text-decoration: underline;
+        }
+
+        .table-thumb {
+            width: 36px;
+            height: 52px;
+            border-radius: 4px;
+            object-fit: cover;
+            vertical-align: middle;
+        }
+
+        .pagination {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 8px;
+            margin-top: 20px;
+        }
+
+        .pagination button {
+            padding: 8px 16px;
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            color: #ccc;
+            border-radius: 8px;
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 0.85rem;
+            transition: background 0.2s;
+        }
+
+        .pagination button:hover:not(:disabled) {
+            background: rgba(233, 69, 96, 0.2);
+            color: #e94560;
+        }
+
+        .pagination button:disabled {
+            opacity: 0.3;
+            cursor: not-allowed;
+        }
+
+        .pagination .page-info {
+            color: #888;
+            font-size: 0.85rem;
+            padding: 0 8px;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 50px 20px;
+            color: #666;
+        }
+
+        .empty-state .emoji {
+            font-size: 3rem;
+            margin-bottom: 12px;
+        }
+
+        /* ── FORM ROW ──────────────────────────────────────── */
+        .form-row {
+            display: flex;
+            gap: 12px;
+            align-items: flex-end;
+        }
+
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .form-group.grow {
+            flex: 1;
+        }
+
+        .form-label {
+            font-size: 0.78rem;
+            color: #888;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-weight: 600;
+        }
+
+        /* ── RESPONSIVE ────────────────────────────────────── */
+        @media (max-width: 700px) {
+            .ficha-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .search-row,
+            .form-row {
+                flex-direction: column;
+            }
+
+            .result-header {
+                flex-direction: column;
+                align-items: center;
+                text-align: center;
+            }
+
+            .tabs {
+                flex-direction: column;
+            }
+
+            .progress-stats {
+                grid-template-columns: 1fr 1fr;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <header>
+            <h1>Buscador de <span>Libros</span></h1>
+            <p>Busca por título, autor o ISBN en La Casa del Libro</p>
+        </header>
+
+        <!-- ═══ TABS ═══ -->
+        <div class="tabs">
+            <button class="tab-btn active" onclick="switchTab('search')" id="tab-search">🔍 Búsqueda Individual</button>
+            <button class="tab-btn" onclick="switchTab('bulk')" id="tab-bulk">🚀 Scraping Masivo</button>
+            <button class="tab-btn" onclick="switchTab('library')" id="tab-library">📚 Biblioteca <span
+                    id="lib-count-badge"></span></button>
+        </div>
+
+        <!-- ═══ TAB 1: INDIVIDUAL SEARCH ═══ -->
+        <div class="tab-content active" id="content-search">
+            <div class="card">
+                <form action="/search" method="post" onsubmit="showLoading()">
+                    <div class="search-row">
+                        <input class="input-field" id="query" type="text" name="query"
+                            placeholder="Ej: Rebelión en la Granja · 9788419599674" required>
+                        <button class="btn btn-primary" type="submit">🔍 Buscar</button>
+                    </div>
+                </form>
+            </div>
+
+            <div id="loading">
+                <div class="spinner"></div>
+                <p>Buscando información del libro...<br><small>Esto puede tardar 15-30 segundos.</small></p>
+            </div>
+
+            {% if result %}
+            <div id="result-section">
+                {% if result.error %}
+                <div class="error-box">⚠️ {{ result.error }}</div>
+                {% else %}
+                <div class="result-card">
+                    <div class="result-header">
+                        {% if result.image_url %}
+                        <img class="book-cover-img" src="{{ result.image_url }}" alt="Portada de {{ result.title }}"
+                            loading="lazy">
+                        {% else %}
+                        <div class="book-cover-placeholder">📚</div>
+                        {% endif %}
+                        <div class="book-info">
+                            <div class="book-title">{{ result.title }}</div>
+                            {% if result.author and result.author != 'Unknown Author' %}
+                            <div class="book-author">{{ result.author }}</div>
+                            {% endif %}
+                            {% if result.editorial %}
+                            <div class="book-editorial">{{ result.editorial }}</div>
+                            {% endif %}
+                            <div class="price-row">
+                                {% if result.price and result.price != 'Unknown Price' %}
+                                <span class="price-current">{{ result.price }}</span>
+                                {% endif %}
+                                {% if result.original_price %}
+                                <span class="price-original">{{ result.original_price }}</span>
+                                {% endif %}
+                                {% if result.discount %}
+                                <span class="discount-badge">{{ result.discount }}</span>
+                                {% endif %}
+                                {% if result.origin %}
+                                <span class="origin-badge">📍 {{ result.origin }}</span>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+
+                    {% if result.description and result.description != 'No Description' %}
+                    <div class="synopsis-section">
+                        <div class="section-label">Sinopsis</div>
+                        <div class="synopsis-text">{{ result.description }}</div>
+                    </div>
+                    {% endif %}
+
+                    <div class="ficha-section">
+                        <div class="section-label">Ficha Técnica</div>
+                        <div class="ficha-grid">
+                            {% if result.isbn %}
+                            <div class="ficha-row"><span class="ficha-key">ISBN</span><span class="ficha-val">{{
+                                    result.isbn }}</span></div>
+                            {% endif %}
+                            {% if result.language %}
+                            <div class="ficha-row"><span class="ficha-key">Idioma</span><span class="ficha-val">{{
+                                    result.language }}</span></div>
+                            {% endif %}
+                            {% if result.pages %}
+                            <div class="ficha-row"><span class="ficha-key">Páginas</span><span class="ficha-val">{{
+                                    result.pages }}</span></div>
+                            {% endif %}
+                            {% if result.binding %}
+                            <div class="ficha-row"><span class="ficha-key">Encuadernación</span><span
+                                    class="ficha-val">{{ result.binding }}</span></div>
+                            {% endif %}
+                            {% if result.release_date %}
+                            <div class="ficha-row"><span class="ficha-key">Lanzamiento</span><span class="ficha-val">{{
+                                    result.release_date }}</span></div>
+                            {% endif %}
+                            {% if result.edition_year %}
+                            <div class="ficha-row"><span class="ficha-key">Año de edición</span><span
+                                    class="ficha-val">{{ result.edition_year }}</span></div>
+                            {% endif %}
+                            {% if result.collection %}
+                            <div class="ficha-row"><span class="ficha-key">Colección</span><span class="ficha-val">{{
+                                    result.collection }}</span></div>
+                            {% endif %}
+                            {% if result.edition_place %}
+                            <div class="ficha-row"><span class="ficha-key">Plaza de edición</span><span
+                                    class="ficha-val">{{ result.edition_place }}</span></div>
+                            {% endif %}
+                            {% if result.translator %}
+                            <div class="ficha-row"><span class="ficha-key">Traductor</span><span class="ficha-val">{{
+                                    result.translator }}</span></div>
+                            {% endif %}
+                            {% if result.illustrator %}
+                            <div class="ficha-row"><span class="ficha-key">Ilustrador</span><span class="ficha-val">{{
+                                    result.illustrator }}</span></div>
+                            {% endif %}
+                            {% if result.reading_time %}
+                            <div class="ficha-row"><span class="ficha-key">Tiempo de lectura</span><span
+                                    class="ficha-val">{{ result.reading_time }}</span></div>
+                            {% endif %}
+                            {% if result.height %}
+                            <div class="ficha-row"><span class="ficha-key">Alto</span><span class="ficha-val">{{
+                                    result.height }}</span></div>
+                            {% endif %}
+                            {% if result.width %}
+                            <div class="ficha-row"><span class="ficha-key">Ancho</span><span class="ficha-val">{{
+                                    result.width }}</span></div>
+                            {% endif %}
+                            {% if result.weight %}
+                            <div class="ficha-row"><span class="ficha-key">Peso</span><span class="ficha-val">{{
+                                    result.weight }}</span></div>
+                            {% endif %}
+                        </div>
+                    </div>
+
+                    <a href="{{ result.url }}" target="_blank" class="btn-link">
+                        Ver en La Casa del Libro &rarr;
+                    </a>
+                </div>
+                {% endif %}
+            </div>
+            {% endif %}
+        </div>
+
+        <!-- ═══ TAB 2: BULK SCRAPING ═══ -->
+        <div class="tab-content" id="content-bulk">
+            <div class="card">
+                <div class="card-title">🚀 Scraping Masivo por Categoría</div>
+                <p style="color:#888; margin-bottom:20px; font-size:0.9rem;">
+                    Selecciona una categoría y el scraper recorrerá todas las páginas extrayendo libros automáticamente.
+                    Los libros que ya están en la base de datos se saltan.
+                </p>
+
+                <div class="form-row">
+                    <div class="form-group grow">
+                        <label class="form-label">Categoría</label>
+                        <select class="input-field" id="bulk-category">
+                            <option value="">Cargando categorías...</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Máx. libros (vacío = todos)</label>
+                        <input class="input-field" id="bulk-max" type="number" min="1" placeholder="Ej: 20"
+                            style="width:140px;">
+                    </div>
+                    <div class="form-group">
+                        <button class="btn btn-primary" id="btn-start-bulk" onclick="startBulkScrape()">
+                            ▶ Iniciar Scraping
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Progress panel -->
+            <div class="progress-panel" id="bulk-progress">
+                <div class="card">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+                        <div class="card-title" style="margin-bottom:0;">
+                            📊 Progreso
+                            <span class="status-badge running" id="bulk-status-badge">RUNNING</span>
+                        </div>
+                        <button class="btn btn-danger" id="btn-stop-bulk" onclick="stopBulkScrape()"
+                            style="padding:10px 20px; font-size:0.85rem;">
+                            ⏹ Detener
+                        </button>
+                    </div>
+
+                    <div class="progress-bar-container">
+                        <div class="progress-bar-fill" id="bulk-progress-bar" style="width: 0%"></div>
+                    </div>
+
+                    <div class="progress-stats">
+                        <div class="stat-box">
+                            <div class="stat-number blue" id="stat-found">0</div>
+                            <div class="stat-label">Encontrados</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-number green" id="stat-scraped">0</div>
+                            <div class="stat-label">Scraped</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-number yellow" id="stat-skipped">0</div>
+                            <div class="stat-label">Ya en BD</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-number red" id="stat-failed">0</div>
+                            <div class="stat-label">Fallidos</div>
+                        </div>
+                    </div>
+
+                    <div class="current-book" id="bulk-current-book">
+                        <span class="dot"></span>
+                        <span id="current-book-text">Esperando...</span>
+                    </div>
+
+                    <div id="bulk-errors" style="display:none;">
+                        <div class="section-label" style="color:#e94560; margin-top:12px;">Últimos errores</div>
+                        <ul id="bulk-errors-list" style="font-size:0.82rem; color:#e94560; padding-left:20px;"></ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ═══ TAB 3: LIBRARY ═══ -->
+        <div class="tab-content" id="content-library">
+            <div class="card">
+                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
+                    <div class="card-title" style="margin-bottom:0; display: flex; align-items: center; gap: 15px;">
+                        <span>📚 Biblioteca — <span id="lib-total">0</span> libros guardados</span>
+                        <a href="/api/v1/library/export" class="btn btn-primary"
+                            style="padding: 6px 12px; font-size: 0.85rem; text-decoration: none; display: inline-flex; align-items: center; gap: 5px; background: #27ae60;">
+                            📥 Descargar Excel
+                        </a>
+                    </div>
+                    <div class="search-row" style="max-width:350px;">
+                        <input class="input-field" id="lib-search" type="text"
+                            placeholder="Buscar por título, autor o ISBN..." oninput="debounceLibSearch()">
+                    </div>
+                </div>
+            </div>
+
+            <div id="library-content">
+                <div class="empty-state">
+                    <div class="emoji">📖</div>
+                    <p>No hay libros guardados aún.</p>
+                </div>
+            </div>
+
+            <div class="pagination" id="lib-pagination" style="display:none;">
+                <button onclick="loadLibrary(currentLibPage - 1)" id="lib-prev">← Anterior</button>
+                <span class="page-info" id="lib-page-info">Página 1 de 1</span>
+                <button onclick="loadLibrary(currentLibPage + 1)" id="lib-next">Siguiente →</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ═══ TAB LOGIC ═══
+        function switchTab(tab) {
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            document.getElementById('tab-' + tab).classList.add('active');
+            document.getElementById('content-' + tab).classList.add('active');
+
+            if (tab === 'library') loadLibrary(1);
+            if (tab === 'bulk') loadCategories();
+        }
+
+        function showLoading() {
+            document.getElementById('loading').style.display = 'block';
+            const result = document.getElementById('result-section');
+            if (result) result.style.display = 'none';
+        }
+
+        // ═══ BULK SCRAPING ═══
+        let currentJobId = null;
+        let pollInterval = null;
+        let categoriesLoaded = false;
+
+        async function loadCategories() {
+            if (categoriesLoaded) return;
+            try {
+                const resp = await fetch('/api/v1/bulk/categories');
+                const data = await resp.json();
+                const sel = document.getElementById('bulk-category');
+                sel.innerHTML = '<option value="">— Selecciona una categoría —</option>';
+                data.categories.forEach(c => {
+                    sel.innerHTML += `<option value="${c.key}">${c.name}</option>`;
+                });
+                categoriesLoaded = true;
+            } catch (e) {
+                console.error('Error loading categories:', e);
+            }
+        }
+
+        async function startBulkScrape() {
+            const category = document.getElementById('bulk-category').value;
+            if (!category) { alert('Selecciona una categoría'); return; }
+
+            const maxBooks = document.getElementById('bulk-max').value;
+            let url = `/api/v1/bulk/start?category=${category}`;
+            if (maxBooks) url += `&max_books=${maxBooks}`;
+
+            document.getElementById('btn-start-bulk').disabled = true;
+
+            try {
+                const resp = await fetch(url, { method: 'POST' });
+                const data = await resp.json();
+
+                if (data.status === 'started') {
+                    currentJobId = data.job_id;
+                    document.getElementById('bulk-progress').classList.add('active');
+                    resetProgressUI();
+                    startPolling();
+                } else {
+                    alert('Error: ' + (data.message || 'No se pudo iniciar'));
+                    document.getElementById('btn-start-bulk').disabled = false;
+                }
+            } catch (e) {
+                alert('Error de conexión: ' + e.message);
+                document.getElementById('btn-start-bulk').disabled = false;
+            }
+        }
+
+        async function stopBulkScrape() {
+            if (!currentJobId) return;
+            try {
+                await fetch(`/api/v1/bulk/stop/${currentJobId}`, { method: 'POST' });
+            } catch (e) {
+                console.error('Error stopping:', e);
+            }
+        }
+
+        function resetProgressUI() {
+            document.getElementById('bulk-progress-bar').style.width = '0%';
+            document.getElementById('stat-found').textContent = '0';
+            document.getElementById('stat-scraped').textContent = '0';
+            document.getElementById('stat-skipped').textContent = '0';
+            document.getElementById('stat-failed').textContent = '0';
+            document.getElementById('current-book-text').textContent = 'Iniciando...';
+            document.getElementById('bulk-status-badge').textContent = 'RUNNING';
+            document.getElementById('bulk-status-badge').className = 'status-badge running';
+            document.getElementById('bulk-errors').style.display = 'none';
+            document.getElementById('btn-stop-bulk').disabled = false;
+        }
+
+        function startPolling() {
+            if (pollInterval) clearInterval(pollInterval);
+            pollInterval = setInterval(pollJobStatus, 3000);
+            pollJobStatus(); // immediate first call
+        }
+
+        async function pollJobStatus() {
+            if (!currentJobId) return;
+            try {
+                const resp = await fetch(`/api/v1/bulk/status/${currentJobId}`);
+                const job = await resp.json();
+
+                // Update stats
+                document.getElementById('stat-found').textContent = job.books_found || 0;
+                document.getElementById('stat-scraped').textContent = job.books_scraped || 0;
+                document.getElementById('stat-skipped').textContent = job.books_skipped || 0;
+                document.getElementById('stat-failed').textContent = job.books_failed || 0;
+
+                // Progress bar
+                const total = job.books_found || 1;
+                const done = (job.books_scraped || 0) + (job.books_skipped || 0) + (job.books_failed || 0);
+                const pct = Math.min(100, Math.round((done / total) * 100));
+                document.getElementById('bulk-progress-bar').style.width = pct + '%';
+
+                // Current book
+                document.getElementById('current-book-text').textContent = job.current_book || '...';
+
+                // Status badge
+                const badge = document.getElementById('bulk-status-badge');
+                badge.textContent = (job.status || 'unknown').toUpperCase();
+                badge.className = 'status-badge ' + (job.status || 'running');
+
+                // Errors
+                if (job.errors && job.errors.length > 0) {
+                    document.getElementById('bulk-errors').style.display = 'block';
+                    const ul = document.getElementById('bulk-errors-list');
+                    ul.innerHTML = '';
+                    job.errors.forEach(err => {
+                        ul.innerHTML += `<li>${err}</li>`;
+                    });
+                }
+
+                // Stop polling if finished
+                if (['completed', 'stopped', 'error'].includes(job.status)) {
+                    clearInterval(pollInterval);
+                    pollInterval = null;
+                    document.getElementById('btn-start-bulk').disabled = false;
+                    document.getElementById('btn-stop-bulk').disabled = true;
+
+                    // Update the dot to not pulse
+                    const dot = document.querySelector('#bulk-current-book .dot');
+                    if (dot) {
+                        dot.style.animation = 'none';
+                        dot.style.background = job.status === 'completed' ? '#3498db' : '#f5a623';
+                    }
+
+                    document.getElementById('current-book-text').textContent =
+                        job.status === 'completed' ? '✅ Scraping completado' :
+                            job.status === 'stopped' ? '⏸ Scraping detenido' : '❌ Error';
+
+                    // Refresh library count
+                    loadLibCount();
+                }
+            } catch (e) {
+                console.error('Poll error:', e);
+            }
+        }
+
+        // ═══ LIBRARY ═══
+        let currentLibPage = 1;
+        let libSearchTimer = null;
+
+        function debounceLibSearch() {
+            clearTimeout(libSearchTimer);
+            libSearchTimer = setTimeout(() => loadLibrary(1), 400);
+        }
+
+        async function loadLibrary(page = 1) {
+            currentLibPage = page;
+            const search = document.getElementById('lib-search').value;
+            let url = `/api/v1/library?page=${page}&per_page=15`;
+            if (search) url += `&search=${encodeURIComponent(search)}`;
+
+            try {
+                const resp = await fetch(url);
+                const data = await resp.json();
+
+                document.getElementById('lib-total').textContent = data.total;
+
+                const container = document.getElementById('library-content');
+
+                if (!data.books || data.books.length === 0) {
+                    container.innerHTML = `
+                        <div class="empty-state">
+                            <div class="emoji">📖</div>
+                            <p>${search ? 'No se encontraron resultados.' : 'No hay libros guardados aún. ¡Usa el scraping masivo para empezar!'}</p>
+                        </div>`;
+                    document.getElementById('lib-pagination').style.display = 'none';
+                    return;
+                }
+
+                let html = '<div class="library-table-wrap"><table class="library-table">';
+                html += `<thead><tr>
+                    <th></th><th>Categoría</th><th>Título</th><th>Autor</th><th>Editorial</th>
+                    <th>ISBN</th><th>Precio</th><th>Enlace</th>
+                </tr></thead><tbody>`;
+
+                data.books.forEach(b => {
+                    const img = b.image_url
+                        ? `<img class="table-thumb" src="${b.image_url}" alt="" loading="lazy">`
+                        : '<span style="font-size:1.3rem">📕</span>';
+                    html += `<tr>
+                        <td>${img}</td>
+                        <td><span style="background: rgba(255,255,255,0.1); padding: 3px 8px; border-radius: 4px; font-size: 0.8rem; white-space: nowrap;">${b.category || 'N/A'}</span></td>
+                        <td title="${b.title || ''}">${(b.title || '').substring(0, 50)}</td>
+                        <td>${(b.author || '').substring(0, 30)}</td>
+                        <td>${(b.editorial || '').substring(0, 25)}</td>
+                        <td>${b.isbn || ''}</td>
+                        <td>${b.price || ''}</td>
+                        <td>${b.url ? `<a href="${b.url}" target="_blank">Ver ↗</a>` : ''}</td>
+                    </tr>`;
+                });
+                html += '</tbody></table></div>';
+                container.innerHTML = html;
+
+                // Pagination
+                const pag = document.getElementById('lib-pagination');
+                pag.style.display = 'flex';
+                document.getElementById('lib-page-info').textContent = `Página ${data.page} de ${data.total_pages}`;
+                document.getElementById('lib-prev').disabled = data.page <= 1;
+                document.getElementById('lib-next').disabled = data.page >= data.total_pages;
+            } catch (e) {
+                console.error('Error loading library:', e);
+            }
+        }
+
+        async function loadLibCount() {
+            try {
+                const resp = await fetch('/api/v1/library/count');
+                const data = await resp.json();
+                const badge = document.getElementById('lib-count-badge');
+                if (data.count > 0) badge.textContent = `(${data.count})`;
+            } catch (e) { }
+        }
+
+        // ═══ INIT ═══
+        document.addEventListener('DOMContentLoaded', () => {
+            loadLibCount();
+        });
+    </script>
+</body>
+
+</html>

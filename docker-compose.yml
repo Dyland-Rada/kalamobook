@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  scraper-app:
+    build: .
+    container_name: casadellibro-scraper
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      # Esta línea asegura que la base de datos se guarda en tu servidor 
+      # y no se pierde cada vez que reinicias el contenedor
+      - ./books.db:/app/books.db
+    environment:
+      - TZ=America/Bogota # Ajusta esto si tu servidor está en otra zona

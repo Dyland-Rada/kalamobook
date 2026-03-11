@@ -1,0 +1,39 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+.coverage
+htmlcov/
+.env
+.venv
+venv/
+venv.bak/
+.git
+.gitignore
+README.md
+
+# Ignorar las carpetas locales de data o excel
+*.xlsx
+
+# IMPORTANTE: 
+# Ignorar las bd locales para no sobreescribir las del servidor 
+# si se envía un nuevo contenedor
+*.db

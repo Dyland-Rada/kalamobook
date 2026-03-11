@@ -1,0 +1,181 @@
+id,search_query,title,author,editorial,isbn,price,original_price,discount,description,translator,illustrator,language,pages,reading_time,binding,release_date,edition_year,edition_place,collection,height,width,weight,origin,url,image_url,timestamp
+1,más que rivales-rachel reid-9791387972561,MÁS QUE RIVALES,Rachel Reid,Montena,9791387972561,$ 90.249 COP,,,"Descubre el sports romance de hockey en el que se inspira la serie de televisión de éxito «Heated Rivalry».
+
+Nada puede interferir en el juego de la estrella del hockey profesional Shane Hollander.
+
+Ahora que es el capitán de los Montreal Voyageurs, no permitirá que nada lo ponga en peligro, y mucho menos su sexy rival, a quien le encanta odiar.
+
+El capitán de los Boston Bears, Ilya Rozanov, es todo lo que Shane no es. Autoproclamado Rey del hielo, tiene tanta arrogancia como talento. Nadie puede vencerlo, excepto Shane. En público, son enemigos. En privado, no pueden dejar de tocarse.
+
+Lo más inteligente ahora sería alejarse, especialmente cuando unos cuantos encuentros secretos se convierten en una lucha por mantener su relación fuera de la prensa. La verdad podría arruinarlos a ambos.
+
+Pero para Shane e Ilya, el secreto pronto deja de ser una opción...","Ana Mata Buil, Anaís Badilla",,Castellano,432,10h 19m ¿Cómo se calcula?,Tapa blanda,24/02/2026,2026,Es,Lo Más Visto,23.0 cm,15.0 cm,484.0 gr,España,https://www.casadellibro.com/libro-mas-que-rivales/9791387972561/17848539,https://imagessl1.casadellibro.com/a/l/t1/61/9791387972561.jpg,2026-03-10 16:00:49
+2,un himno a la vida. mi historia-gisele pelicot-9788426433213,UN HIMNO A LA VIDA. MI HISTORIA,Gisèle Pelicot,SIMULTÁNEO EN 20 IDIOMAS.,9788426433213,$ 90.249 COP,,,"EL ILUMINADOR LIBRO DE MEMORIAS DE UNA HEROÍNA DE NUESTRO TIEMPO. UN ACONTECIMIENTO EDITORIAL SIMULTÁNEO EN 20 IDIOMAS.
+
+Una mañana de noviembre, Gisèle Pelicot fue llamada a una comisaría y la vida tal como la conocía llegó a su fin. Su marido había sido sorprendido por un guardia de seguridad de un supermercado grabando por debajo de la falda a varias mujeres. En su ordenador aparecieron otras pruebas devastadoras: durante casi una década, había estado drogándola y violándola en secreto, e invitando a desconocidos a su casa para que abusaran de ella. Cuatro años después, él y otros cincuenta hombres fueron llevados a juicio, y el coraje de Gisèle al renunciar a su derecho al anonimato ocupó los titulares en todo el mundo. «La vergüenza debe cambiar de bando», declaró, dando voz y esperanza a millones de personas.
+
+Por primera vez, y con una franqueza y elegancia inquebrantables, Gisèle cuenta toda su historia, partiendo de esa fatídica mañana y reviviendo una infancia difícil, su primer amor, su carrera, la maternidad, la intimidad de su matrimonio antes y después del demoledor descubrimiento y el continuo afán de buscar la felicidad, incluso cuando esta pueda parecer imposible, para reconstruirse. Escritas junto a la premiada periodista y novelista Judith Perrignon, estas luminosas memorias suponen un acontecimiento editorial mundial de enorme profundidad y trascendencia.
+
+La crítica ha dicho:«Nos asustaba abrir este libro. [...] Lo cerramos con una doble gratitud: hacia G",Noemí Sobregués Arias,,Castellano,256,6h 3m ¿Cómo se calcula?,Tapa blanda,17/02/2026,2026,Es,Narrativa,22.8 cm,15.3 cm,438.0 gr,España,https://www.casadellibro.com/libro-un-himno-a-la-vida-mi-historia/9788426433213/17462822,https://imagessl3.casadellibro.com/a/l/t1/13/9788426433213.jpg,2026-03-10 16:01:11
+3,"si no crees en dios, te doy su telefono-paco arango-9788403526358","SI NO CREES EN DIOS, TE DOY SU TELEFONO",Paco Arango,Aguilar,9788403526358,$ 94.999 COP,,,"Paco Arango, director de cine y presidente de Fundación Aladina, presenta unas memorias muy personales en las que relata su historia de fe y esperanza.
+
+***Este es un libro benéfico con el que, además de leer, contribuyes a la labor de la Fundación Aladina.***
+
+Durante más de veinticinco años, Paco Arango ha acompañado a niños y adolescentes con cáncer, compartiendo risas, confidencias y también el instante más duro, cuando alguno de esos pequeños guerreros llegaba al final de su camino. De esas vivencias nació la Fundación Aladina, hoy una de las más importantes de España y reconocida internacionalmente, con mejoras hospitalarias pioneras y un apoyo integral a miles de familias.
+
+Cineasta internacional que dona todo lo que gana a esta causa, Paco ha sido testigo de milagros sorprendentes —dentro y fuera del hospital— y guarda relatos que parecen imposibles. Dudó durante años en contarlos, temiendo no ser creído, hasta que comprendió que no eran solo para él: son señales al alcance de quien se atreva a abrir la puerta de la fe.
+
+Si no crees en Dios, te doy su teléfono reúne esas historias reales y conmovedoras para mostrar que el cielo responde cuando lo llamamos. Un testimonio único que supera cualquier ficción y nos invita a creer que cualquiera puede tener una relación personal e íntima con Dios —el Míster, como Paco lo llama— y a descubrir la magia inesperada que ocurre cuando te atreves a marcar su número.",,,Castellano,256,6h 3m ¿Cómo se calcula?,Tapa blanda,05/02/2026,2026,Es,Primera Persona,22.9 cm,15.0 cm,348.0 gr,España,https://www.casadellibro.com/libro-si-no-crees-en-dios-te-doy-su-telefono/9788403526358/17549090,https://imagessl8.casadellibro.com/a/l/t1/58/9788403526358.jpg,2026-03-10 16:01:26
+4,la sociedad del cansancio (4ª ed.)-byung-chul han-9788425451447,LA SOCIEDAD DEL CANSANCIO (4ª ED.),Byung-Chul Han,Editorial:,9788425451447,$ 52.249 COP,,,"Byung-Chul Han detecta que en las últimas décadas se ha producido en nuestras sociedades occidentales avanzadas un cambio de paradigma y que la anterior sociedad disciplinaria --basada en imperativos y prohibiciones externos-- ha pasado a ser una sociedad del rendimiento, en la que los individuos se afanan por explotarse a sí mismos. Si antiguamente el quebrantamiento de la norma acarreaba el castigo, ahora el incumplimiento del anhelo provoca frustración.Cifrar la plenitud personal y el sentido de la vida en la incesante autoexigencia de rendir cada vez más conlleva como resultados culturales la nivelación de todas las diferencias, el infierno de lo igual y la pura positividad. Como consecuencias psicológicas acarrea cansancio, aburrimiento e indiferencia y como secuelas psiquiátricas ocasiona diversos síndromes: de hiperactividad, impaciencia, desatención y agotamiento. De este modo, el precio vital exige la renuncia al ánimo festivo, a la pura celebración de la vida.",Comité Herder Editorial,,Castellano,120,2h 46m ¿Cómo se calcula?,Tapa blanda,04/11/2025,2024,Barcelona,fuera de colección,19.8 cm,12.2 cm,137.0 gr,España,https://www.casadellibro.com/libro-la-sociedad-del-cansancio-4-ed/9788425451447/15909131,https://imagessl7.casadellibro.com/a/l/t1/47/9788425451447.jpg,2026-03-10 16:01:41
+5,mimitos: los abrazos de papa-sophie bouxom-9789878151977,MIMITOS: LOS ABRAZOS DE PAPA,Sophie Bouxom,Catapulta Editores,9789878151977,$ 45.599 COP,,,"Un abrazo que da confianza, un abrazo que hace cosquillas, un abrazo que quiere decir “te quiero” A mi me gustan todos los abrazos. ¡Pero los que más me gustan son los de mi papá! Descubre esta colección de libros de felpa para los más pequeños. En cada página encontrarán hermosas ilustraciones con partes de felpa para acariciar.",,,Castellano,10,,Tapa dura,05/02/2024,2024,Es,de libros de felpa para los más pequeños. En cada página encontrarán hermosas ilustraciones con partes de felpa para acariciar.,18.0 cm,18.0 cm,,España,https://www.casadellibro.com/libro-mimitos-los-abrazos-de-papa/9789878151977/15823406,https://imagessl7.casadellibro.com/a/l/t1/77/9789878151977.jpg,2026-03-10 16:01:57
+6,el ruso 3. viaje al centro del cuchillas-9788408315407,EL RUSO 3. VIAJE AL CENTRO DEL CUCHILLAS,AlesGF,Destino Infantil & Juvenil,9788408315407,$ 71.249 COP,,,"¿CÓMO? ¿QUE NO SABES QUÉ DEMONIOS SE LES HA PERDIDO AL TEAM FANTASY EN EL CUERPO DEL CUCHILLAS? AVERÍGUALO Y ÉCHATE UNAS RISAS EN ESTA ESCATOLÓGICA AVENTURA PROTAGONIZADA POR EL RUSO, EL PERSONAJE MÁS SALVAJE DE ALESGF.
+
+
+
+
+¡El Cuchillas se encuentra fatal! Tanto trote espacial le ha dejado las tripas revueltas, y todo apunta a que ese chorro de vómito negro no se cura con arroz hervido. ¿Será una enfermedad incurable? ¿Habrá comido albóndigas en mal estado? ¿O tendrá dentro un parásito alienígena?
+
+
+
+
+Para resolver el enigma, el Ruso y la Team Fantasy se embarcarán en un viaje al corazón del Cuchillas. Bueno, al corazón y a otros órganos no tan nobles. ¿Listo para ponerte tu traje de gastronauta y ayudarlos a cumplir esta misión llena de pruebas, acertijos y glóbulos blancos?
+
+¡CONTIENE CÓDIGOS QR CON VÍDEOS EXCLUSIVOS!
+¡Y UNA LÁMINA DE PEGATINAS DE REGALO!",,,Castellano,144,,Tapa dura,25/02/2026,2026,Barcelona,Jóvenes Influencers,22.5 cm,14.5 cm,,España,https://www.casadellibro.com/libro-el-ruso-3-viaje-al-centro-del-cuchillas/9788408315407/17782111,https://imagessl7.casadellibro.com/a/l/t1/07/9788408315407.jpg,2026-03-10 16:02:12
+7,magic animals 11. el tesoro del laberinto-carles dalmau-susanna isern-9788408316763,MAGIC ANIMALS 11. EL TESORO DEL LABERINTO,"Carles Dalmau, Susanna Isern",Destino Infantil & Juvenil,9788408316763,$ 52.249 COP,,,"Un enigmático globo sobrevuela el valle de Blim. Se dirige ni más ni menos que hacia el Laberinto Prohibido. ¿Quién lo conduce? Y lo más inquietante de todo: ¿cuáles son sus intenciones? Abi, Éric, Yuna, Cloe y Nico acaban de descubrir que allí se oculta un tesoro que protege el equilibrio natural del valle… Acompañados por Evalisto y Marisabia, los Magic Animals se adentrarán en el corazón del laberinto para resolver el enigma y desenmascarar al misterioso viajero.
+
+
+
+
+*
+
+
+
+
+MAGIC ANIMALS es la serie que reúne todos los ingredientes para triunfar e ilusionar a los pequeños lectores en un mundo lleno de niños y niñas, magia, aventuras, seres fantásticos… y animales.
+
+
+
+
+En el misterioso valle de Blim habitan seres fantásticos capaces de adoptar forma de niño y de animal. Seres que, a través de un amuleto mágico, pueden transformarse en MAGIC ANIMALS con poderes increíbles.
+
+
+
+
+*
+
+
+
+
+Una colección para primeros lectores, con capítulos breves, letra grande y lenguaje adaptado al nivel lector.
+
+
+
+
+Una serie de libros ideal para aprender a leer, con parte narrativa y parte de cómic y perfecta para pasar horas de diversión y entretenimiento.
+
+
+
+
+Ilustraciones a todo color y con páginas en formato cómic, que facilitan la lectura y la comprensión del lector, creadas por Carles Dalmau, un joven ilustrador que se han hecho un hueco destacado en el mundo de la ilustración, el cómic y el manga. Cuenta con más de 700.000 seguidores en sus redes.
+
+
+
+
+Una colección llena de magia, poderes,",,"que se han hecho un hueco destacado en el mundo de la ilustración, el cómic y el manga. Cuenta con más de 700.000 seguidores en sus redes.",Castellano,128,,Tapa blanda,04/03/2026,2026,Barcelona,"para primeros lectores, con capítulos breves, letra grande y lenguaje adaptado al nivel lector.",20.0 cm,14.0 cm,,España,https://www.casadellibro.com/libro-magic-animals-11-el-tesoro-del-laberinto/9788408316763/17848028,https://imagessl3.casadellibro.com/a/l/t1/63/9788408316763.jpg,2026-03-10 16:02:26
+8,daredevil de ed brubaker y michael lark 2-ed brubaker-michael lark-9788410497825,DAREDEVIL DE ED BRUBAKER Y MICHAEL LARK 2,"Ed Brubaker, Michael Lark",Panini,9788410497825,$ 208.999 COP,,,Segundo y último volumen de la etapa de Brubaker y Lark en Daredevil. Matt Murdock intenta demostrar la inocencia de un condenado a muerte mientras surge una nueva amenaza: Lady Bullseye.,,,Castellano,496,,Tapa dura,26/02/2026,2026,,,26.0 cm,17.0 cm,,España,https://www.casadellibro.com/libro-daredevil-de-ed-brubaker-y-michael-lark-2/9788410497825/17975577,https://imagessl5.casadellibro.com/a/l/t1/25/9788410497825.jpg,2026-03-10 16:02:40
+9,el nombre de la rosa novela gráfica 2 de 2-umberto eco-milo manara-9788426425713,EL NOMBRE DE LA ROSA NOVELA GRÁFICA 2 DE 2,"Umberto Eco, Milo Manara",Lumen,9788426425713,$ 94.999 COP,,,"LA ESPERADA CONTINUACIÓN DE EL NOMBRE DE LA ROSA, DE ECO Y MANARA
+
+DOS GENIOS UNIDOS EN «UNA OBRA CUMBRE DE LA NARRATIVA GRÁFICA [...], LLAMADA A CONVERTIRSE EN UN CLÁSICO DEL NOVENO ARTE». (Corriere di Bologna)
+
+«Un trabajo bello, sabio y sugerente. [...] Manara ilumina la novela de Umberto Eco con su dibujo [que] permite mostrar zonas que antes permanecían a oscuras».Jordi Canyissà, La Vanguardia
+
+Mientras la abadía se sume en la confusión y el miedo crece entre sus muros, el fraile Guillermo de Baskerville aviva su enconada búsqueda de la verdad. Cada nuevo indicio lo acerca al corazón del misterio y a una laberíntica biblioteca que atesora un conocimiento tan rico como peligroso. En el centro de la intriga, el novicio Adso de Melk tendrá que hacer frente a la duda, el deseo y la violencia en un viaje iniciático que marcará su destino para siempre.
+
+Con su trazo inconfundible, Milo Manara culmina esta deslumbrante adaptación de la obra maestra de Umberto Eco: un thriller sobre el poder, la herejía y el amor por los libros que ha fascinado a millones de lectores en todo el mundo.
+
+La crítica ha dicho:
+
+«Cuando un maestro del dibujo se encuentra con un maestro de la palabra solo hay un resultado posible: sublime».Luca Valtorta, Robinson (La Repubblica)«Todo su indiscutible talento está al servicio de reflejar el agreste paisaje montañoso, las muchas dependencias de la abadía y los caracteres físicos y psicológicos de los cultos, convulsos, lujuriosos, criminales y según, o t",Ricardo Pochtar,,Castellano,72,,Tapa dura,26/02/2026,2026,Es,Lumen Gráfica,29.6 cm,22.5 cm,592.0 gr,España,https://www.casadellibro.com/libro-el-nombre-de-la-rosa-novela-grafica-2-de-2/9788426425713/17549157,https://imagessl3.casadellibro.com/a/l/t1/13/9788426425713.jpg,2026-03-10 16:02:55
+10,nana nº 06-ai yazawa-9791387918453,NANA Nº 06,Ai Yazawa,Planeta,9791387918453,$ 85.499 COP,,,"La obra maestra de Ai Yazawa.
+
+Nana Komatsu tramita urgentemente la documentación para casarse con Takumi. Cuando Nana Osaki se entera, no puede soportar la soledad que esto le produce y tiene un ataque de ansiedad delante de Ren. Ahora los dos se van a mudar a un nuevo piso llevando consigo todas sus zozobras...",S. A. Editorial Planeta,,Castellano,688,,Tapa dura,04/03/2026,2026,Barcelona,Manga Shojo,21.0 cm,14.8 cm,,España,https://www.casadellibro.com/libro-nana-n-06/9791387918453/17848493,https://imagessl3.casadellibro.com/a/l/t1/53/9791387918453.jpg,2026-03-10 16:03:10
+11,heated rivalry (first time trade) (game changers #2)-rachel reid-9781335534637,"📗 Libro en inglés
+HEATED RIVALRY (FIRST TIME TRADE) (GAME CHANGERS #2)",Rachel Reid,Harlequin (Uk),9781335534637,"$ 66.499,05 COP",,,"A NEW YORK TIMES BESTSELLER • Now streaming on Crave in Canada and on HBO Max in the U.S.
+
+The epic enemies-to-lovers hockey romance from Rachel Reid.
+
+""The book that got me into hockey romance."" ―NPR's Weekend Edition
+
+Nothing interferes with pro hockey star Shane Hollander’s game.
+
+Now that he’s captain of the Montreal Voyageurs, he won’t let anything jeopardize that―definitely not the sexy rival he loves to hate.
+
+Boston Bears captain Ilya Rozanov is everything Shane’s not. The self-proclaimed king of the ice, he’s as cocky as he is talented. No one can beat him―except Shane. Publicly, they’re enemies. Privately, they can’t stop touching each other.",,,Inglés,,,Tapa blanda,26/11/2024,,,,,,,España,https://www.casadellibro.com/libro-heated-rivalry-first-time-trade-game-changers-2/9781335534637/17791974,https://imagessl7.casadellibro.com/a/l/t1/37/9781335534637.jpg,2026-03-10 16:03:33
+12,the long game (game changers #6)-rachel reid-9781335534644,"📗 Libro en inglés
+THE LONG GAME (GAME CHANGERS #6)",Rachel Reid,Harlequin (Uk),9781335534644,"$ 85.499,05 COP",,,"THE SERIES THAT INSPIRED HEATED RIVALRY • NOW A #1 STREAMING SHOW
+
+Enter the world of Game Changers, the series behind the epic enemies-to-lovers hockey romance Heated Rivalry, streaming on Crave in Canada and on HBO Max in the U.S.
+
+New York Times and USA TODAY bestselling author Rachel Reid brings you exactly what you want―more Shane and Ilya!
+
+To the world they are rivals, but to each other they are everything.
+
+Ten years.
+
+That’s how long Shane Hollander and Ilya Rozanov have been seeing each other. How long they’ve been keeping their relationship a secret. From friends, from family…from the league. If Shane wants to stay at the top of his game, what he and Ilya share has to remain secret. He loves Ilya, but what if going public ruins everything?
+
+Ilya is sick of secrets. Shane has gotten so good at hiding his feelings, sometimes Ilya questions if they even exist. The closeness, the intimacy, even the risk that would come with being open about their relationship…Ilya wants it all.
+
+It’s time for them to decide what’s most important―hockey or love.",,,Inglés,,,Tapa blanda,26/11/2024,,,,,,,España,https://www.casadellibro.com/libro-the-long-game-game-changers-6/9781335534644/17893538,https://imagessl4.casadellibro.com/a/l/t1/44/9781335534644.jpg,2026-03-10 16:03:46
+13,hamnet-maggie o farrell-9781472223821,HAMNET,Maggie O'Farrell,Libros del Asteroide S.L.U.,9788417977580,$ 104.499 COP,,,"MEJOR NOVELA DE 2021 SEGÚN EL DIARIO EL PAÍS.
+
+
+
+
+Agnes, una muchacha peculiar que parece no rendir cuentas a nadie y que es capaz de crear misteriosos remedios con sencillas combinaciones de plantas, es la comidilla de Stratford, un pequeño pueblo de Inglaterra. Cuando conoce a un joven preceptor de latín igual de extraordinario que ella, se da cuenta enseguida de que están llamados a formar una familia. Pero su matrimonio se verá puesto a prueba, primero por sus parientes y después por una inesperada desgracia.
+
+Partiendo de la historia familiar de Shakespeare, Maggie O’Farrell transita entre la ficción y la realidad para trazar una hipnótica recreación del suceso que inspiró una de las obras literarias más famosas de todos los tiempos. La autora, lejos de fijarse únicamente en los acontecimientos conocidos, reivindica con ternura las inolvidables figuras que habitan en los márgenes de la historia y ahonda en las pequeñas grandes cuestiones de cualquier existencia: la vida familiar, el afecto, el dolor y la pérdida. El resultado es una prodigiosa novela que ha cosechado un enorme éxito internacional y confirma a O’Farrell como una de las voces más brillantes de la literatura inglesa actual.
+
+
+
+
+«Lo que hace tan interesantes a las novelas de O''Farrell es su apuesta por cambiar siempre de ángulo o decidirse por el más inesperado, su estilo lírico y delicado aunque directo y estremecedor si hace falta, su atención al detalle producto de una evidente investigación profunda que",Concha Cardeñoso,,Castellano,352,8h 23m ¿Cómo se calcula?,Tapa blanda,22/02/2021,2021,Barcelona,Libros del Asteroide,21.5 cm,(ICON – El País),,España,https://www.casadellibro.com/libro-hamnet/9781472223821/12135317,https://imagessl0.casadellibro.com/a/l/t1/80/9788417977580.jpg,2026-03-10 16:04:00
+14,las lunas de jupiter-alice munro-9789588820163,LAS LUNAS DE JUPITER,ALICE MUNRO,,,$ 42.000 COP,,,No Description,,,Castellano,,,,,,,,,,,Colombia,https://www.casadellibro.com/libro-las-lunas-de-jupiter/9789588820163/13515622,https://imagessl3.casadellibro.com/a/l/t1/63/9789588820163.jpg,2026-03-10 16:05:04
+15,el largo adios-raymond chandler-9789585579040,EL LARGO ADIOS,RAYMOND CHANDLER,,,Unknown Price,,,No Description,,,Castellano,,,,,,,,,,,Colombia,https://www.casadellibro.com/libro-el-largo-adios/9789585579040/13515467,https://imagessl0.casadellibro.com/a/l/t1/40/9789585579040.jpg,2026-03-10 16:05:19
+16,luz de agosto-william faulkner-9789588940038,LUZ DE AGOSTO,WILLIAM FAULKNER,,,$ 54.000 COP,,,No Description,,,Castellano,,,,,,,,,,,Colombia,https://www.casadellibro.com/libro-luz-de-agosto/9789588940038/13515171,https://imagessl8.casadellibro.com/a/l/t1/38/9789588940038.jpg,2026-03-10 16:05:35
+17,pack jujutsu kaisen 29 y 30 (edición especial limitada final de serie)-gege akutami-9788467978049,PACK JUJUTSU KAISEN 29 Y 30 (EDICIÓN ESPECIAL LIMITADA FINAL DE SERIE),Gege Akutami,"Norma Editorial, S.A.",9788467978049,$ 170.999 COP,,,"EDICIÓN EXCLUSIVA PARA CONMEMORAR EL FINAL DE LA SERIE! Jujutsu kaisen llega a su esperadísimo final con los volúmenes 29 y 30, un broche de oro para cerrar esta trepidante historia de acción y fantasía que nos ha dejado a algunos de los personajes de manga más carismáticos de los últimos años. Y para señalar este esperadísimo final, os ofrecemos un pack especial y exclusivo para nuestro país donde los dos volúmenes finales vienen acompañados de extras para hacernos más llevadera la despedida de Itadori, Gojo y los demás. No te pierdas esta fantástica edición especial de los tomos 29 y 30, exclusiva y limitada! Edición especial limitada que contiene: Jujutsu kaisen 29 y 30 con sobrecubierta alternativa reversible 15 postales con las mejores ilustraciones en estuche contenedor 1 póster 1 sujetalibros de metal exclusivo",,,Castellano,384,,Tapa blanda,06/03/2026,2026,Es,JUJUTSU KAISEN,17.0 cm,11.0 cm,239.0 gr,España,https://www.casadellibro.com/libro-pack-jujutsu-kaisen-29-y-30-edicion-especial-limitada-final-de-serie/9788467978049/17896900,https://imagessl9.casadellibro.com/a/l/t1/49/9788467978049.jpg,2026-03-10 16:06:13
+18,la ciudad de la carpa bailarina-aleksandra mizielinska-daniel mizielinski-9791387664428,LA CIUDAD DE LA CARPA BAILARINA,"Aleksandra Mizielinska, Daniel Mizielinski",Maeva Ediciones,9791387664428,$ 170.999 COP,,,"Un libro que es un videojuego sin pantallas con decenas de horas de diversión
+
+Hoy, la Ciudad de la Carpa Bailarina está más llena de vida que nunca. ¿Por qué? Porque mañana empieza el Festival del Orangután de los Siete Brazos. Pero no todo va según lo previsto. Ha aparecido una misteriosa enfermedad, un gigante se ha bañado en el puerto, los experimentos con magia están teniendo efectos imprevistos y unos furiosos zombis deambulan por el cementerio. ¿Serás capaz de mantener todo bajo control? Todo depende de ti.
+
+Adéntrate en las calles de la ciudad, habla y ayuda a sus habitantes, resuelve rompecabezas y vive aventuras. Mantén los oídos y los ojos bien abiertos, ¡las sorpresas se esconden en todas partes!
+
+¿En qué consiste el librojuego?
+
+Adentrarse en La Ciudad de la Carpa Bailarina es como resolver una misión dentro de un videojuego: tú decides a dónde ir, con quién hablar y a quién ayudar.
+
+Llenas de detalles, personajes y escenas, las ilustraciones representan la ciudad del título.
+
+Se puede disfrutar en familia o en solitario y engancha desde que se empieza a jugar.
+
+Es un proyecto repleto de creatividad con decenas de historias y misterios que resolver.
+
+¿POR QUÉ LEER LA CIUDAD DE LA CARPA BAILARINA?
+
+Los autores de Atlas del mundo regresan con una aventura interactiva donde tú decides el rumbo.
+
+Entrar en La ciudad de la carpa bailarina es vivir un videojuego: tú eliges el camino y el destino.
+
+Llenas de detalles, personajes y escenas, las ilustraciones representan",Katarzyna Moloniewicz,,Castellano,208,,Tapa dura,22/10/2025,2025,Madrid,Libros para los que aman los libros,24.5 cm,33.8 cm,,España,https://www.casadellibro.com/libro-la-ciudad-de-la-carpa-bailarina/9791387664428/17193594,https://imagessl8.casadellibro.com/a/l/t1/28/9791387664428.jpg,2026-03-10 16:06:36
+19,nana nº 07/07-ai yazawa-9791387919474,NANA Nº 06,Ai Yazawa,Planeta,9791387918453,$ 85.499 COP,,,"La obra maestra de Ai Yazawa.
+
+Nana Komatsu tramita urgentemente la documentación para casarse con Takumi. Cuando Nana Osaki se entera, no puede soportar la soledad que esto le produce y tiene un ataque de ansiedad delante de Ren. Ahora los dos se van a mudar a un nuevo piso llevando consigo todas sus zozobras...",S. A. Editorial Planeta,,Castellano,688,,Tapa dura,04/03/2026,2026,Barcelona,Manga Shojo,21.0 cm,14.8 cm,,España,https://www.casadellibro.com/libro-nana-n-0707/9791387919474/17995145,https://imagessl3.casadellibro.com/a/l/t1/53/9791387918453.jpg,2026-03-10 16:06:49
+20,common goal (first time trade) (game changers #4)-rachel reid-9781335534606,"📗 Libro en inglés
+COMMON GOAL (FIRST TIME TRADE) (GAME CHANGERS #4)",Rachel Reid,Harlequin (Uk),9781335534606,"$ 66.499,05 COP",,,"Based on the series by New York Times bestselling author Rachel Reid, Heated Rivalry is now streaming on Crave in Canada and on HBO Max in the U.S. Discover all 6 books in the series!
+
+A friends-with-benefits arrangement with a much-younger man leaves them both wanting more in this spicy hockey romance from Rachel Reid.
+
+Veteran goaltender Eric Bennett has faced down some of the toughest shooters on the ice, but nothing prepared him for his latest challenge―life after hockey. It’s time to make some big changes, starting with finally dating men for the first time.
+
+Graduate student Kyle Swift moved to New York nursing a broken heart. He’d sworn to find someone his own age to crush on (for once). Until he meets a gorgeous, distinguished silver fox hockey player. Despite their intense physical attraction, Kyle has no intention of getting emotionally involved. He’ll teach Eric a few tricks, have some mutually consensual fun, then walk away.",,,Inglés,,,Tapa blanda,26/11/2024,,,,,,,España,https://www.casadellibro.com/libro-common-goal-first-time-trade-game-changers-4/9781335534606/17791976,https://imagessl6.casadellibro.com/a/l/t1/06/9781335534606.jpg,2026-03-10 16:07:57
