@@ -14,7 +14,7 @@ from scraper import (
     DB_NAME,
 )
 import sqlite3
-
+import uuid
 # ── Category catalogue ─────────────────────────────────────────────────
 CATEGORIES = {
     "novedades": {
