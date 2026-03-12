@@ -212,22 +212,22 @@ async def extract_ficha_tecnica(page):
                 // Strategy 3: Regex scan of all page text for known Spanish field names
                 const allText = document.body.innerText;
                 const patterns = [
-                    ['ISBN', /ISBN[:\\s]+([0-9X\\-]{10,17})/i],
-                    ['Paginas', /N[\\u00fa\\u00fc]mero de p[\\u00e1a]ginas[:\\s]+(\\d+)/i],
-                    ['Editorial', /Editorial[:\\s]+([^\\n]+)/i],
-                    ['Idioma', /Idioma[:\\s]+([^\\n]+)/i],
-                    ['Encuadernacion', /Encuadernaci[\\u00f3o]n[:\\s]+([^\\n]+)/i],
-                    ['Fecha de lanzamiento', /Fecha de lanzamiento[:\\s]+([^\\n]+)/i],
-                    ['Coleccion', /Colecci[\\u00f3o]n[:\\s]+([^\\n]+)/i],
-                    ['Peso', /Peso[:\\s]+([^\\n]+)/i],
-                    ['Alto', /Alto[:\\s]+([^\\n]+)/i],
-                    ['Ancho', /Ancho[:\\s]+([^\\n]+)/i],
-                    ['Traductor', /Traductor[:\\s]+([^\\n]+)/i],
-                    ['Ilustrador', /Ilustrador[:\\s]+([^\\n]+)/i],
-                    ['Ano de edicion', /A[\\u00f1n]o de edici[\\u00f3o]n[:\\s]+([^\\n]+)/i],
-                    ['Plaza de edicion', /Plaza de edici[\\u00f3o]n[:\\s]+([^\\n]+)/i],
-                    ['Tiempo de lectura', /Tiempo de lectura[:\\s]+([^\\n]+)/i],
-                    ['Origen', /Origen[:\\s]+([^\\n]+)/i],
+                    ['ISBN', /ISBN:\\s*([0-9X\\-]{10,17})/i],
+                    ['Paginas', /N[\\u00fa\\u00fc]mero de p[\\u00e1a]ginas:\\s*(\\d+)/i],
+                    ['Editorial', /Editorial:\\s*([^\\n]+)/i],
+                    ['Idioma', /Idioma:\\s*([^\\n]+)/i],
+                    ['Encuadernacion', /Encuadernaci[\\u00f3o]n:\\s*([^\\n]+)/i],
+                    ['Fecha de lanzamiento', /Fecha de lanzamiento:\\s*([^\\n]+)/i],
+                    ['Coleccion', /Colecci[\\u00f3o]n:\\s*([^\\n]+)/i],
+                    ['Peso', /Peso:\\s*([^\\n]+)/i],
+                    ['Alto', /Alto:\\s*([^\\n]+)/i],
+                    ['Ancho', /Ancho:\\s*([^\\n]+)/i],
+                    ['Traductor', /Traductor:\\s*([^\\n]+)/i],
+                    ['Ilustrador', /Ilustrador:\\s*([^\\n]+)/i],
+                    ['Ano de edicion', /A[\\u00f1n]o de edici[\\u00f3o]n:\\s*([^\\n]+)/i],
+                    ['Plaza de edicion', /Plaza de edici[\\u00f3o]n:\\s*([^\\n]+)/i],
+                    ['Tiempo de lectura', /Tiempo de lectura:\\s*([^\\n]+)/i],
+                    ['Origen', /Origen:\\s*([^\\n]+)/i],
                 ];
 
                 patterns.forEach(([field, regex]) => {
