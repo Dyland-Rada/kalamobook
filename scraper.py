@@ -51,6 +51,9 @@ def init_db():
             url TEXT,
             image_url TEXT,
             category TEXT,
+            categoria_1 TEXT,
+            categoria_2 TEXT,
+            categoria_3 TEXT,
             {datetime_column}
         )
     ''')
@@ -58,12 +61,14 @@ def init_db():
     conn.commit()
     
     # Apply schema mutation for existing databases
-    try:
-        db.execute_query(cursor, 'ALTER TABLE books ADD COLUMN category TEXT')
-        conn.commit()
-    except Exception:
-        # Both sqlite3.OperationalError and psycopg2.errors.DuplicateColumn can be raised
-        conn.rollback()
+    for col in ["category", "categoria_1", "categoria_2", "categoria_3"]:
+        try:
+            db.execute_query(cursor, f'ALTER TABLE books ADD COLUMN {col} TEXT')
+            conn.commit()
+        except Exception:
+            # Both sqlite3.OperationalError and psycopg2.errors.DuplicateColumn can be raised
+            conn.rollback()
+
     db.execute_query(cursor, 'CREATE INDEX IF NOT EXISTS idx_search_query ON books(search_query)')
     conn.commit()
     conn.close()
@@ -78,7 +83,7 @@ def check_in_db(search_query):
         SELECT title, author, editorial, isbn, price, original_price, discount,
                description, translator, illustrator, language, pages, reading_time,
                binding, release_date, edition_year, edition_place, collection,
-               height, width, weight, origin, url, image_url
+               height, width, weight, origin, url, image_url, categoria_1, categoria_2, categoria_3
         FROM books WHERE search_query = ?
     '''
     db.execute_query(cursor, query, (search_query,))
@@ -96,8 +101,9 @@ def save_to_db(data):
             search_query, title, author, editorial, isbn, price, original_price,
             discount, description, translator, illustrator, language, pages,
             reading_time, binding, release_date, edition_year, edition_place,
-            collection, height, width, weight, origin, url, image_url, category
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            collection, height, width, weight, origin, url, image_url, category,
+            categoria_1, categoria_2, categoria_3
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     '''
     db.execute_query(cursor, query, (
         data.get('search_query', ''),
@@ -126,6 +132,9 @@ def save_to_db(data):
         data.get('url', ''),
         data.get('image_url', ''),
         data.get('category', ''),
+        data.get('categoria_1', ''),
+        data.get('categoria_2', ''),
+        data.get('categoria_3', ''),
     ))
     conn.commit()
     conn.close()
@@ -631,6 +640,25 @@ async def scrape_book(page, query, direct_url=None):
         print(f"  Translator: {translator} | Illustrator: {illustrator}")
         print(f"  Collection: {collection} | H:{height} W:{width} Weight:{weight}")
 
+        # ── CATEGORY TAGS ─────────────────────────────────────────────
+        tags = []
+        try:
+            tags = await page.evaluate("""
+                () => {
+                    const links = Array.from(document.querySelectorAll('a[href*="/libros/"]'));
+                    const badges = links.map(a => a.innerText.trim()).filter(text => text && text.length > 2 && text.length < 50);
+                    return [...new Set(badges)];
+                }
+            """)
+            tags = [t for t in tags if t.lower() not in ("libros", "ver más", "inicio", "novedades", "más vendidos", "recomendados")]
+        except:
+            pass
+        
+        categoria_1 = tags[0] if len(tags) > 0 else ""
+        categoria_2 = tags[1] if len(tags) > 1 else ""
+        categoria_3 = tags[2] if len(tags) > 2 else ""
+        print(f"  Tags: {categoria_1}, {categoria_2}, {categoria_3}")
+
         return {
             'search_query':  query,
             'title':         title.strip(),
@@ -657,6 +685,9 @@ async def scrape_book(page, query, direct_url=None):
             'origin':        origin.strip(),
             'url':           book_url,
             'image_url':     image_url,
+            'categoria_1':   categoria_1,
+            'categoria_2':   categoria_2,
+            'categoria_3':   categoria_3,
         }
 
     except Exception as e:

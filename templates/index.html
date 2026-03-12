@@ -761,6 +761,14 @@
                             {% if result.editorial %}
                             <div class="book-editorial">{{ result.editorial }}</div>
                             {% endif %}
+                            
+                            {% if result.categoria_1 or result.categoria_2 or result.categoria_3 %}
+                            <div style="margin-top: 6px; display: flex; gap: 6px; flex-wrap: wrap;">
+                                {% if result.categoria_1 %}<span style="background:#1abc9c; color:#fff; font-size:0.75rem; padding:3px 8px; border-radius:4px; font-weight:600;">{{ result.categoria_1 }}</span>{% endif %}
+                                {% if result.categoria_2 %}<span style="background:#1abc9c; color:#fff; font-size:0.75rem; padding:3px 8px; border-radius:4px; font-weight:600;">{{ result.categoria_2 }}</span>{% endif %}
+                                {% if result.categoria_3 %}<span style="background:#1abc9c; color:#fff; font-size:0.75rem; padding:3px 8px; border-radius:4px; font-weight:600;">{{ result.categoria_3 }}</span>{% endif %}
+                            </div>
+                            {% endif %}
                             <div class="price-row">
                                 {% if result.price and result.price != 'Unknown Price' %}
                                 <span class="price-current">{{ result.price }}</span>
@@ -1171,7 +1179,14 @@
                         : '<span style="font-size:1.3rem">📕</span>';
                     html += `<tr>
                         <td>${img}</td>
-                        <td><span style="background: rgba(255,255,255,0.1); padding: 3px 8px; border-radius: 4px; font-size: 0.8rem; white-space: nowrap;">${b.category || 'N/A'}</span></td>
+                        <td>
+                            <div style="display:flex; flex-direction:column; gap:4px;">
+                                <span style="background: rgba(255,255,255,0.1); padding: 3px 8px; border-radius: 4px; font-size: 0.8rem; white-space: nowrap; width: fit-content; margin-bottom: 2px;">${b.category || 'N/A'}</span>
+                                ${b.categoria_1 ? `<span style="background:#1abc9c; color:#fff; font-size:0.7rem; padding:2px 6px; border-radius:4px; font-weight:600; width:fit-content; white-space:nowrap;">${b.categoria_1}</span>` : ''}
+                                ${b.categoria_2 ? `<span style="background:#1abc9c; color:#fff; font-size:0.7rem; padding:2px 6px; border-radius:4px; font-weight:600; width:fit-content; white-space:nowrap;">${b.categoria_2}</span>` : ''}
+                                ${b.categoria_3 ? `<span style="background:#1abc9c; color:#fff; font-size:0.7rem; padding:2px 6px; border-radius:4px; font-weight:600; width:fit-content; white-space:nowrap;">${b.categoria_3}</span>` : ''}
+                            </div>
+                        </td>
                         <td title="${b.title || ''}">${(b.title || '').substring(0, 50)}</td>
                         <td>${(b.author || '').substring(0, 30)}</td>
                         <td>${(b.editorial || '').substring(0, 25)}</td>

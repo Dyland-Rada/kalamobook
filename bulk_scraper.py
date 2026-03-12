@@ -128,7 +128,7 @@ def get_all_books(page: int = 1, per_page: int = 20, search: str = ""):
         )
         total = cursor.fetchone()[0]
         db.execute_query(cursor, 
-            """SELECT id, title, author, editorial, isbn, price, url, image_url, timestamp, category
+            """SELECT id, title, author, editorial, isbn, price, url, image_url, timestamp, category, categoria_1, categoria_2, categoria_3
                FROM books WHERE title LIKE ? OR author LIKE ? OR isbn LIKE ?
                ORDER BY id DESC LIMIT ? OFFSET ?""",
             (like, like, like, per_page, offset),
@@ -137,7 +137,7 @@ def get_all_books(page: int = 1, per_page: int = 20, search: str = ""):
         db.execute_query(cursor, "SELECT COUNT(*) FROM books")
         total = cursor.fetchone()[0]
         db.execute_query(cursor, 
-            """SELECT id, title, author, editorial, isbn, price, url, image_url, timestamp, category
+            """SELECT id, title, author, editorial, isbn, price, url, image_url, timestamp, category, categoria_1, categoria_2, categoria_3
                FROM books ORDER BY id DESC LIMIT ? OFFSET ?""",
             (per_page, offset),
         )
