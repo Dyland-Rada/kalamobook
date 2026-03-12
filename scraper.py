@@ -645,13 +645,61 @@ async def scrape_book(page, query, direct_url=None):
         try:
             tags = await page.evaluate("""
                 () => {
-                    const links = Array.from(document.querySelectorAll('a[href*="/libros/"]'));
-                    const badges = links.map(a => a.innerText.trim()).filter(text => text && text.length > 2 && text.length < 50);
+                    let badges = [];
+                    // Strategy 1: Look for breadcrumbs (usually the most accurate for specific categories like Sociología > Feminismo)
+                    const bc = Array.from(document.querySelectorAll('ol a[href*="/libros/"], [aria-label="Breadcrumb"] a, .breadcrumbs a'));
+                    badges = bc.map(a => a.innerText.trim()).filter(t => t.length > 2 && t.length < 50);
+
+                    // Strategy 2: Badges right under the title (if breadcrumbs failed)
+                    if (badges.length === 0) {
+                        const h1 = document.querySelector('h1');
+                        if (h1) {
+                            let container = h1.parentElement;
+                            for (let i = 0; i < 4 && container; i++) {
+                                const links = Array.from(container.querySelectorAll('a[href*="/libros/"]')).filter(a => {
+                                    const style = window.getComputedStyle(a);
+                                    // Usually badges have a distinct background color, not transparent
+                                    return style.backgroundColor !== 'rgba(0, 0, 0, 0)';
+                                });
+                                if (links.length > 0) {
+                                    badges = links.map(a => a.innerText.trim()).filter(t => t.length > 2 && t.length < 50);
+                                    break;
+                                }
+                                container = container.parentElement;
+                            }
+                        }
+                    }
+
+                    // Strategy 3: Search within main content strictly avoiding headers/navs
+                    if (badges.length === 0) {
+                        const mainContent = document.querySelector('main, .product-container, #app-content, body');
+                        if (mainContent) {
+                            const badClasses = ['nav', 'header', 'menu', 'footer', 'top'];
+                            const links = Array.from(mainContent.querySelectorAll('a[href*="/libros/"]')).filter(a => {
+                                let p = a.parentElement;
+                                let bad = false;
+                                while(p && p !== document.body) {
+                                    const cn = p.className || '';
+                                    if (typeof cn === 'string' && badClasses.some(c => cn.toLowerCase().includes(c))) {
+                                        bad = true;
+                                        break;
+                                    }
+                                    p = p.parentElement;
+                                }
+                                return !bad;
+                            });
+                            badges = links.map(a => a.innerText.trim()).filter(t => t.length > 2 && t.length < 50);
+                        }
+                    }
                     return [...new Set(badges)];
                 }
             """)
-            tags = [t for t in tags if t.lower() not in ("libros", "ver más", "inicio", "novedades", "más vendidos", "recomendados")]
-        except:
+            
+            # Clean generic terms
+            ignore_terms = {"libros", "ver más", "inicio", "novedades", "más vendidos", "recomendados", "home"}
+            tags = [t for t in tags if t.lower() not in ignore_terms]
+        except Exception as e:
+            print(f"  Tag extraction error: {e}")
             pass
         
         categoria_1 = tags[0] if len(tags) > 0 else ""
