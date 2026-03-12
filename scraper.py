@@ -20,9 +20,10 @@ def init_db():
     """Initialize the SQLite database with extended fields."""
     conn = db.get_connection()
     cursor = conn.cursor()
-    cursor.execute('''
+    id_column = "id SERIAL PRIMARY KEY" if db.IS_POSTGRES else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    cursor.execute(f'''
         CREATE TABLE IF NOT EXISTS books (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            {id_column},
             search_query TEXT,
             title TEXT,
             author TEXT,
