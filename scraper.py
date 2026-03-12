@@ -21,6 +21,7 @@ def init_db():
     conn = db.get_connection()
     cursor = conn.cursor()
     id_column = "id SERIAL PRIMARY KEY" if db.IS_POSTGRES else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    datetime_column = "timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP" if db.IS_POSTGRES else "timestamp DATETIME DEFAULT CURRENT_TIMESTAMP"
     cursor.execute(f'''
         CREATE TABLE IF NOT EXISTS books (
             {id_column},
@@ -50,7 +51,7 @@ def init_db():
             url TEXT,
             image_url TEXT,
             category TEXT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            {datetime_column}
         )
     ''')
     
