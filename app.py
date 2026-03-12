@@ -108,7 +108,7 @@ async def search_book_api(
             "dimensions": {"height": data.get("height", ""), "width": data.get("width", ""), "weight": data.get("weight", "")},
             "origin": data.get("origin", ""), "url": data.get("url", ""), "image_url": data.get("image_url", ""),
         }
-        return JSONResponse(status_code=200, content={"status": "success", "data": book})
+        return {"status": "success", "data": book}
 
     except Exception as e:
         return JSONResponse(status_code=500, content={"status": "error", "message": f"Error interno: {str(e)}"})
@@ -194,7 +194,7 @@ async def list_books(
 ):
     """Lista todos los libros guardados en la BD con paginación."""
     result = get_all_books(page=page, per_page=per_page, search=search)
-    return JSONResponse(content=result)
+    return result
 
 
 @app.get("/api/v1/library/count", tags=["Biblioteca"])
