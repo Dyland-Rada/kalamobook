@@ -55,13 +55,15 @@ def init_db():
         )
     ''')
     
+    conn.commit()
+    
     # Apply schema mutation for existing databases
     try:
         db.execute_query(cursor, 'ALTER TABLE books ADD COLUMN category TEXT')
+        conn.commit()
     except Exception:
         # Both sqlite3.OperationalError and psycopg2.errors.DuplicateColumn can be raised
-        pass
-
+        conn.rollback()
     db.execute_query(cursor, 'CREATE INDEX IF NOT EXISTS idx_search_query ON books(search_query)')
     conn.commit()
     conn.close()
