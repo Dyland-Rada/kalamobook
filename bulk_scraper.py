@@ -142,7 +142,13 @@ def get_all_books(page: int = 1, per_page: int = 20, search: str = ""):
             (per_page, offset),
         )
 
-    rows = [dict(row) for row in cursor.fetchall()]
+    rows = []
+    for row in cursor.fetchall():
+        d = dict(row)
+        if 'timestamp' in d and isinstance(d['timestamp'], datetime):
+            d['timestamp'] = d['timestamp'].isoformat()
+        rows.append(d)
+    
     conn.close()
 
     return {
