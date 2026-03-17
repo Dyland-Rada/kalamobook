@@ -70,6 +70,15 @@ def init_db():
             conn.rollback()
 
     db.execute_query(cursor, 'CREATE INDEX IF NOT EXISTS idx_search_query ON books(search_query)')
+    
+    # Create scrape_progress table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS scrape_progress (
+            category_key TEXT PRIMARY KEY,
+            last_page INTEGER DEFAULT 1
+        )
+    ''')
+
     conn.commit()
     conn.close()
 

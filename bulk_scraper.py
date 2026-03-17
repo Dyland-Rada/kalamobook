@@ -170,6 +170,50 @@ def get_books_count() -> int:
     return count
 
 
+def get_last_scraped_page(category_key: str) -> int:
+    """Get the last scraped page for a category (auto-resume)."""
+    conn = db.get_connection()
+    cursor = conn.cursor()
+    db.execute_query(cursor, "SELECT last_page FROM scrape_progress WHERE category_key = ?", (category_key,))
+    row = cursor.fetchone()
+    
+    if row:
+        conn.close()
+        return row[0]
+    
+    # Try to auto-detect progress from existing books
+    cat_name = CATEGORIES.get(category_key, {}).get("name")
+    if cat_name:
+        db.execute_query(cursor, "SELECT COUNT(*) FROM books WHERE category = ?", (cat_name,))
+        count_row = cursor.fetchone()
+        count = count_row[0] if count_row else 0
+        
+        # Assume ~20 books per page. Back up 2 pages just to ensure no gaps
+        guessed_page = max(1, (count // 20) - 2)
+        
+        if guessed_page > 1:
+            db.execute_query(cursor, "INSERT INTO scrape_progress (category_key, last_page) VALUES (?, ?)", (category_key, guessed_page))
+            conn.commit()
+            conn.close()
+            return guessed_page
+
+    conn.close()
+    return 1
+
+
+def update_last_scraped_page(category_key: str, page: int):
+    """Update the last scraped page for a category."""
+    conn = db.get_connection()
+    cursor = conn.cursor()
+    db.execute_query(cursor, "SELECT category_key FROM scrape_progress WHERE category_key = ?", (category_key,))
+    if cursor.fetchone():
+        db.execute_query(cursor, "UPDATE scrape_progress SET last_page = ? WHERE category_key = ?", (page, category_key))
+    else:
+        db.execute_query(cursor, "INSERT INTO scrape_progress (category_key, last_page) VALUES (?, ?)", (category_key, page))
+    conn.commit()
+    conn.close()
+
+
 async def _extract_book_links(page) -> list[dict]:
     """
     Extract all book links from the current category listing page.
@@ -275,10 +319,10 @@ async def bulk_scrape(category_key: str, max_books: int | None = None):
                 if category_key == "all":
                     job["category"] = f"Todas ({cat['name']})"
 
-                # ── Collect book links from category pages ──
-                all_book_links: list[dict] = []
-                seen_links: set = set()
-                page_num = 1
+                # ── Restore Page Progress ──
+                start_page = get_last_scraped_page(current_cat_key)
+                page_num = start_page
+                print(f"\n[Bulk] Resuming {cat['name']} from page {page_num}")
 
                 while True:
                     if job["status"] == "stopped":
@@ -302,75 +346,67 @@ async def bulk_scrape(category_key: str, max_books: int | None = None):
 
                     links = await _extract_book_links(list_page)
                     
-                    # Filter out books we have already seen in this category
-                    new_links = [link for link in links if link["url"] not in seen_links]
+                    if not links:
+                        print(f"[Bulk] No books found on page {page_num}. Ending category.")
+                        break
+
+                    print(f"[Bulk] Found {len(links)} book links on page {page_num}")
                     
-                    if not new_links:
-                        print(f"[Bulk] No new books found on page {page_num}. Ending pagination.")
-                        break
+                    # ── Scrape each book on the current page ──
+                    for i, book_link in enumerate(links):
+                        if job["status"] == "stopped":
+                            break
+                        
+                        book_url = book_link["url"]
+                        if not book_url.startswith("http"):
+                            book_url = BASE_URL + book_url
 
-                    print(f"[Bulk] Found {len(new_links)} NEW book links on page {page_num}")
-                    all_book_links.extend(new_links)
-                    job["books_found"] += len(new_links)
-                    
-                    for link in new_links:
-                        seen_links.add(link["url"])
+                        job["current_book"] = book_link.get("title", book_url)[:80]
+                        print(f"\n[Bulk] P.{page_num} [{i+1}/{len(links)}] {job['current_book']}")
 
-                    # Check if we have enough
-                    if max_books and len(all_book_links) >= max_books:
-                        amount_to_remove = len(all_book_links) - max_books
-                        all_book_links = all_book_links[:max_books]
-                        job["books_found"] -= amount_to_remove
-                        break
-
-                    page_num += 1
-                    await asyncio.sleep(random.uniform(1, 2))
-
-                print(f"\n[Bulk] Total book links collected for {cat['name']}: {len(all_book_links)}")
-
-                # ── Scrape each book ──
-                for i, book_link in enumerate(all_book_links):
-                    if job["status"] == "stopped":
-                        break
-
-                    book_url = book_link["url"]
-                    if not book_url.startswith("http"):
-                        book_url = BASE_URL + book_url
-
-                    job["current_book"] = book_link.get("title", book_url)[:80]
-                    print(f"\n[Bulk] [{i+1}/{len(all_book_links)}] {job['current_book']}")
-
-                    # Check if already in DB
-                    if _check_url_exists(book_url):
-                        print(f"  → Already in DB, skipping")
-                        job["books_skipped"] += 1
-                        continue
-
-                    # Scrape the book using existing scraper logic
-                    try:
-                        # Use the book title as "search_query" for the DB record
-                        data = await scrape_book(detail_page, query=book_link.get("title", ""), direct_url=book_url)
-                        if data:
-                            # Override URL with the one from category listing (more reliable)
-                            data["url"] = book_url
-                            data["search_query"] = book_link.get("title", "")
-                            data["category"] = cat["name"]
-                            save_to_db(data)
-                            job["books_scraped"] += 1
-                            print(f"  → Saved: {data.get('title', '?')}")
+                        # Check if already in DB
+                        if _check_url_exists(book_url):
+                            print(f"  → Already in DB, skipping")
+                            job["books_skipped"] += 1
                         else:
-                            job["books_failed"] += 1
-                            print(f"  → Failed to scrape")
-                    except Exception as e:
-                        job["books_failed"] += 1
-                        error_msg = f"{book_link.get('title', '?')}: {str(e)[:100]}"
-                        job["errors"].append(error_msg)
-                        print(f"  → Error: {e}")
+                            # Scrape the book
+                            try:
+                                data = await scrape_book(detail_page, query=book_link.get("title", ""), direct_url=book_url)
+                                if data:
+                                    data["url"] = book_url
+                                    data["search_query"] = book_link.get("title", "")
+                                    data["category"] = cat["name"]
+                                    save_to_db(data)
+                                    job["books_scraped"] += 1
+                                    print(f"  → Saved: {data.get('title', '?')}")
+                                else:
+                                    job["books_failed"] += 1
+                                    print(f"  → Failed to scrape")
+                            except Exception as e:
+                                job["books_failed"] += 1
+                                error_msg = f"{book_link.get('title', '?')}: {str(e)[:100]}"
+                                job["errors"].append(error_msg)
+                                print(f"  → Error: {e}")
 
-                    # Random delay between books
-                    delay = random.uniform(3, 6)
-                    print(f"  → Waiting {delay:.1f}s...")
-                    await asyncio.sleep(delay)
+                        job["books_found"] += 1
+                        
+                        if max_books and job["books_scraped"] >= max_books:
+                            break
+
+                        # Random delay between books
+                        delay = random.uniform(3, 6)
+                        print(f"  → Waiting {delay:.1f}s...")
+                        await asyncio.sleep(delay)
+                    
+                    if max_books and job["books_scraped"] >= max_books:
+                        print(f"[Bulk] Reached max_books ({max_books}). Stopping.")
+                        break
+                    
+                    if job["status"] != "stopped":
+                        page_num += 1
+                        update_last_scraped_page(current_cat_key, page_num)
+                    
+                    await asyncio.sleep(random.uniform(1, 2))
 
             await browser.close()
 
