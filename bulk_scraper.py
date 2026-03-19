@@ -376,6 +376,7 @@ async def bulk_scrape(category_key: str, max_books: int | None = None):
                         if _check_url_exists(book_url):
                             print(f"  → Already in DB, skipping")
                             job["books_skipped"] += 1
+                            await asyncio.sleep(0.01)
                         else:
                             # Scrape the book
                             try:
@@ -396,15 +397,15 @@ async def bulk_scrape(category_key: str, max_books: int | None = None):
                                 job["errors"].append(error_msg)
                                 print(f"  → Error: {e}")
 
+                            # Random delay between books
+                            delay = random.uniform(3, 6)
+                            print(f"  → Waiting {delay:.1f}s...")
+                            await asyncio.sleep(delay)
+
                         job["books_found"] += 1
                         
                         if max_books and job["books_scraped"] >= max_books:
                             break
-
-                        # Random delay between books
-                        delay = random.uniform(3, 6)
-                        print(f"  → Waiting {delay:.1f}s...")
-                        await asyncio.sleep(delay)
                     
                     if max_books and job["books_scraped"] >= max_books:
                         print(f"[Bulk] Reached max_books ({max_books}). Stopping.")
