@@ -15,6 +15,11 @@ from scraper import (
 )
 import sqlite3
 import uuid
+
+# Number of Playwright pages scraping book details in parallel.
+# Increase for more speed; decrease if the site starts blocking.
+POOL_SIZE = 3
+
 # ── Category catalogue ─────────────────────────────────────────────────
 CATEGORIES = {
     "novedades": {
@@ -111,6 +116,80 @@ def _check_url_exists(url: str) -> bool:
     exists = cursor.fetchone() is not None
     conn.close()
     return exists
+
+
+def _load_existing_urls() -> set:
+    """Load all book URLs from DB into an in-memory set for O(1) duplicate checks."""
+    conn = db.get_connection()
+    cursor = conn.cursor()
+    db.execute_query(cursor, "SELECT url FROM books")
+    urls = set(row[0] for row in cursor.fetchall())
+    conn.close()
+    print(f"[Bulk] Loaded {len(urls)} existing URLs into cache")
+    return urls
+
+
+async def _scrape_one_book(book_link: dict, page_queue: asyncio.Queue,
+                           cat_name: str, job: dict,
+                           existing_urls: set, max_books: int | None):
+    """
+    Scrape one book using a page borrowed from the pool.
+    Designed to run concurrently via asyncio.gather().
+    """
+    if job["status"] == "stopped":
+        return
+    if max_books and job["books_scraped"] >= max_books:
+        return
+
+    book_url = book_link["url"]
+    if not book_url.startswith("http"):
+        book_url = BASE_URL + book_url
+
+    # Fast in-memory duplicate check
+    if book_url in existing_urls:
+        job["books_skipped"] += 1
+        job["books_found"] += 1
+        return
+
+    # Claim the URL now to prevent parallel workers from double-scraping it
+    existing_urls.add(book_url)
+
+    page = await page_queue.get()
+    try:
+        if job["status"] == "stopped" or (max_books and job["books_scraped"] >= max_books):
+            existing_urls.discard(book_url)
+            return
+
+        job["current_book"] = book_link.get("title", book_url)[:80]
+        print(f"\n[Bulk] Scraping: {job['current_book']}")
+
+        data = await scrape_book(page, query=book_link.get("title", ""), direct_url=book_url)
+        if data:
+            data["url"] = book_url
+            data["search_query"] = book_link.get("title", "")
+            data["category"] = cat_name
+            save_to_db(data)
+            job["books_scraped"] += 1
+            print(f"  → Saved: {data.get('title', '?')}")
+        else:
+            job["books_failed"] += 1
+            existing_urls.discard(book_url)
+            print(f"  → Failed to scrape")
+
+        delay = random.uniform(1, 3)
+        print(f"  → Waiting {delay:.1f}s...")
+        await asyncio.sleep(delay)
+
+    except Exception as e:
+        job["books_failed"] += 1
+        existing_urls.discard(book_url)
+        error_msg = f"{book_link.get('title', '?')}: {str(e)[:100]}"
+        job["errors"].append(error_msg)
+        print(f"  → Error: {e}")
+    finally:
+        await page_queue.put(page)
+
+    job["books_found"] += 1
 
 
 def get_all_books(page: int = 1, per_page: int = 20, search: str = ""):
@@ -296,19 +375,24 @@ async def bulk_scrape(category_key: str, max_books: int | None = None):
                 launch_opts["proxy"] = {"server": PROXY_URL}
             browser = await p.chromium.launch(**launch_opts)
 
+            _headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+                "Accept-Language": "es-ES,es;q=0.9",
+            }
+
             # Page for browsing category listings
             list_page = await browser.new_page()
-            await list_page.set_extra_http_headers({
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-                "Accept-Language": "es-ES,es;q=0.9",
-            })
+            await list_page.set_extra_http_headers(_headers)
 
-            # Page for scraping individual books
-            detail_page = await browser.new_page()
-            await detail_page.set_extra_http_headers({
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-                "Accept-Language": "es-ES,es;q=0.9",
-            })
+            # Pool of pages for parallel book detail scraping
+            page_queue: asyncio.Queue = asyncio.Queue()
+            for _ in range(POOL_SIZE):
+                dp = await browser.new_page()
+                await dp.set_extra_http_headers(_headers)
+                await page_queue.put(dp)
+
+            # Load all existing URLs into memory once — avoids per-book DB queries
+            existing_urls = _load_existing_urls()
 
             for current_cat_key in cat_keys:
                 if job["status"] == "stopped":
@@ -359,54 +443,15 @@ async def bulk_scrape(category_key: str, max_books: int | None = None):
                         break
                     previous_page_urls = current_page_urls
 
-                    print(f"[Bulk] Found {len(links)} book links on page {page_num}")
-                    
-                    # ── Scrape each book on the current page ──
-                    for i, book_link in enumerate(links):
-                        if job["status"] == "stopped":
-                            break
-                        
-                        book_url = book_link["url"]
-                        if not book_url.startswith("http"):
-                            book_url = BASE_URL + book_url
+                    print(f"[Bulk] Found {len(links)} book links on page {page_num} — scraping {POOL_SIZE} in parallel")
 
-                        job["current_book"] = book_link.get("title", book_url)[:80]
-                        print(f"\n[Bulk] P.{page_num} [{i+1}/{len(links)}] {job['current_book']}")
+                    # ── Scrape all books on this page in parallel ──
+                    tasks = [
+                        _scrape_one_book(book_link, page_queue, cat["name"], job, existing_urls, max_books)
+                        for book_link in links
+                    ]
+                    await asyncio.gather(*tasks)
 
-                        if _check_url_exists(book_url):
-                            print(f"  → Already in DB, skipping")
-                            job["books_skipped"] += 1
-                            await asyncio.sleep(0.01)
-                        else:
-                            # Scrape the book
-                            try:
-                                data = await scrape_book(detail_page, query=book_link.get("title", ""), direct_url=book_url)
-                                if data:
-                                    data["url"] = book_url
-                                    data["search_query"] = book_link.get("title", "")
-                                    data["category"] = cat["name"]
-                                    save_to_db(data)
-                                    job["books_scraped"] += 1
-                                    print(f"  → Saved: {data.get('title', '?')}")
-                                else:
-                                    job["books_failed"] += 1
-                                    print(f"  → Failed to scrape")
-                            except Exception as e:
-                                job["books_failed"] += 1
-                                error_msg = f"{book_link.get('title', '?')}: {str(e)[:100]}"
-                                job["errors"].append(error_msg)
-                                print(f"  → Error: {e}")
-
-                            # Random delay between books
-                            delay = random.uniform(3, 6)
-                            print(f"  → Waiting {delay:.1f}s...")
-                            await asyncio.sleep(delay)
-
-                        job["books_found"] += 1
-                        
-                        if max_books and job["books_scraped"] >= max_books:
-                            break
-                    
                     if max_books and job["books_scraped"] >= max_books:
                         print(f"[Bulk] Reached max_books ({max_books}). Stopping.")
                         break
