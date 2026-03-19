@@ -324,6 +324,8 @@ async def bulk_scrape(category_key: str, max_books: int | None = None):
                 page_num = start_page
                 print(f"\n[Bulk] Resuming {cat['name']} from page {page_num}")
 
+                previous_page_urls = []
+
                 while True:
                     if job["status"] == "stopped":
                         break
@@ -350,6 +352,13 @@ async def bulk_scrape(category_key: str, max_books: int | None = None):
                         print(f"[Bulk] No books found on page {page_num}. Ending category.")
                         break
 
+                    # Detect pagination limit: if the site returns exactly the same fallback list instead of an empty page
+                    current_page_urls = [link["url"] for link in links]
+                    if current_page_urls == previous_page_urls:
+                        print(f"[Bulk] Page {page_num} returned the exact same books as the previous page! End of category reached.")
+                        break
+                    previous_page_urls = current_page_urls
+
                     print(f"[Bulk] Found {len(links)} book links on page {page_num}")
                     
                     # ── Scrape each book on the current page ──
@@ -367,8 +376,6 @@ async def bulk_scrape(category_key: str, max_books: int | None = None):
                         if _check_url_exists(book_url):
                             print(f"  → Already in DB, skipping")
                             job["books_skipped"] += 1
-                            # Small delay to yield to the event loop
-                            await asyncio.sleep(0.01)
                         else:
                             # Scrape the book
                             try:
@@ -389,15 +396,15 @@ async def bulk_scrape(category_key: str, max_books: int | None = None):
                                 job["errors"].append(error_msg)
                                 print(f"  → Error: {e}")
 
-                            # Random delay between books only if we actually scraped
-                            delay = random.uniform(3, 6)
-                            print(f"  → Waiting {delay:.1f}s...")
-                            await asyncio.sleep(delay)
-
                         job["books_found"] += 1
                         
                         if max_books and job["books_scraped"] >= max_books:
                             break
+
+                        # Random delay between books
+                        delay = random.uniform(3, 6)
+                        print(f"  → Waiting {delay:.1f}s...")
+                        await asyncio.sleep(delay)
                     
                     if max_books and job["books_scraped"] >= max_books:
                         print(f"[Bulk] Reached max_books ({max_books}). Stopping.")
