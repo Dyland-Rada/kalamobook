@@ -55,7 +55,7 @@ async def startup():
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
 async def read_root(request: Request):
     """Render the web search interface."""
-    return templates.TemplateResponse("index.html", {"request": request})
+    return templates.TemplateResponse(request, "index.html")
 
 
 @app.post("/search", response_class=HTMLResponse, include_in_schema=False)
@@ -65,11 +65,11 @@ async def search_book_html(request: Request, query: str = Form(...)):
     try:
         data = await get_book_data(query)
         if data:
-            return templates.TemplateResponse("index.html", {"request": request, "result": data})
+            return templates.TemplateResponse(request, "index.html", {"result": data})
         else:
-            return templates.TemplateResponse("index.html", {"request": request, "result": {"error": f"No se encontraron resultados para: {query}"}})
+            return templates.TemplateResponse(request, "index.html", {"result": {"error": f"No se encontraron resultados para: {query}"}})
     except Exception as e:
-        return templates.TemplateResponse("index.html", {"request": request, "result": {"error": f"Ocurrió un error: {str(e)}"}})
+        return templates.TemplateResponse(request, "index.html", {"result": {"error": f"Ocurrió un error: {str(e)}"}})
 
 
 # ─── REST API — Single Book Search ───────────────────────────────────
