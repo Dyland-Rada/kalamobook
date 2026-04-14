@@ -11,7 +11,7 @@ from datetime import datetime
 from playwright.async_api import async_playwright
 from scraper import (
     BASE_URL, PROXY_URL, scrape_book, save_to_db, init_db,
-    DB_NAME,
+    DB_NAME, CHROMIUM_ARGS, _setup_page,
 )
 import sqlite3
 import uuid
@@ -372,25 +372,20 @@ async def bulk_scrape(category_key: str, max_books: int | None = None):
 
     try:
         async with async_playwright() as p:
-            launch_opts = {"headless": True}
+            launch_opts = {"headless": True, "args": CHROMIUM_ARGS}
             if PROXY_URL:
                 launch_opts["proxy"] = {"server": PROXY_URL}
             browser = await p.chromium.launch(**launch_opts)
 
-            _headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-                "Accept-Language": "es-ES,es;q=0.9",
-            }
-
             # Page for browsing category listings
             list_page = await browser.new_page()
-            await list_page.set_extra_http_headers(_headers)
+            await _setup_page(list_page)
 
             # Pool of pages for parallel book detail scraping
             page_queue: asyncio.Queue = asyncio.Queue()
             for _ in range(POOL_SIZE):
                 dp = await browser.new_page()
-                await dp.set_extra_http_headers(_headers)
+                await _setup_page(dp)
                 await page_queue.put(dp)
 
             # Load all existing URLs into memory once — avoids per-book DB queries
