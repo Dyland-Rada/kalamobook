@@ -54,6 +54,8 @@ def init_db():
             categoria_1 TEXT,
             categoria_2 TEXT,
             categoria_3 TEXT,
+            categoria_4 TEXT,
+            categoria_5 TEXT,
             {datetime_column}
         )
     ''')
@@ -61,7 +63,7 @@ def init_db():
     conn.commit()
     
     # Apply schema mutation for existing databases
-    for col in ["category", "categoria_1", "categoria_2", "categoria_3"]:
+    for col in ["category", "categoria_1", "categoria_2", "categoria_3", "categoria_4", "categoria_5"]:
         try:
             db.execute_query(cursor, f'ALTER TABLE books ADD COLUMN {col} TEXT')
             conn.commit()
@@ -92,7 +94,8 @@ def check_in_db(search_query):
         SELECT title, author, editorial, isbn, price, original_price, discount,
                description, translator, illustrator, language, pages, reading_time,
                binding, release_date, edition_year, edition_place, collection,
-               height, width, weight, origin, url, image_url, categoria_1, categoria_2, categoria_3
+               height, width, weight, origin, url, image_url,
+               categoria_1, categoria_2, categoria_3, categoria_4, categoria_5
         FROM books WHERE search_query = ?
     '''
     db.execute_query(cursor, query, (search_query,))
@@ -111,8 +114,8 @@ def save_to_db(data):
             discount, description, translator, illustrator, language, pages,
             reading_time, binding, release_date, edition_year, edition_place,
             collection, height, width, weight, origin, url, image_url, category,
-            categoria_1, categoria_2, categoria_3
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            categoria_1, categoria_2, categoria_3, categoria_4, categoria_5
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     '''
     db.execute_query(cursor, query, (
         data.get('search_query', ''),
@@ -144,6 +147,8 @@ def save_to_db(data):
         data.get('categoria_1', ''),
         data.get('categoria_2', ''),
         data.get('categoria_3', ''),
+        data.get('categoria_4', ''),
+        data.get('categoria_5', ''),
     ))
     conn.commit()
     conn.close()
@@ -390,10 +395,10 @@ async def scrape_book(page, query, direct_url=None):
 
         await page.goto(book_url, timeout=60000)
         try:
-            await page.wait_for_load_state('networkidle', timeout=15000)
+            await page.wait_for_load_state('networkidle', timeout=8000)
         except:
             await page.wait_for_load_state('domcontentloaded')
-        await page.wait_for_timeout(3000)  # Extra wait for async price API
+        await page.wait_for_timeout(1500)  # Extra wait for async price API
 
         # Remove cookie overlays via JS so they don't block any subsequent interactions
         try:
@@ -649,72 +654,97 @@ async def scrape_book(page, query, direct_url=None):
         print(f"  Translator: {translator} | Illustrator: {illustrator}")
         print(f"  Collection: {collection} | H:{height} W:{width} Weight:{weight}")
 
-        # ── CATEGORY TAGS ─────────────────────────────────────────────
+        # ── CATEGORY TAGS (hasta 5 niveles: JSON-LD BreadcrumbList) ──────
         tags = []
         try:
             tags = await page.evaluate("""
                 () => {
                     let badges = [];
-                    // Strategy 1: Look for breadcrumbs (usually the most accurate for specific categories like Sociología > Feminismo)
-                    const bc = Array.from(document.querySelectorAll('ol a[href*="/libros/"], [aria-label="Breadcrumb"] a, .breadcrumbs a'));
-                    badges = bc.map(a => a.innerText.trim()).filter(t => t.length > 2 && t.length < 50);
 
-                    // Strategy 2: Badges right under the title (if breadcrumbs failed)
-                    if (badges.length === 0) {
-                        const h1 = document.querySelector('h1');
-                        if (h1) {
-                            let container = h1.parentElement;
-                            for (let i = 0; i < 4 && container; i++) {
-                                const links = Array.from(container.querySelectorAll('a[href*="/libros/"]')).filter(a => {
-                                    const style = window.getComputedStyle(a);
-                                    // Usually badges have a distinct background color, not transparent
-                                    return style.backgroundColor !== 'rgba(0, 0, 0, 0)';
-                                });
-                                if (links.length > 0) {
-                                    badges = links.map(a => a.innerText.trim()).filter(t => t.length > 2 && t.length < 50);
-                                    break;
+                    // Prioridad 1: JSON-LD BreadcrumbList — el método más fiable
+                    // Casa del Libro embede el breadcrumb completo en schema.org
+                    try {
+                        const scripts = document.querySelectorAll('script[type="application/ld+json"]');
+                        for (const s of scripts) {
+                            const d = JSON.parse(s.textContent);
+                            const items = Array.isArray(d) ? d : [d];
+                            for (const item of items) {
+                                if (item['@type'] === 'BreadcrumbList' && item.itemListElement) {
+                                    const names = item.itemListElement
+                                        .map(el => el.name || (el.item && el.item.name) || '')
+                                        .filter(n => n.length > 2 && n.length < 60
+                                                  && n.toLowerCase() !== 'inicio'
+                                                  && n.toLowerCase() !== 'libros');
+                                    if (names.length > 0) return names;
                                 }
-                                container = container.parentElement;
                             }
                         }
+                    } catch(e) {}
+
+                    // Prioridad 2: Breadcrumb nav links del DOM
+                    const bc = Array.from(document.querySelectorAll(
+                        'ol[aria-label] a, nav[aria-label*="breadcrumb" i] a, ' +
+                        '[class*="breadcrumb"] a, ol.breadcrumb a, ' +
+                        'ol a[href*="/libros/"], [aria-label="Breadcrumb"] a'
+                    ));
+                    if (bc.length > 0) {
+                        badges = bc.map(a => a.innerText.trim()).filter(t =>
+                            t.length > 2 && t.length < 60
+                            && t.toLowerCase() !== 'inicio'
+                            && t.toLowerCase() !== 'libros'
+                        );
+                        if (badges.length > 0) return badges;
                     }
 
-                    // Strategy 3: Search within main content strictly avoiding headers/navs
-                    if (badges.length === 0) {
-                        const mainContent = document.querySelector('main, .product-container, #app-content, body');
-                        if (mainContent) {
-                            const badClasses = ['nav', 'header', 'menu', 'footer', 'top'];
-                            const links = Array.from(mainContent.querySelectorAll('a[href*="/libros/"]')).filter(a => {
-                                let p = a.parentElement;
-                                let bad = false;
-                                while(p && p !== document.body) {
-                                    const cn = p.className || '';
-                                    if (typeof cn === 'string' && badClasses.some(c => cn.toLowerCase().includes(c))) {
-                                        bad = true;
-                                        break;
-                                    }
-                                    p = p.parentElement;
-                                }
-                                return !bad;
+                    // Prioridad 3: Links /libros/ cerca del h1 con fondo distinto (badges)
+                    const h1 = document.querySelector('h1');
+                    if (h1) {
+                        let container = h1.parentElement;
+                        for (let i = 0; i < 5 && container; i++) {
+                            const links = Array.from(container.querySelectorAll('a[href*="/libros/"]')).filter(a => {
+                                const style = window.getComputedStyle(a);
+                                return style.backgroundColor !== 'rgba(0, 0, 0, 0)';
                             });
-                            badges = links.map(a => a.innerText.trim()).filter(t => t.length > 2 && t.length < 50);
+                            if (links.length > 0) {
+                                badges = links.map(a => a.innerText.trim()).filter(t => t.length > 2 && t.length < 60);
+                                return badges;
+                            }
+                            container = container.parentElement;
                         }
                     }
+
+                    // Prioridad 4: Cualquier link /libros/ en contenido principal (evitando nav)
+                    const mainContent = document.querySelector('main, [class*="product-container"], #app-content, body');
+                    if (mainContent) {
+                        const badClasses = ['nav', 'header', 'menu', 'footer', 'top'];
+                        const links = Array.from(mainContent.querySelectorAll('a[href*="/libros/"]')).filter(a => {
+                            let p = a.parentElement;
+                            while(p && p !== document.body) {
+                                const cn = p.className || '';
+                                if (typeof cn === 'string' && badClasses.some(c => cn.toLowerCase().includes(c))) return false;
+                                p = p.parentElement;
+                            }
+                            return true;
+                        });
+                        badges = links.map(a => a.innerText.trim()).filter(t => t.length > 2 && t.length < 60);
+                    }
+
                     return [...new Set(badges)];
                 }
             """)
-            
-            # Clean generic terms
+
+            # Limpiar términos genéricos
             ignore_terms = {"libros", "ver más", "inicio", "novedades", "más vendidos", "recomendados", "home"}
             tags = [t for t in tags if t.lower() not in ignore_terms]
         except Exception as e:
             print(f"  Tag extraction error: {e}")
-            pass
-        
+
         categoria_1 = tags[0] if len(tags) > 0 else ""
         categoria_2 = tags[1] if len(tags) > 1 else ""
         categoria_3 = tags[2] if len(tags) > 2 else ""
-        print(f"  Tags: {categoria_1}, {categoria_2}, {categoria_3}")
+        categoria_4 = tags[3] if len(tags) > 3 else ""
+        categoria_5 = tags[4] if len(tags) > 4 else ""
+        print(f"  Tags ({len(tags)}): {' > '.join(tags) if tags else 'ninguno'}")
 
         return {
             'search_query':  query,
@@ -745,6 +775,8 @@ async def scrape_book(page, query, direct_url=None):
             'categoria_1':   categoria_1,
             'categoria_2':   categoria_2,
             'categoria_3':   categoria_3,
+            'categoria_4':   categoria_4,
+            'categoria_5':   categoria_5,
         }
 
     except Exception as e:
@@ -765,7 +797,8 @@ async def process_row(row, page):
             'title', 'author', 'editorial', 'isbn', 'price', 'original_price',
             'discount', 'description', 'translator', 'illustrator', 'language',
             'pages', 'reading_time', 'binding', 'release_date', 'edition_year',
-            'edition_place', 'collection', 'height', 'width', 'weight', 'origin', 'url', 'image_url'
+            'edition_place', 'collection', 'height', 'width', 'weight', 'origin', 'url', 'image_url',
+            'categoria_1', 'categoria_2', 'categoria_3', 'categoria_4', 'categoria_5'
         ]
         result = {'busqueda': query, 'found_in_db': True}
         for i, k in enumerate(keys):
@@ -798,22 +831,37 @@ async def main_async():
 
     results = []
 
+    # Pool de páginas paralelas para modo ISBN (4 workers)
+    SCRAPER_POOL = 4
     async with async_playwright() as p:
         launch_opts = {'headless': True}
         if PROXY_URL:
             launch_opts['proxy'] = {'server': PROXY_URL}
         browser = await p.chromium.launch(**launch_opts)
-        page = await browser.new_page()
-        await page.set_extra_http_headers({
+
+        _headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
             'Accept-Language': 'es-ES,es;q=0.9',
-        })
+        }
+        page_queue: asyncio.Queue = asyncio.Queue()
+        for _ in range(SCRAPER_POOL):
+            pg = await browser.new_page()
+            await pg.set_extra_http_headers(_headers)
+            await page_queue.put(pg)
 
-        for _, row in df.iterrows():
-            result = await process_row(row, page)
-            if result:
-                results.append(result)
-            await asyncio.sleep(random.uniform(2, 4))
+        async def process_row_pooled(row):
+            pg = await page_queue.get()
+            try:
+                result = await process_row(row, pg)
+                await asyncio.sleep(random.uniform(0.5, 1.5))
+                return result
+            finally:
+                await page_queue.put(pg)
+
+        print(f"[ISBN mode] Procesando {len(df)} libros con {SCRAPER_POOL} workers en paralelo...")
+        tasks = [process_row_pooled(row) for _, row in df.iterrows()]
+        raw = await asyncio.gather(*tasks)
+        results = [r for r in raw if r]
 
         await browser.close()
 

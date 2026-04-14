@@ -16,9 +16,9 @@ from scraper import (
 import sqlite3
 import uuid
 
-# Number of Playwright pages scraping book details in parallel.
-# Increase for more speed; decrease if the site starts blocking.
-POOL_SIZE = 3
+# Número de páginas Playwright scrapeando detalles de libros en paralelo.
+# Contabo tiene IP dedicada europea — POOL_SIZE=6 es seguro para casadellibro.com
+POOL_SIZE = 6
 
 # ── Category catalogue ─────────────────────────────────────────────────
 CATEGORIES = {
@@ -176,7 +176,7 @@ async def _scrape_one_book(book_link: dict, page_queue: asyncio.Queue,
             existing_urls.discard(book_url)
             print(f"  → Failed to scrape")
 
-        delay = random.uniform(1, 3)
+        delay = random.uniform(0.5, 1.5)
         print(f"  → Waiting {delay:.1f}s...")
         await asyncio.sleep(delay)
 
@@ -207,7 +207,8 @@ def get_all_books(page: int = 1, per_page: int = 20, search: str = ""):
         )
         total = cursor.fetchone()[0]
         db.execute_query(cursor, 
-            """SELECT id, title, author, editorial, isbn, price, url, image_url, timestamp, category, categoria_1, categoria_2, categoria_3
+            """SELECT id, title, author, editorial, isbn, price, url, image_url, timestamp, category,
+                      categoria_1, categoria_2, categoria_3, categoria_4, categoria_5
                FROM books WHERE title LIKE ? OR author LIKE ? OR isbn LIKE ?
                ORDER BY id DESC LIMIT ? OFFSET ?""",
             (like, like, like, per_page, offset),
@@ -216,7 +217,8 @@ def get_all_books(page: int = 1, per_page: int = 20, search: str = ""):
         db.execute_query(cursor, "SELECT COUNT(*) FROM books")
         total = cursor.fetchone()[0]
         db.execute_query(cursor, 
-            """SELECT id, title, author, editorial, isbn, price, url, image_url, timestamp, category, categoria_1, categoria_2, categoria_3
+            """SELECT id, title, author, editorial, isbn, price, url, image_url, timestamp, category,
+                      categoria_1, categoria_2, categoria_3, categoria_4, categoria_5
                FROM books ORDER BY id DESC LIMIT ? OFFSET ?""",
             (per_page, offset),
         )
@@ -424,7 +426,7 @@ async def bulk_scrape(category_key: str, max_books: int | None = None):
 
                     try:
                         await list_page.goto(page_url, timeout=60000, wait_until="domcontentloaded")
-                        await list_page.wait_for_timeout(3000)
+                        await list_page.wait_for_timeout(1500)
                     except Exception as e:
                         print(f"[Bulk] Error loading page {page_num}: {e}")
                         job["errors"].append(f"Page {page_num}: {str(e)[:100]}")
@@ -460,7 +462,7 @@ async def bulk_scrape(category_key: str, max_books: int | None = None):
                         page_num += 1
                         update_last_scraped_page(current_cat_key, page_num)
                     
-                    await asyncio.sleep(random.uniform(1, 2))
+                    await asyncio.sleep(random.uniform(0.5, 1.0))
 
             await browser.close()
 
