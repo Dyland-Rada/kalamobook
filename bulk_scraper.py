@@ -343,7 +343,11 @@ async def bulk_scrape(category_key: str, max_books: int | None = None):
     job_category_name = ""
 
     if category_key == "all":
-        cat_keys = list(CATEGORIES.keys())
+        # Prioridad: empezar por las categorias con mas titulos populares
+        # Asi la BD tiene libros relevantes rapido antes de pasar a categorias nicho
+        PRIORITY_FIRST = ["mas-vendidos", "recomendados"]
+        remaining = [k for k in CATEGORIES.keys() if k not in PRIORITY_FIRST]
+        cat_keys = PRIORITY_FIRST + remaining
         job_category_name = "TODAS LAS CATEGORÍAS"
     else:
         if category_key not in CATEGORIES:
