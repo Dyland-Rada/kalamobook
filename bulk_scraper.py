@@ -178,7 +178,7 @@ CATEGORIES = {
     },
     "informatica": {
         "name": "💻 Informática",
-        "url": "/libros/informatica/116000000",
+        "url": "/libros/informatica/118000000",
     },
     "programacion": {
         "name": "👨‍💻 Programación",
@@ -204,7 +204,7 @@ CATEGORIES = {
     },
     "medicina": {
         "name": "👨‍⚕️ Medicina",
-        "url": "/libros/medicina/122000000",
+        "url": "/libros/medicina/123000000",
     },
     "deporte": {
         "name": "⚽ Deportes",
@@ -251,7 +251,7 @@ CATEGORIES = {
     # ── Infantil y juvenil ──────────────────────────────────────────────
     "infantil": {
         "name": "🧒 Infantil",
-        "url": "/libros/infantil/120000000",
+        "url": "/libros/infantil/117000000",
     },
     "infantil-0-2": {
         "name": "👶 Infantil 0-2 años",
@@ -271,7 +271,7 @@ CATEGORIES = {
     },
     "juvenil": {
         "name": "🧑 Juvenil",
-        "url": "/libros/juvenil/132000000",
+        "url": "/libros/juvenil/473000000",
     },
     # ── Educación / Referencia ──────────────────────────────────────────
     "educacion": {
@@ -280,7 +280,7 @@ CATEGORIES = {
     },
     "idiomas": {
         "name": "🌐 Idiomas",
-        "url": "/libros/idiomas/117000000",
+        "url": "/libros/idiomas/116000000",
     },
     "ingles": {
         "name": "🇬🇧 Inglés",
@@ -296,16 +296,17 @@ CATEGORIES = {
     },
     "derecho": {
         "name": "⚖️ Derecho",
-        "url": "/libros/derecho/131000000",
+        "url": "/libros/derecho/109000000",
     },
     "geopolitica": {
         "name": "🗺️ Geografía",
         "url": "/libros/geografia/114000000",
     },
     # ── Categorías principales faltantes (de "Todas las temáticas") ─────
+    # URLs verificadas contra el sitio real (discover logs 2026-04-17)
     "ciencias-humanas": {
         "name": "📚 Ciencias Humanas",
-        "url": "/libros/ciencias-humanas/111000000",
+        "url": "/libros/ciencias-humanas/104000000",
     },
     "filologia": {
         "name": "📝 Filología",
@@ -317,35 +318,35 @@ CATEGORIES = {
     },
     "oposiciones": {
         "name": "📋 Oposiciones",
-        "url": "/libros/oposiciones/126000000",
+        "url": "/libros/oposiciones/129000000",
     },
     "literatura-otros-idiomas": {
         "name": "🌍 Literatura en otros idiomas",
-        "url": "/libros/literatura-en-otros-idiomas/129000000",
+        "url": "/libros/literatura-en-otros-idiomas/124000000",
     },
     "comics-manga-infantil": {
         "name": "💥 Cómics y manga infantil y juvenil",
-        "url": "/libros/comics-y-manga-infantil-y-juvenil/134000000",
+        "url": "/libros/comics-y-manga-infantil-y-juvenil/412000000",
     },
     "libros-texto-formacion": {
         "name": "📖 Libros de Texto y Formación",
-        "url": "/libros/libros-de-texto-y-formacion/135000000",
+        "url": "/libros/libros-de-texto-y-formacion/132000000",
     },
     "guias-viaje": {
         "name": "✈️ Guías de viaje",
-        "url": "/libros/guias-de-viaje/136000000",
+        "url": "/libros/guias-de-viaje/114000000",
     },
     "ocio-deporte": {
         "name": "🏃 Ocio y deporte",
-        "url": "/libros/ocio-y-deporte/137000000",
+        "url": "/libros/ocio-y-deporte/108000000",
     },
     "psicologia-pedagogia": {
         "name": "🧠 Psicología y Pedagogía",
-        "url": "/libros/psicologia-y-pedagogia/125000000",
+        "url": "/libros/psicologia-y-pedagogia/130000000",
     },
     "salud-dietas": {
         "name": "🥗 Salud y Dietas",
-        "url": "/libros/salud-y-dietas/138000000",
+        "url": "/libros/salud-y-dietas/131000000",
     },
 }
 
@@ -703,53 +704,37 @@ async def discover_categories() -> list[dict]:
                 discovered = raw
                 print(f"[Discover] Found {len(discovered)} categories from the site")
 
-                # Build a full-path-to-key map from existing CATEGORIES for matching.
-                # Use the full path (excluding numeric code) to avoid matching
-                # subcategories to parent categories.
-                # e.g. "/libros/literatura/novela-contemporanea" -> ["novela-contemporanea"]
-                #      "/libros/literatura" -> ["literatura"]
-                path_to_keys: dict[str, list[str]] = {}
-                for key, val in CATEGORIES.items():
-                    # Strip the trailing numeric code to get the semantic path
-                    # /libros/informatica/116000000 -> "libros/informatica"
+                # Only ADD truly new categories. Never modify existing subcategory URLs.
+                # The discover only knows top-level category URLs (e.g. /libros/literatura/121000000)
+                # but our CATEGORIES dict has intentional subcategory URLs
+                # (e.g. /libros/literatura/novela-negra/121014000) that must NOT be overwritten.
+                existing_slugs = set()
+                for val in CATEGORIES.values():
+                    # Extract the base slug: /libros/informatica/116000000 -> "informatica"
+                    # /libros/literatura/novela-negra/121014000 -> "literatura"
                     parts = val["url"].strip("/").split("/")
-                    # Remove last part if it's a numeric code
-                    if parts and parts[-1].isdigit():
-                        parts = parts[:-1]
-                    full_path = "/".join(parts)
-                    path_to_keys.setdefault(full_path, []).append(key)
+                    if len(parts) >= 2:
+                        existing_slugs.add(parts[1])  # top-level slug
 
                 new_count = 0
-                updated_count = 0
                 for cat in discovered:
                     disc_parts = cat["url"].strip("/").split("/")
-                    if disc_parts and disc_parts[-1].isdigit():
-                        disc_parts = disc_parts[:-1]
-                    disc_path = "/".join(disc_parts)
                     disc_slug = disc_parts[1] if len(disc_parts) >= 2 else ""
 
-                    if disc_path in path_to_keys:
-                        # Exact path match — update URL only for categories at same depth
-                        for existing_key in path_to_keys[disc_path]:
-                            if CATEGORIES[existing_key]["url"] != cat["url"]:
-                                old_url = CATEGORIES[existing_key]["url"]
-                                CATEGORIES[existing_key]["url"] = cat["url"]
-                                updated_count += 1
-                                print(f"[Discover] URL update: {existing_key}: {old_url} → {cat['url']}")
-                    else:
-                        # Truly new category — add it
+                    if disc_slug not in existing_slugs:
+                        # Truly new top-level category — add it
                         key = f"auto-{disc_slug}"
-                        if key in CATEGORIES:
-                            key = f"auto-{'-'.join(disc_parts[1:])}"
                         CATEGORIES[key] = {
                             "name": f"🔍 {cat['name']}",
                             "url": cat["url"],
                         }
-                        path_to_keys.setdefault(disc_path, []).append(key)
+                        existing_slugs.add(disc_slug)
                         new_count += 1
                         print(f"[Discover]   NEW: {cat['name']} → {cat['url']} ({cat['book_count']} libros)")
+                    else:
+                        print(f"[Discover]   OK: {cat['name']} (already covered by existing categories)")
 
-                print(f"[Discover] Result: {new_count} new, {updated_count} URLs updated, {len(discovered)} total from site")
+                print(f"[Discover] Result: {new_count} new categories added, {len(discovered)} total from site")
 
             else:
                 print("[Discover] No categories found on page")
