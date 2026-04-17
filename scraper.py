@@ -152,53 +152,45 @@ def check_in_db(search_query):
 
 
 def save_to_db(data):
-    """Save scraped data to the database."""
+    """Save scraped data to the database, ignoring duplicate ISBNs gracefully."""
     conn = db.get_connection()
     cursor = conn.cursor()
-    query = '''
-        INSERT INTO books (
-            search_query, title, author, editorial, isbn, price, original_price,
-            discount, description, translator, illustrator, language, pages,
-            reading_time, binding, release_date, edition_year, edition_place,
-            collection, height, width, weight, origin, url, image_url, category,
-            categoria_1, categoria_2, categoria_3, categoria_4, categoria_5
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    '''
-    db.execute_query(cursor, query, (
-        data.get('search_query', ''),
-        data.get('title', ''),
-        data.get('author', ''),
-        data.get('editorial', ''),
-        data.get('isbn', ''),
-        data.get('price', ''),
-        data.get('original_price', ''),
-        data.get('discount', ''),
-        data.get('description', ''),
-        data.get('translator', ''),
-        data.get('illustrator', ''),
-        data.get('language', ''),
-        data.get('pages', ''),
-        data.get('reading_time', ''),
-        data.get('binding', ''),
-        data.get('release_date', ''),
-        data.get('edition_year', ''),
-        data.get('edition_place', ''),
-        data.get('collection', ''),
-        data.get('height', ''),
-        data.get('width', ''),
-        data.get('weight', ''),
-        data.get('origin', ''),
-        data.get('url', ''),
-        data.get('image_url', ''),
-        data.get('category', ''),
-        data.get('categoria_1', ''),
-        data.get('categoria_2', ''),
-        data.get('categoria_3', ''),
-        data.get('categoria_4', ''),
-        data.get('categoria_5', ''),
-    ))
-    conn.commit()
-    conn.close()
+
+    fields = (
+        'search_query', 'title', 'author', 'editorial', 'isbn', 'price',
+        'original_price', 'discount', 'description', 'translator', 'illustrator',
+        'language', 'pages', 'reading_time', 'binding', 'release_date',
+        'edition_year', 'edition_place', 'collection', 'height', 'width', 'weight',
+        'origin', 'url', 'image_url', 'category',
+        'categoria_1', 'categoria_2', 'categoria_3', 'categoria_4', 'categoria_5'
+    )
+    values = tuple(data.get(f, '') for f in fields)
+    placeholders = ', '.join(['?'] * len(fields))
+    col_list = ', '.join(fields)
+
+    if db.IS_POSTGRES:
+        # ON CONFLICT DO NOTHING respects the unique index on isbn (where isbn IS NOT NULL)
+        # and also avoids crashing on exact URL duplicates.
+        query = f'''
+            INSERT INTO books ({col_list})
+            VALUES ({placeholders})
+            ON CONFLICT DO NOTHING
+        '''
+    else:
+        # SQLite: INSERT OR IGNORE skips the row silently on any constraint violation
+        query = f'''
+            INSERT OR IGNORE INTO books ({col_list})
+            VALUES ({placeholders})
+        '''
+
+    try:
+        db.execute_query(cursor, query, values)
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(f"  [DB] Insert skipped or failed: {e}")
+    finally:
+        conn.close()
 
 
 async def get_book_data(query):

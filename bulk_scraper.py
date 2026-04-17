@@ -5,6 +5,7 @@ Runs as a background task, reports progress, supports stop/resume.
 
 import asyncio
 import db
+import os
 import random
 import re
 from datetime import datetime
@@ -17,11 +18,21 @@ import sqlite3
 import uuid
 
 # Número de páginas Playwright scrapeando detalles de libros en paralelo.
-# Contabo tiene IP dedicada europea — POOL_SIZE=6 es seguro para casadellibro.com
-POOL_SIZE = 6
+# Configurable via variable de entorno BULK_POOL_SIZE (ej: en EasyPanel).
+# Aumentar = más velocidad; disminuir si el sitio empieza a bloquear.
+POOL_SIZE = int(os.environ.get("BULK_POOL_SIZE", "6"))
+
+# Límite de páginas que se procesan por categoría en un job "all".
+# Evita que una categoría muy profunda monopolice todo el job.
+# 0 = sin límite (recomendado cuando se corre una categoría individual).
+# Configurable via PAGES_PER_CATEGORY en EasyPanel.
+# 0 = sin límite: scrapea TODAS las páginas de TODAS las categorías.
+# Cambiar via variable de entorno PAGES_PER_CATEGORY si se quiere acotar.
+PAGES_PER_CATEGORY = int(os.environ.get("PAGES_PER_CATEGORY", "0"))
 
 # ── Category catalogue ─────────────────────────────────────────────────
 CATEGORIES = {
+    # ── Listas editoriales ──────────────────────────────────────────────
     "novedades": {
         "name": "📚 Novedades",
         "url": "/novedades-libros",
@@ -34,9 +45,34 @@ CATEGORIES = {
         "name": "⭐ Recomendados",
         "url": "/libros-recomendados",
     },
+    # ── Literatura ──────────────────────────────────────────────────────
+    "literatura": {
+        "name": "📖 Literatura (general)",
+        "url": "/libros/literatura/121000000",
+    },
     "novela-contemporanea": {
         "name": "📖 Novela contemporánea",
         "url": "/libros/literatura/novela-contemporanea/121016000",
+    },
+    "narrativa-espanola": {
+        "name": "🇪🇸 Narrativa española",
+        "url": "/libros/literatura/novela-contemporanea/narrativa-espanola/121016003",
+    },
+    "narrativa-hispanoamericana": {
+        "name": "🌎 Narrativa hispanoamericana",
+        "url": "/libros/literatura/novela-contemporanea/narrativa-hispanoamericana/121016007",
+    },
+    "narrativa-anglosajona": {
+        "name": "🇬🇧 Narrativa anglosajona",
+        "url": "/libros/literatura/novela-contemporanea/narrativa-anglosajona/121016001",
+    },
+    "narrativa-italiana": {
+        "name": "🇮🇹 Narrativa italiana",
+        "url": "/libros/literatura/novela-contemporanea/narrativa-italiana/121016005",
+    },
+    "narrativa-francesa": {
+        "name": "🇫🇷 Narrativa francesa",
+        "url": "/libros/literatura/novela-contemporanea/narrativa-francesa/121016004",
     },
     "novela-negra": {
         "name": "🔪 Novela negra",
@@ -70,6 +106,23 @@ CATEGORIES = {
         "name": "✒️ Poesía",
         "url": "/libros/literatura/poesia/121006000",
     },
+    "teatro": {
+        "name": "🎭 Teatro",
+        "url": "/libros/literatura/teatro/121007000",
+    },
+    "cuentos-relatos": {
+        "name": "📝 Cuentos y relatos",
+        "url": "/libros/literatura/cuentos-y-relatos/121003000",
+    },
+    "humor": {
+        "name": "😂 Humor",
+        "url": "/libros/literatura/humor/121005000",
+    },
+    "novela-aventura": {
+        "name": "⚔️ Novela de aventuras",
+        "url": "/libros/literatura/novela-de-aventuras/121011000",
+    },
+    # ── No ficción / Humanidades ────────────────────────────────────────
     "autoayuda": {
         "name": "🌱 Autoayuda y espiritualidad",
         "url": "/libros/autoayuda-y-espiritualidad/102000000",
@@ -78,29 +131,176 @@ CATEGORIES = {
         "name": "🏛️ Historia",
         "url": "/libros/historia/115000000",
     },
+    "historia-espana": {
+        "name": "🏛️ Historia de España",
+        "url": "/libros/historia/historia-de-espana/115002000",
+    },
+    "historia-universal": {
+        "name": "🌍 Historia universal",
+        "url": "/libros/historia/historia-universal/115003000",
+    },
+    "biografia": {
+        "name": "👤 Biografías y memorias",
+        "url": "/libros/biografia/104000000",
+    },
+    "filosofia": {
+        "name": "🧠 Filosofía",
+        "url": "/libros/filosofia/112000000",
+    },
+    "religion": {
+        "name": "✝️ Religión",
+        "url": "/libros/religion/128000000",
+    },
+    "politica": {
+        "name": "🏛️ Política y sociedad",
+        "url": "/libros/politica-y-sociedad/127000000",
+    },
+    "psicologia": {
+        "name": "🧩 Psicología",
+        "url": "/libros/psicologia/125000000",
+    },
+    # ── Ciencias y tecnología ───────────────────────────────────────────
     "ciencias": {
         "name": "🔬 Ciencias y tecnología",
         "url": "/libros/ciencias/103000000",
     },
+    "matematicas": {
+        "name": "📐 Matemáticas",
+        "url": "/libros/ciencias/matematicas/103008000",
+    },
+    "fisica": {
+        "name": "⚛️ Física",
+        "url": "/libros/ciencias/fisica/103006000",
+    },
+    "biologia": {
+        "name": "🧬 Biología",
+        "url": "/libros/ciencias/biologia/103002000",
+    },
+    "informatica": {
+        "name": "💻 Informática",
+        "url": "/libros/informatica/116000000",
+    },
+    "programacion": {
+        "name": "👨‍💻 Programación",
+        "url": "/libros/informatica/programacion/116008000",
+    },
+    # ── Economía y empresa ──────────────────────────────────────────────
     "economia": {
         "name": "📊 Economía y Empresa",
         "url": "/libros/economia-y-empresa/110000000",
     },
+    "management": {
+        "name": "📈 Management y liderazgo",
+        "url": "/libros/economia-y-empresa/management-y-liderazgo/110004000",
+    },
+    "marketing": {
+        "name": "📣 Marketing",
+        "url": "/libros/economia-y-empresa/marketing-y-comunicacion/110005000",
+    },
+    # ── Salud y deporte ─────────────────────────────────────────────────
+    "salud": {
+        "name": "🏥 Salud",
+        "url": "/libros/salud/130000000",
+    },
+    "medicina": {
+        "name": "👨‍⚕️ Medicina",
+        "url": "/libros/medicina/122000000",
+    },
+    "deporte": {
+        "name": "⚽ Deportes",
+        "url": "/libros/deportes/108000000",
+    },
+    # ── Arte y cultura ──────────────────────────────────────────────────
+    "arte": {
+        "name": "🎨 Arte",
+        "url": "/libros/arte/101000000",
+    },
+    "arquitectura": {
+        "name": "🏗️ Arquitectura y diseño",
+        "url": "/libros/arquitectura-y-diseno/100000000",
+    },
+    "musica": {
+        "name": "🎵 Música",
+        "url": "/libros/musica/123000000",
+    },
+    "fotografia": {
+        "name": "📷 Fotografía",
+        "url": "/libros/fotografia/113000000",
+    },
+    "cine": {
+        "name": "🎬 Cine y medios",
+        "url": "/libros/cine-y-medios/105000000",
+    },
+    # ── Hogar y ocio ────────────────────────────────────────────────────
     "cocina": {
         "name": "🍳 Cocina",
         "url": "/libros/cocina/106000000",
     },
+    "viajes": {
+        "name": "✈️ Viajes",
+        "url": "/libros/viajes/133000000",
+    },
+    "naturaleza": {
+        "name": "🌿 Naturaleza",
+        "url": "/libros/naturaleza/124000000",
+    },
+    "manualidades": {
+        "name": "✂️ Manualidades y hobbies",
+        "url": "/libros/manualidades-y-hobbies/118000000",
+    },
+    # ── Infantil y juvenil ──────────────────────────────────────────────
     "infantil": {
         "name": "🧒 Infantil",
         "url": "/libros/infantil/120000000",
     },
-    "narrativa-hispanoamericana": {
-        "name": "🌎 Narrativa hispanoamericana",
-        "url": "/libros/literatura/novela-contemporanea/narrativa-hispanoamericana/121016007",
+    "infantil-0-2": {
+        "name": "👶 Infantil 0-2 años",
+        "url": "/libros/infantil/de-0-a-2-anos/120001000",
     },
-    "narrativa-espanola": {
-        "name": "🇪🇸 Narrativa española",
-        "url": "/libros/literatura/novela-contemporanea/narrativa-espanola/121016003",
+    "infantil-3-5": {
+        "name": "🧸 Infantil 3-5 años",
+        "url": "/libros/infantil/de-3-a-5-anos/120002000",
+    },
+    "infantil-6-9": {
+        "name": "📚 Infantil 6-9 años",
+        "url": "/libros/infantil/de-6-a-9-anos/120003000",
+    },
+    "infantil-10-12": {
+        "name": "📗 Infantil 10-12 años",
+        "url": "/libros/infantil/de-10-a-12-anos/120004000",
+    },
+    "juvenil": {
+        "name": "🧑 Juvenil",
+        "url": "/libros/juvenil/132000000",
+    },
+    # ── Educación / Referencia ──────────────────────────────────────────
+    "educacion": {
+        "name": "🎓 Educación",
+        "url": "/libros/educacion/109000000",
+    },
+    "idiomas": {
+        "name": "🌐 Idiomas",
+        "url": "/libros/idiomas/117000000",
+    },
+    "ingles": {
+        "name": "🇬🇧 Inglés",
+        "url": "/libros/idiomas/ingles/117001000",
+    },
+    "comics": {
+        "name": "💥 Cómics y manga",
+        "url": "/libros/comics-y-manga/107000000",
+    },
+    "manga": {
+        "name": "🇯🇵 Manga",
+        "url": "/libros/comics-y-manga/manga/107002000",
+    },
+    "derecho": {
+        "name": "⚖️ Derecho",
+        "url": "/libros/derecho/131000000",
+    },
+    "geopolitica": {
+        "name": "🗺️ Geografía",
+        "url": "/libros/geografia/114000000",
     },
 }
 
@@ -345,15 +545,19 @@ async def bulk_scrape(category_key: str, max_books: int | None = None):
     if category_key == "all":
         # Prioridad: empezar por las categorias con mas titulos populares
         # Asi la BD tiene libros relevantes rapido antes de pasar a categorias nicho
-        PRIORITY_FIRST = ["mas-vendidos", "recomendados"]
+        PRIORITY_FIRST = ["mas-vendidos", "recomendados", "novedades"]
         remaining = [k for k in CATEGORIES.keys() if k not in PRIORITY_FIRST]
         cat_keys = PRIORITY_FIRST + remaining
         job_category_name = "TODAS LAS CATEGORÍAS"
+        # 0 = sin límite: scrapea absolutamente todas las páginas de cada categoría
+        pages_cap = PAGES_PER_CATEGORY  # 0 = ilimitado
     else:
         if category_key not in CATEGORIES:
             return None
         cat_keys = [category_key]
         job_category_name = CATEGORIES[category_key]["name"]
+        # Sin limite cuando se scrape una categoria individual
+        pages_cap = PAGES_PER_CATEGORY  # 0 = ilimitado
 
     init_db()
 
@@ -456,11 +660,17 @@ async def bulk_scrape(category_key: str, max_books: int | None = None):
                     if max_books and job["books_scraped"] >= max_books:
                         print(f"[Bulk] Reached max_books ({max_books}). Stopping.")
                         break
-                    
+
+                    # Limite de paginas por categoria (modo 'all')
+                    pages_done_this_run = page_num - start_page + 1
+                    if pages_cap > 0 and pages_done_this_run >= pages_cap:
+                        print(f"[Bulk] Limite de {pages_cap} pags/categoria alcanzado en {cat['name']}. Continuara en el proximo job.")
+                        break
+
                     if job["status"] != "stopped":
                         page_num += 1
                         update_last_scraped_page(current_cat_key, page_num)
-                    
+
                     await asyncio.sleep(random.uniform(0.5, 1.0))
 
             await browser.close()
