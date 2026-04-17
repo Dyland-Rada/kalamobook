@@ -703,36 +703,42 @@ async def discover_categories() -> list[dict]:
                 discovered = raw
                 print(f"[Discover] Found {len(discovered)} categories from the site")
 
-                # Update CATEGORIES with newly discovered ones
-                existing_urls = {v["url"] for v in CATEGORIES.values()}
+                # Build a slug-to-key map from existing CATEGORIES for matching
+                # e.g. "informatica" -> "informatica", "comics-y-manga" -> "comics"
+                slug_to_keys: dict[str, list[str]] = {}
+                for key, val in CATEGORIES.items():
+                    # Extract slug from URL: /libros/informatica/116000000 -> "informatica"
+                    parts = val["url"].strip("/").split("/")
+                    if len(parts) >= 2:
+                        slug = parts[1]  # first path segment after /libros/
+                        slug_to_keys.setdefault(slug, []).append(key)
+
                 new_count = 0
+                updated_count = 0
                 for cat in discovered:
-                    if cat["url"] not in existing_urls:
-                        # Generate a key from the URL slug
-                        slug = cat["url"].split("/libros/")[-1].split("/")[0]
-                        key = f"auto-{slug}"
+                    disc_parts = cat["url"].strip("/").split("/")
+                    disc_slug = disc_parts[1] if len(disc_parts) >= 2 else ""
+
+                    if disc_slug in slug_to_keys:
+                        # Category exists — update URL if the site has a different code
+                        for existing_key in slug_to_keys[disc_slug]:
+                            if CATEGORIES[existing_key]["url"] != cat["url"]:
+                                old_url = CATEGORIES[existing_key]["url"]
+                                CATEGORIES[existing_key]["url"] = cat["url"]
+                                updated_count += 1
+                                print(f"[Discover] URL update: {existing_key}: {old_url} → {cat['url']}")
+                    else:
+                        # Truly new category — add it
+                        key = f"auto-{disc_slug}"
                         CATEGORIES[key] = {
                             "name": f"🔍 {cat['name']}",
                             "url": cat["url"],
                         }
+                        slug_to_keys.setdefault(disc_slug, []).append(key)
                         new_count += 1
                         print(f"[Discover]   NEW: {cat['name']} → {cat['url']} ({cat['book_count']} libros)")
 
-                if new_count > 0:
-                    print(f"[Discover] Added {new_count} new categories to CATEGORIES dict")
-                else:
-                    print(f"[Discover] All {len(discovered)} categories already known")
-
-                # Also fix URLs for existing categories if the site returns different paths
-                for cat in discovered:
-                    for key, val in CATEGORIES.items():
-                        # Match by name similarity
-                        if (val["name"].lower().replace("📚", "").replace("🔬", "").replace("📖", "")
-                                .replace("🧠", "").replace("🏛️", "").replace("🌍", "").strip().lower()
-                                == cat["name"].lower()):
-                            if val["url"] != cat["url"]:
-                                print(f"[Discover] URL fix: {key}: {val['url']} → {cat['url']}")
-                                CATEGORIES[key]["url"] = cat["url"]
+                print(f"[Discover] Result: {new_count} new, {updated_count} URLs updated, {len(discovered)} total from site")
 
             else:
                 print("[Discover] No categories found on page")
@@ -756,13 +762,6 @@ async def bulk_scrape(category_key: str, max_books: int | None = None):
     job_category_name = ""
 
     if category_key == "all":
-        # Descubrir categorías dinámicamente del sitio antes de empezar
-        try:
-            print("[Bulk] Discovering categories from site before starting...")
-            await discover_categories()
-        except Exception as e:
-            print(f"[Bulk] Category discovery failed (using hardcoded): {e}")
-
         # Prioridad: empezar por las categorias con mas titulos populares
         # Asi la BD tiene libros relevantes rapido antes de pasar a categorias nicho
         PRIORITY_FIRST = ["mas-vendidos", "recomendados", "novedades"]

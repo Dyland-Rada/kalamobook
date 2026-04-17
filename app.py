@@ -141,6 +141,13 @@ async def start_bulk_scrape(
     max_books: int = Query(None, description="Máximo de libros a scrapear (None = todos)", ge=1),
 ):
     """Inicia un job de scraping masivo en background."""
+    # Si es modo "all", descubrir categorías del sitio antes de empezar
+    if category == "all":
+        try:
+            await discover_categories()
+        except Exception as e:
+            print(f"[API] Category discovery failed (using hardcoded): {e}")
+
     cats = {c["key"] for c in get_categories()}
     if category not in cats:
         return JSONResponse(status_code=400, content={"status": "error", "message": f"Categoría '{category}' no encontrada."})
@@ -162,7 +169,7 @@ async def start_bulk_scrape(
     t.start()
 
     # Wait briefly for the job_id to be created
-    await asyncio.sleep(0.5)
+    await asyncio.sleep(2)
 
     # Find the job that was just created
     from bulk_scraper import active_jobs
