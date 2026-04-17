@@ -703,25 +703,34 @@ async def discover_categories() -> list[dict]:
                 discovered = raw
                 print(f"[Discover] Found {len(discovered)} categories from the site")
 
-                # Build a slug-to-key map from existing CATEGORIES for matching
-                # e.g. "informatica" -> "informatica", "comics-y-manga" -> "comics"
-                slug_to_keys: dict[str, list[str]] = {}
+                # Build a full-path-to-key map from existing CATEGORIES for matching.
+                # Use the full path (excluding numeric code) to avoid matching
+                # subcategories to parent categories.
+                # e.g. "/libros/literatura/novela-contemporanea" -> ["novela-contemporanea"]
+                #      "/libros/literatura" -> ["literatura"]
+                path_to_keys: dict[str, list[str]] = {}
                 for key, val in CATEGORIES.items():
-                    # Extract slug from URL: /libros/informatica/116000000 -> "informatica"
+                    # Strip the trailing numeric code to get the semantic path
+                    # /libros/informatica/116000000 -> "libros/informatica"
                     parts = val["url"].strip("/").split("/")
-                    if len(parts) >= 2:
-                        slug = parts[1]  # first path segment after /libros/
-                        slug_to_keys.setdefault(slug, []).append(key)
+                    # Remove last part if it's a numeric code
+                    if parts and parts[-1].isdigit():
+                        parts = parts[:-1]
+                    full_path = "/".join(parts)
+                    path_to_keys.setdefault(full_path, []).append(key)
 
                 new_count = 0
                 updated_count = 0
                 for cat in discovered:
                     disc_parts = cat["url"].strip("/").split("/")
+                    if disc_parts and disc_parts[-1].isdigit():
+                        disc_parts = disc_parts[:-1]
+                    disc_path = "/".join(disc_parts)
                     disc_slug = disc_parts[1] if len(disc_parts) >= 2 else ""
 
-                    if disc_slug in slug_to_keys:
-                        # Category exists — update URL if the site has a different code
-                        for existing_key in slug_to_keys[disc_slug]:
+                    if disc_path in path_to_keys:
+                        # Exact path match — update URL only for categories at same depth
+                        for existing_key in path_to_keys[disc_path]:
                             if CATEGORIES[existing_key]["url"] != cat["url"]:
                                 old_url = CATEGORIES[existing_key]["url"]
                                 CATEGORIES[existing_key]["url"] = cat["url"]
@@ -730,11 +739,13 @@ async def discover_categories() -> list[dict]:
                     else:
                         # Truly new category — add it
                         key = f"auto-{disc_slug}"
+                        if key in CATEGORIES:
+                            key = f"auto-{'-'.join(disc_parts[1:])}"
                         CATEGORIES[key] = {
                             "name": f"🔍 {cat['name']}",
                             "url": cat["url"],
                         }
-                        slug_to_keys.setdefault(disc_slug, []).append(key)
+                        path_to_keys.setdefault(disc_path, []).append(key)
                         new_count += 1
                         print(f"[Discover]   NEW: {cat['name']} → {cat['url']} ({cat['book_count']} libros)")
 
