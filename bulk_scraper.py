@@ -302,6 +302,51 @@ CATEGORIES = {
         "name": "🗺️ Geografía",
         "url": "/libros/geografia/114000000",
     },
+    # ── Categorías principales faltantes (de "Todas las temáticas") ─────
+    "ciencias-humanas": {
+        "name": "📚 Ciencias Humanas",
+        "url": "/libros/ciencias-humanas/111000000",
+    },
+    "filologia": {
+        "name": "📝 Filología",
+        "url": "/libros/filologia/112000000",
+    },
+    "ingenieria": {
+        "name": "🔧 Ingeniería",
+        "url": "/libros/ingenieria/119000000",
+    },
+    "oposiciones": {
+        "name": "📋 Oposiciones",
+        "url": "/libros/oposiciones/126000000",
+    },
+    "literatura-otros-idiomas": {
+        "name": "🌍 Literatura en otros idiomas",
+        "url": "/libros/literatura-en-otros-idiomas/129000000",
+    },
+    "comics-manga-infantil": {
+        "name": "💥 Cómics y manga infantil y juvenil",
+        "url": "/libros/comics-y-manga-infantil-y-juvenil/134000000",
+    },
+    "libros-texto-formacion": {
+        "name": "📖 Libros de Texto y Formación",
+        "url": "/libros/libros-de-texto-y-formacion/135000000",
+    },
+    "guias-viaje": {
+        "name": "✈️ Guías de viaje",
+        "url": "/libros/guias-de-viaje/136000000",
+    },
+    "ocio-deporte": {
+        "name": "🏃 Ocio y deporte",
+        "url": "/libros/ocio-y-deporte/137000000",
+    },
+    "psicologia-pedagogia": {
+        "name": "🧠 Psicología y Pedagogía",
+        "url": "/libros/psicologia-y-pedagogia/125000000",
+    },
+    "salud-dietas": {
+        "name": "🥗 Salud y Dietas",
+        "url": "/libros/salud-y-dietas/138000000",
+    },
 }
 
 # ── Active jobs state ──────────────────────────────────────────────────
@@ -530,6 +575,174 @@ async def _extract_book_links(page) -> list[dict]:
     return links or []
 
 
+async def _extract_max_page(page) -> int | None:
+    """
+    Extract the maximum page number from the paginator on a category listing page.
+    Looks for pagination links/buttons with numeric text (e.g. 1, 2, ... 71825).
+    Returns the highest page number found, or None if no paginator detected.
+    """
+    max_page = await page.evaluate("""
+        () => {
+            let maxNum = 0;
+
+            // Strategy 1: Look for pagination links with numeric text
+            const paginationSelectors = [
+                'nav[aria-label*="paginat"] a',
+                'nav[aria-label*="Paginat"] a',
+                '.pagination a',
+                '.pager a',
+                '[class*="pagination"] a',
+                '[class*="Pagination"] a',
+                '[class*="pager"] a',
+                'ul.pagination li a',
+                'a[href*="page="]',
+            ];
+
+            for (const sel of paginationSelectors) {
+                document.querySelectorAll(sel).forEach(el => {
+                    const text = el.innerText.trim();
+                    const num = parseInt(text, 10);
+                    if (!isNaN(num) && num > maxNum) {
+                        maxNum = num;
+                    }
+                });
+            }
+
+            // Strategy 2: Look for "last page" buttons with page number in href
+            document.querySelectorAll('a[href*="page="]').forEach(a => {
+                const match = a.getAttribute('href').match(/page=(\\d+)/);
+                if (match) {
+                    const num = parseInt(match[1], 10);
+                    if (num > maxNum) maxNum = num;
+                }
+            });
+
+            // Strategy 3: Look for text patterns like "de 71825" or "/ 71825"
+            const body = document.body.innerText;
+            const patterns = [
+                /de\\s+(\\d{2,})\\s*p[áa]gina/i,
+                /p[áa]gina\\s+\\d+\\s+de\\s+(\\d+)/i,
+                /(\\d{2,})\\s*p[áa]ginas/i,
+            ];
+            for (const pat of patterns) {
+                const m = body.match(pat);
+                if (m) {
+                    const num = parseInt(m[1], 10);
+                    if (num > maxNum) maxNum = num;
+                }
+            }
+
+            return maxNum > 0 ? maxNum : null;
+        }
+    """)
+    return max_page
+
+
+async def discover_categories() -> list[dict]:
+    """
+    Navigate to casadellibro.com/libros and dynamically discover all categories
+    from the "Todas las temáticas de libros" section.
+    Returns list of {name, url, book_count} dicts.
+    Updates CATEGORIES dict with any newly discovered categories.
+    """
+    discovered = []
+    print("[Discover] Navigating to /libros to discover categories...")
+
+    try:
+        async with async_playwright() as p:
+            launch_opts = {"headless": True, "args": CHROMIUM_ARGS}
+            if PROXY_URL:
+                launch_opts["proxy"] = {"server": PROXY_URL}
+            browser = await p.chromium.launch(**launch_opts)
+            page = await browser.new_page()
+            await _setup_page(page)
+
+            await page.goto(f"{BASE_URL}/libros", timeout=60000, wait_until="domcontentloaded")
+            await page.wait_for_timeout(3000)
+
+            # Extract all category links from the "Todas las temáticas" section
+            raw = await page.evaluate("""
+                () => {
+                    const results = [];
+                    const seen = new Set();
+
+                    // Find all links under the "Todas las temáticas" section
+                    // These are links matching /libros/CATEGORY_NAME/CODE pattern
+                    document.querySelectorAll('a[href]').forEach(a => {
+                        const href = a.getAttribute('href');
+                        if (!href) return;
+
+                        // Match pattern: /libros/category-name/NUMERIC_CODE
+                        const match = href.match(/^\\/libros\\/([\\w-]+)\\/?(\\d{9})?$/);
+                        if (!match) return;
+                        if (seen.has(href)) return;
+                        seen.add(href);
+
+                        const text = a.innerText.trim();
+                        if (!text || text.length < 2) return;
+
+                        // Extract book count from parentheses: "Literatura (280346)"
+                        const countMatch = text.match(/\\((\\d+)\\)/);
+                        const bookCount = countMatch ? parseInt(countMatch[1], 10) : 0;
+                        const name = text.replace(/\\s*\\(\\d+\\)/, '').trim();
+
+                        results.push({
+                            name: name,
+                            url: href,
+                            book_count: bookCount
+                        });
+                    });
+
+                    return results;
+                }
+            """)
+
+            await browser.close()
+
+            if raw:
+                discovered = raw
+                print(f"[Discover] Found {len(discovered)} categories from the site")
+
+                # Update CATEGORIES with newly discovered ones
+                existing_urls = {v["url"] for v in CATEGORIES.values()}
+                new_count = 0
+                for cat in discovered:
+                    if cat["url"] not in existing_urls:
+                        # Generate a key from the URL slug
+                        slug = cat["url"].split("/libros/")[-1].split("/")[0]
+                        key = f"auto-{slug}"
+                        CATEGORIES[key] = {
+                            "name": f"🔍 {cat['name']}",
+                            "url": cat["url"],
+                        }
+                        new_count += 1
+                        print(f"[Discover]   NEW: {cat['name']} → {cat['url']} ({cat['book_count']} libros)")
+
+                if new_count > 0:
+                    print(f"[Discover] Added {new_count} new categories to CATEGORIES dict")
+                else:
+                    print(f"[Discover] All {len(discovered)} categories already known")
+
+                # Also fix URLs for existing categories if the site returns different paths
+                for cat in discovered:
+                    for key, val in CATEGORIES.items():
+                        # Match by name similarity
+                        if (val["name"].lower().replace("📚", "").replace("🔬", "").replace("📖", "")
+                                .replace("🧠", "").replace("🏛️", "").replace("🌍", "").strip().lower()
+                                == cat["name"].lower()):
+                            if val["url"] != cat["url"]:
+                                print(f"[Discover] URL fix: {key}: {val['url']} → {cat['url']}")
+                                CATEGORIES[key]["url"] = cat["url"]
+
+            else:
+                print("[Discover] No categories found on page")
+
+    except Exception as e:
+        print(f"[Discover] Error: {e}")
+
+    return discovered
+
+
 
 
 async def bulk_scrape(category_key: str, max_books: int | None = None):
@@ -543,6 +756,13 @@ async def bulk_scrape(category_key: str, max_books: int | None = None):
     job_category_name = ""
 
     if category_key == "all":
+        # Descubrir categorías dinámicamente del sitio antes de empezar
+        try:
+            print("[Bulk] Discovering categories from site before starting...")
+            await discover_categories()
+        except Exception as e:
+            print(f"[Bulk] Category discovery failed (using hardcoded): {e}")
+
         # Prioridad: empezar por las categorias con mas titulos populares
         # Asi la BD tiene libros relevantes rapido antes de pasar a categorias nicho
         PRIORITY_FIRST = ["mas-vendidos", "recomendados", "novedades"]
@@ -573,6 +793,7 @@ async def bulk_scrape(category_key: str, max_books: int | None = None):
         "books_failed": 0,
         "current_book": "",
         "current_page": 1,
+        "total_pages": None,
         "errors": [],
         "max_books": max_books,
     }
@@ -614,18 +835,24 @@ async def bulk_scrape(category_key: str, max_books: int | None = None):
                 print(f"\n[Bulk] Resuming {cat['name']} from page {page_num}")
 
                 previous_page_urls = []
+                max_page_num = None  # Will be detected from paginator
 
                 while True:
                     if job["status"] == "stopped":
+                        break
+
+                    # Check if we've exceeded the detected max page
+                    if max_page_num and page_num > max_page_num:
+                        print(f"[Bulk] Reached max page {max_page_num} for {cat['name']}. Category complete.")
                         break
 
                     # Build paginated URL
                     sep = "&" if "?" in category_url else "?"
                     page_url = f"{category_url}{sep}page={page_num}" if page_num > 1 else category_url
 
-                    print(f"\n[Bulk] Loading category page {page_num}: {page_url}")
+                    print(f"\n[Bulk] Loading category page {page_num}{f'/{max_page_num}' if max_page_num else ''}: {page_url}")
                     job["current_page"] = page_num
-                    job["current_book"] = f"Cargando página {page_num}..."
+                    job["current_book"] = f"Cargando página {page_num}{f'/{max_page_num}' if max_page_num else ''}..."
 
                     try:
                         await list_page.goto(page_url, timeout=60000, wait_until="domcontentloaded")
@@ -635,8 +862,16 @@ async def bulk_scrape(category_key: str, max_books: int | None = None):
                         job["errors"].append(f"Page {page_num}: {str(e)[:100]}")
                         break
 
+                    # Detect total pages from paginator on first load of this category
+                    if max_page_num is None:
+                        detected = await _extract_max_page(list_page)
+                        if detected and detected > 1:
+                            max_page_num = detected
+                            job["total_pages"] = max_page_num
+                            print(f"[Bulk] Detected {max_page_num} total pages for {cat['name']}")
+
                     links = await _extract_book_links(list_page)
-                    
+
                     if not links:
                         print(f"[Bulk] No books found on page {page_num}. Ending category.")
                         break

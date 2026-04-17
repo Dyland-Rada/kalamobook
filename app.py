@@ -16,6 +16,7 @@ from scraper import get_book_data, init_db
 from bulk_scraper import (
     bulk_scrape, stop_job, get_job_status,
     get_categories, get_all_books, get_books_count,
+    discover_categories,
 )
 
 security = HTTPBasic()
@@ -120,6 +121,18 @@ async def search_book_api(
 async def list_categories():
     """Lista de categorías disponibles para scraping masivo."""
     return JSONResponse(content={"categories": get_categories()})
+
+
+@app.post("/api/v1/bulk/discover-categories", tags=["Scraping Masivo"])
+async def api_discover_categories():
+    """Descubre dinámicamente todas las categorías desde casadellibro.com/libros.
+    Actualiza el catálogo interno con categorías nuevas encontradas."""
+    discovered = await discover_categories()
+    return JSONResponse(content={
+        "discovered": len(discovered),
+        "categories": discovered,
+        "total_registered": len(get_categories()),
+    })
 
 
 @app.post("/api/v1/bulk/start", tags=["Scraping Masivo"])
