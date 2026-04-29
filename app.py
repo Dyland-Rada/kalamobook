@@ -140,14 +140,10 @@ async def start_bulk_scrape(
     category: str = Query(..., description="Key de la categoría a scrapear"),
     max_books: int = Query(None, description="Máximo de libros a scrapear (None = todos)", ge=1),
 ):
-    """Inicia un job de scraping masivo en background."""
-    # Si es modo "all", descubrir categorías del sitio antes de empezar
-    if category == "all":
-        try:
-            await discover_categories()
-        except Exception as e:
-            print(f"[API] Category discovery failed (using hardcoded): {e}")
-
+    """Inicia un job de scraping masivo en background.
+    En modo 'all' se hace round-robin infinito: avanza N páginas en cada categoría
+    por ronda y rota hasta agotar todas. bulk_scrape se encarga de descubrir
+    subcategorías al inicio."""
     cats = {c["key"] for c in get_categories()}
     if category not in cats:
         return JSONResponse(status_code=400, content={"status": "error", "message": f"Categoría '{category}' no encontrada."})

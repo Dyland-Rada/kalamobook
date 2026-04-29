@@ -128,6 +128,20 @@ def init_db():
         )
     ''')
 
+    # Persisted catalogue of categories discovered from the site
+    # parent_key NULL = top-level cat; depth = 1 (top), 2 (sub), 3 (sub-sub)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS discovered_categories (
+            key TEXT PRIMARY KEY,
+            name TEXT,
+            url TEXT,
+            parent_key TEXT,
+            depth INTEGER DEFAULT 1,
+            book_count INTEGER DEFAULT 0,
+            exhausted INTEGER DEFAULT 0
+        )
+    ''')
+
     conn.commit()
     conn.close()
 

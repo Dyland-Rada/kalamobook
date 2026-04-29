@@ -7,28 +7,18 @@ import asyncio
 import db
 import os
 import random
-import re
+import uuid
 from datetime import datetime
 from playwright.async_api import async_playwright
 from scraper import (
     BASE_URL, PROXY_URL, scrape_book, save_to_db, init_db,
-    DB_NAME, CHROMIUM_ARGS, _setup_page,
+    CHROMIUM_ARGS, _setup_page,
 )
-import sqlite3
-import uuid
 
 # Número de páginas Playwright scrapeando detalles de libros en paralelo.
 # Configurable via variable de entorno BULK_POOL_SIZE (ej: en EasyPanel).
 # Aumentar = más velocidad; disminuir si el sitio empieza a bloquear.
 POOL_SIZE = int(os.environ.get("BULK_POOL_SIZE", "6"))
-
-# Límite de páginas que se procesan por categoría en un job "all".
-# Evita que una categoría muy profunda monopolice todo el job.
-# 0 = sin límite (recomendado cuando se corre una categoría individual).
-# Configurable via PAGES_PER_CATEGORY en EasyPanel.
-# 0 = sin límite: scrapea TODAS las páginas de TODAS las categorías.
-# Cambiar via variable de entorno PAGES_PER_CATEGORY si se quiere acotar.
-PAGES_PER_CATEGORY = int(os.environ.get("PAGES_PER_CATEGORY", "0"))
 
 # ── Category catalogue ─────────────────────────────────────────────────
 CATEGORIES = {
@@ -354,6 +344,71 @@ CATEGORIES = {
 active_jobs: dict = {}
 
 
+# ── Discovered categories persistence ──────────────────────────────────
+def _save_discovered_category(key: str, name: str, url: str,
+                              parent_key: str | None, depth: int,
+                              book_count: int = 0):
+    """Insert a discovered category, ignoring if it already exists."""
+    conn = db.get_connection()
+    cursor = conn.cursor()
+    try:
+        if db.IS_POSTGRES:
+            db.execute_query(cursor, """
+                INSERT INTO discovered_categories (key, name, url, parent_key, depth, book_count)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT (key) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    url = EXCLUDED.url,
+                    parent_key = EXCLUDED.parent_key,
+                    depth = EXCLUDED.depth,
+                    book_count = EXCLUDED.book_count
+            """, (key, name, url, parent_key, depth, book_count))
+        else:
+            db.execute_query(cursor, """
+                INSERT OR REPLACE INTO discovered_categories
+                (key, name, url, parent_key, depth, book_count)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (key, name, url, parent_key, depth, book_count))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(f"[Discover] Could not persist {key}: {e}")
+    finally:
+        conn.close()
+
+
+def _load_discovered_into_catalogue():
+    """Load persisted categories into the in-memory CATEGORIES dict at startup."""
+    try:
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        db.execute_query(cursor, "SELECT key, name, url FROM discovered_categories WHERE exhausted = 0")
+        loaded = 0
+        for row in cursor.fetchall():
+            key = row[0]
+            if key not in CATEGORIES:
+                CATEGORIES[key] = {"name": row[1], "url": row[2]}
+                loaded += 1
+        conn.close()
+        if loaded:
+            print(f"[Discover] Loaded {loaded} persisted categories from DB")
+    except Exception as e:
+        print(f"[Discover] Could not load persisted categories: {e}")
+
+
+def _mark_category_exhausted(key: str):
+    """Flag a category as fully scraped so future round-robins skip it."""
+    try:
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        db.execute_query(cursor,
+            "UPDATE discovered_categories SET exhausted = 1 WHERE key = ?", (key,))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
 def _check_url_exists(url: str) -> bool:
     """Check if a book URL is already stored in the database."""
     conn = db.get_connection()
@@ -639,15 +694,90 @@ async def _extract_max_page(page) -> int | None:
     return max_page
 
 
-async def discover_categories() -> list[dict]:
+def _key_from_url(url: str) -> str:
+    """Build a unique catalogue key from a /libros/.../CODE URL."""
+    parts = [p for p in url.strip("/").split("/") if p and not p.isdigit()]
+    # parts: ['libros', 'juvenil', 'fantasia-y-magia']  → 'juvenil-fantasia-y-magia'
+    if parts and parts[0] == "libros":
+        parts = parts[1:]
+    return "auto-" + "-".join(parts) if parts else "auto-unknown"
+
+
+async def _extract_top_level_categories(page) -> list[dict]:
+    """Extract top-level category links from the /libros 'Todas las temáticas' section."""
+    return await page.evaluate("""
+        () => {
+            const results = [];
+            const seen = new Set();
+            document.querySelectorAll('a[href]').forEach(a => {
+                const href = a.getAttribute('href');
+                if (!href) return;
+                // Top-level: /libros/SLUG/NUMERIC_CODE   (exactly 2 segments after /libros/)
+                const match = href.match(/^\\/libros\\/([\\w-]+)\\/?(\\d{9})?$/);
+                if (!match) return;
+                if (seen.has(href)) return;
+                seen.add(href);
+                const text = a.innerText.trim();
+                if (!text || text.length < 2) return;
+                const countMatch = text.match(/\\((\\d+)\\)/);
+                const bookCount = countMatch ? parseInt(countMatch[1], 10) : 0;
+                const name = text.replace(/\\s*\\(\\d+\\)/, '').trim();
+                results.push({ name, url: href, book_count: bookCount });
+            });
+            return results;
+        }
+    """)
+
+
+async def _extract_sidebar_subcategories(page, parent_url: str) -> list[dict]:
     """
-    Navigate to casadellibro.com/libros and dynamically discover all categories
-    from the "Todas las temáticas de libros" section.
-    Returns list of {name, url, book_count} dicts.
-    Updates CATEGORIES dict with any newly discovered categories.
+    Extract sub-category links from the sidebar of a category listing page.
+    Subcategories have URLs deeper than the parent (3+ segments).
+    Returns list of {name, url, book_count}.
     """
-    discovered = []
-    print("[Discover] Navigating to /libros to discover categories...")
+    parent_path = parent_url.split("?")[0].rstrip("/")
+    # Determine parent depth: /libros/juvenil  → 2, /libros/literatura/novela-negra → 3
+    parent_segments = [p for p in parent_path.split("/") if p and not p.isdigit()]
+    parent_depth = len(parent_segments)  # excluding numeric code, including 'libros'
+
+    return await page.evaluate(f"""
+        () => {{
+            const results = [];
+            const seen = new Set();
+            const parentDepth = {parent_depth};
+            document.querySelectorAll('a[href]').forEach(a => {{
+                const href = a.getAttribute('href');
+                if (!href || !href.startsWith('/libros/')) return;
+                if (seen.has(href)) return;
+                // Drop query, anchors
+                const clean = href.split('?')[0].split('#')[0];
+                // Must be deeper than parent (one more text segment)
+                const segs = clean.split('/').filter(s => s.length > 0 && !/^\\d+$/.test(s));
+                if (segs.length !== parentDepth + 1) return;
+                seen.add(href);
+                const text = a.innerText.trim();
+                if (!text || text.length < 2 || text.length > 80) return;
+                const countMatch = text.match(/\\((\\d+)\\)/);
+                const bookCount = countMatch ? parseInt(countMatch[1], 10) : 0;
+                const name = text.replace(/\\s*\\(\\d+\\)/, '').trim();
+                results.push({{ name, url: clean, book_count: bookCount }});
+            }});
+            return results;
+        }}
+    """)
+
+
+async def discover_categories(max_depth: int = 3) -> list[dict]:
+    """
+    Recursively discover categories and subcategories from casadellibro.
+    - Depth 1: top-level cats from /libros 'Todas las temáticas'
+    - Depth 2: subcategories from each top-level category page sidebar
+    - Depth 3: sub-subcategories from each subcategory page sidebar
+    Persists everything into discovered_categories table and CATEGORIES dict.
+    Returns flat list of all discovered cats.
+    """
+    all_discovered: list[dict] = []
+    print(f"[Discover] Recursive discovery up to depth {max_depth}")
 
     try:
         async with async_playwright() as p:
@@ -658,123 +788,204 @@ async def discover_categories() -> list[dict]:
             page = await browser.new_page()
             await _setup_page(page)
 
+            # ── Depth 1: top-level ──
             await page.goto(f"{BASE_URL}/libros", timeout=60000, wait_until="domcontentloaded")
-            await page.wait_for_timeout(3000)
+            await page.wait_for_timeout(2500)
+            top_level = await _extract_top_level_categories(page) or []
+            print(f"[Discover] L1: {len(top_level)} top-level categories")
 
-            # Extract all category links from the "Todas las temáticas" section
-            raw = await page.evaluate("""
-                () => {
-                    const results = [];
-                    const seen = new Set();
+            for cat in top_level:
+                cat["depth"] = 1
+                cat["parent_key"] = None
+                key = _key_from_url(cat["url"])
+                cat["key"] = key
+                _save_discovered_category(key, cat["name"], cat["url"], None, 1, cat["book_count"])
+                # Only add to in-memory catalogue if no existing entry covers this URL
+                if not any(v["url"] == cat["url"] for v in CATEGORIES.values()):
+                    CATEGORIES[key] = {"name": f"🔍 {cat['name']}", "url": cat["url"]}
+            all_discovered.extend(top_level)
 
-                    // Find all links under the "Todas las temáticas" section
-                    // These are links matching /libros/CATEGORY_NAME/CODE pattern
-                    document.querySelectorAll('a[href]').forEach(a => {
-                        const href = a.getAttribute('href');
-                        if (!href) return;
-
-                        // Match pattern: /libros/category-name/NUMERIC_CODE
-                        const match = href.match(/^\\/libros\\/([\\w-]+)\\/?(\\d{9})?$/);
-                        if (!match) return;
-                        if (seen.has(href)) return;
-                        seen.add(href);
-
-                        const text = a.innerText.trim();
-                        if (!text || text.length < 2) return;
-
-                        // Extract book count from parentheses: "Literatura (280346)"
-                        const countMatch = text.match(/\\((\\d+)\\)/);
-                        const bookCount = countMatch ? parseInt(countMatch[1], 10) : 0;
-                        const name = text.replace(/\\s*\\(\\d+\\)/, '').trim();
-
-                        results.push({
-                            name: name,
-                            url: href,
-                            book_count: bookCount
-                        });
-                    });
-
-                    return results;
-                }
-            """)
+            # ── Depth 2 & 3: subcategories ──
+            current_level = top_level
+            for depth in range(2, max_depth + 1):
+                next_level: list[dict] = []
+                for parent in current_level:
+                    try:
+                        await page.goto(BASE_URL + parent["url"], timeout=45000, wait_until="domcontentloaded")
+                        await page.wait_for_timeout(1500)
+                        subs = await _extract_sidebar_subcategories(page, parent["url"]) or []
+                        for sub in subs:
+                            sub["depth"] = depth
+                            sub["parent_key"] = parent.get("key")
+                            sub["key"] = _key_from_url(sub["url"])
+                            # Skip if exactly same URL already in catalogue
+                            if any(v["url"] == sub["url"] for v in CATEGORIES.values()):
+                                continue
+                            CATEGORIES[sub["key"]] = {"name": f"🔍 {sub['name']}", "url": sub["url"]}
+                            _save_discovered_category(
+                                sub["key"], sub["name"], sub["url"],
+                                sub["parent_key"], depth, sub["book_count"]
+                            )
+                            next_level.append(sub)
+                            print(f"[Discover] L{depth}: {sub['name']} ({sub['book_count']}) → {sub['url']}")
+                    except Exception as e:
+                        print(f"[Discover] L{depth} error on {parent['url']}: {e}")
+                all_discovered.extend(next_level)
+                print(f"[Discover] L{depth} total new: {len(next_level)}")
+                current_level = next_level
+                if not current_level:
+                    break
 
             await browser.close()
 
-            if raw:
-                discovered = raw
-                print(f"[Discover] Found {len(discovered)} categories from the site")
-
-                # Only ADD truly new categories. Never modify existing subcategory URLs.
-                # The discover only knows top-level category URLs (e.g. /libros/literatura/121000000)
-                # but our CATEGORIES dict has intentional subcategory URLs
-                # (e.g. /libros/literatura/novela-negra/121014000) that must NOT be overwritten.
-                existing_slugs = set()
-                for val in CATEGORIES.values():
-                    # Extract the base slug: /libros/informatica/116000000 -> "informatica"
-                    # /libros/literatura/novela-negra/121014000 -> "literatura"
-                    parts = val["url"].strip("/").split("/")
-                    if len(parts) >= 2:
-                        existing_slugs.add(parts[1])  # top-level slug
-
-                new_count = 0
-                for cat in discovered:
-                    disc_parts = cat["url"].strip("/").split("/")
-                    disc_slug = disc_parts[1] if len(disc_parts) >= 2 else ""
-
-                    if disc_slug not in existing_slugs:
-                        # Truly new top-level category — add it
-                        key = f"auto-{disc_slug}"
-                        CATEGORIES[key] = {
-                            "name": f"🔍 {cat['name']}",
-                            "url": cat["url"],
-                        }
-                        existing_slugs.add(disc_slug)
-                        new_count += 1
-                        print(f"[Discover]   NEW: {cat['name']} → {cat['url']} ({cat['book_count']} libros)")
-                    else:
-                        print(f"[Discover]   OK: {cat['name']} (already covered by existing categories)")
-
-                print(f"[Discover] Result: {new_count} new categories added, {len(discovered)} total from site")
-
-            else:
-                print("[Discover] No categories found on page")
-
     except Exception as e:
-        print(f"[Discover] Error: {e}")
+        print(f"[Discover] Fatal error: {e}")
 
-    return discovered
+    print(f"[Discover] Done. {len(all_discovered)} categories discovered, "
+          f"{len(CATEGORIES)} total in catalogue.")
+    return all_discovered
 
 
+
+
+# En modo "all", cuántas páginas avanzar de cada categoría antes de rotar a la siguiente.
+# Después de rotar por todas, vuelve a empezar la siguiente ronda. Configurable.
+PAGES_PER_ROUND = int(os.environ.get("PAGES_PER_ROUND", "200"))
+
+
+async def _scrape_category_slice(
+    cat_key: str,
+    list_page,
+    page_queue: asyncio.Queue,
+    job: dict,
+    existing_urls: set,
+    max_books: int | None,
+    pages_this_slice: int | None,
+) -> bool:
+    """
+    Scrape up to `pages_this_slice` pages from one category, resuming from
+    the persisted last_page. Returns True if the category is fully exhausted
+    (reached max_page or duplicate detection); False if more pages remain.
+    """
+    cat = CATEGORIES[cat_key]
+    category_url = BASE_URL + cat["url"]
+    start_page = get_last_scraped_page(cat_key)
+    page_num = start_page
+
+    previous_page_urls: list[str] = []
+    duplicate_count = 0
+    max_page_num: int | None = None
+    pages_done = 0
+
+    print(f"\n[Bulk] {cat['name']} — resuming from page {page_num}"
+          f" (slice cap: {pages_this_slice or '∞'})")
+
+    while True:
+        if job["status"] == "stopped":
+            return False
+        if max_books and job["books_scraped"] >= max_books:
+            return False
+        if pages_this_slice and pages_done >= pages_this_slice:
+            return False  # Slice done — caller will rotate
+        if max_page_num and page_num > max_page_num:
+            print(f"[Bulk] Reached max page {max_page_num} for {cat['name']}. EXHAUSTED.")
+            _mark_category_exhausted(cat_key)
+            return True
+
+        sep = "&" if "?" in category_url else "?"
+        page_url = f"{category_url}{sep}page={page_num}" if page_num > 1 else category_url
+
+        job["current_page"] = page_num
+        job["current_book"] = (
+            f"Cargando {cat['name']} pág {page_num}"
+            f"{f'/{max_page_num}' if max_page_num else ''}..."
+        )
+
+        try:
+            await list_page.goto(page_url, timeout=60000, wait_until="domcontentloaded")
+            await list_page.wait_for_timeout(1500)
+        except Exception as e:
+            print(f"[Bulk] Error loading page {page_num} of {cat['name']}: {e}")
+            job["errors"].append(f"{cat['name']} p{page_num}: {str(e)[:100]}")
+            return False  # Recoverable, retry next round
+
+        if max_page_num is None:
+            detected = await _extract_max_page(list_page)
+            if detected and detected > 1:
+                max_page_num = detected
+                job["total_pages"] = max_page_num
+                print(f"[Bulk] Detected {max_page_num} total pages for {cat['name']}")
+
+        # Extract links — retry once on empty (transient JS load failures)
+        links = await _extract_book_links(list_page)
+        if not links:
+            print(f"[Bulk] Empty links on first try, waiting 3s and retrying...")
+            await list_page.wait_for_timeout(3000)
+            links = await _extract_book_links(list_page)
+
+        if not links:
+            print(f"[Bulk] No books on page {page_num} of {cat['name']} after retry. EXHAUSTED.")
+            _mark_category_exhausted(cat_key)
+            return True
+
+        # Tolerant duplicate detection: require 2 consecutive duplicate pages
+        current_page_urls = [link["url"] for link in links]
+        if current_page_urls == previous_page_urls:
+            duplicate_count += 1
+            if duplicate_count >= 2:
+                print(f"[Bulk] {cat['name']} returned identical pages twice. EXHAUSTED.")
+                _mark_category_exhausted(cat_key)
+                return True
+            print(f"[Bulk] Duplicate page detected (1/2), continuing cautiously...")
+        else:
+            duplicate_count = 0
+        previous_page_urls = current_page_urls
+
+        print(f"[Bulk] {cat['name']} p{page_num}: {len(links)} libros — {POOL_SIZE} parallel")
+        tasks = [
+            _scrape_one_book(bl, page_queue, cat["name"], job, existing_urls, max_books)
+            for bl in links
+        ]
+        await asyncio.gather(*tasks)
+
+        pages_done += 1
+        page_num += 1
+        update_last_scraped_page(cat_key, page_num)
+
+        await asyncio.sleep(random.uniform(0.5, 1.0))
 
 
 async def bulk_scrape(category_key: str, max_books: int | None = None):
     """
     Main bulk scraping coroutine.
-    Crawls a category, collects book links, then scrapes each one.
-    Updates active_jobs[job_id] with live progress.
+    - "all" mode: round-robin infinito. Cada ronda avanza PAGES_PER_ROUND páginas
+      en cada categoría antes de rotar. Se detiene cuando todas las categorías están
+      agotadas o el usuario detiene el job.
+    - Categoría individual: scrapea sin límite hasta agotar o ser detenido.
     """
     job_id = str(uuid.uuid4())[:8]
-    cat_keys = []
-    job_category_name = ""
 
-    if category_key == "all":
-        # Prioridad: empezar por las categorias con mas titulos populares
-        # Asi la BD tiene libros relevantes rapido antes de pasar a categorias nicho
+    init_db()
+    _load_discovered_into_catalogue()  # bring persisted cats into memory
+
+    is_all_mode = category_key == "all"
+
+    if is_all_mode:
+        # Discover top-level + subcategories before starting
+        try:
+            await discover_categories(max_depth=3)
+        except Exception as e:
+            print(f"[Bulk] Discovery failed (continuing with existing catalogue): {e}")
+
         PRIORITY_FIRST = ["mas-vendidos", "recomendados", "novedades"]
         remaining = [k for k in CATEGORIES.keys() if k not in PRIORITY_FIRST]
-        cat_keys = PRIORITY_FIRST + remaining
+        cat_keys = [k for k in PRIORITY_FIRST if k in CATEGORIES] + remaining
         job_category_name = "TODAS LAS CATEGORÍAS"
-        # 0 = sin límite: scrapea absolutamente todas las páginas de cada categoría
-        pages_cap = PAGES_PER_CATEGORY  # 0 = ilimitado
     else:
         if category_key not in CATEGORIES:
             return None
         cat_keys = [category_key]
         job_category_name = CATEGORIES[category_key]["name"]
-        # Sin limite cuando se scrape una categoria individual
-        pages_cap = PAGES_PER_CATEGORY  # 0 = ilimitado
-
-    init_db()
 
     job = {
         "id": job_id,
@@ -791,6 +1002,9 @@ async def bulk_scrape(category_key: str, max_books: int | None = None):
         "total_pages": None,
         "errors": [],
         "max_books": max_books,
+        "round": 0,
+        "categories_total": len(cat_keys),
+        "categories_exhausted": 0,
     }
     active_jobs[job_id] = job
 
@@ -801,111 +1015,76 @@ async def bulk_scrape(category_key: str, max_books: int | None = None):
                 launch_opts["proxy"] = {"server": PROXY_URL}
             browser = await p.chromium.launch(**launch_opts)
 
-            # Page for browsing category listings
             list_page = await browser.new_page()
             await _setup_page(list_page)
 
-            # Pool of pages for parallel book detail scraping
             page_queue: asyncio.Queue = asyncio.Queue()
             for _ in range(POOL_SIZE):
                 dp = await browser.new_page()
                 await _setup_page(dp)
                 await page_queue.put(dp)
 
-            # Load all existing URLs into memory once — avoids per-book DB queries
             existing_urls = _load_existing_urls()
 
-            for current_cat_key in cat_keys:
+            exhausted: set[str] = set()
+            round_num = 0
+            slice_cap = PAGES_PER_ROUND if is_all_mode else None
+
+            while True:
                 if job["status"] == "stopped":
                     break
+                if max_books and job["books_scraped"] >= max_books:
+                    print(f"[Bulk] max_books ({max_books}) reached")
+                    break
 
-                cat = CATEGORIES[current_cat_key]
-                category_url = BASE_URL + cat["url"]
-                if category_key == "all":
-                    job["category"] = f"Todas ({cat['name']})"
+                round_num += 1
+                job["round"] = round_num
+                print(f"\n{'='*70}")
+                print(f"[Bulk] === RONDA {round_num} === ({len(exhausted)}/{len(cat_keys)} agotadas)")
+                print(f"{'='*70}")
 
-                # ── Restore Page Progress ──
-                start_page = get_last_scraped_page(current_cat_key)
-                page_num = start_page
-                print(f"\n[Bulk] Resuming {cat['name']} from page {page_num}")
-
-                previous_page_urls = []
-                max_page_num = None  # Will be detected from paginator
-
-                while True:
+                progress_made = False
+                for current_cat_key in cat_keys:
                     if job["status"] == "stopped":
                         break
+                    if current_cat_key in exhausted:
+                        continue
+                    if current_cat_key not in CATEGORIES:
+                        continue
 
-                    # Check if we've exceeded the detected max page
-                    if max_page_num and page_num > max_page_num:
-                        print(f"[Bulk] Reached max page {max_page_num} for {cat['name']}. Category complete.")
-                        break
+                    job["category"] = (
+                        f"R{round_num}: {CATEGORIES[current_cat_key]['name']}"
+                        if is_all_mode else CATEGORIES[current_cat_key]["name"]
+                    )
 
-                    # Build paginated URL
-                    sep = "&" if "?" in category_url else "?"
-                    page_url = f"{category_url}{sep}page={page_num}" if page_num > 1 else category_url
+                    fully_done = await _scrape_category_slice(
+                        current_cat_key, list_page, page_queue,
+                        job, existing_urls, max_books, slice_cap
+                    )
 
-                    print(f"\n[Bulk] Loading category page {page_num}{f'/{max_page_num}' if max_page_num else ''}: {page_url}")
-                    job["current_page"] = page_num
-                    job["current_book"] = f"Cargando página {page_num}{f'/{max_page_num}' if max_page_num else ''}..."
+                    if fully_done:
+                        exhausted.add(current_cat_key)
+                        job["categories_exhausted"] = len(exhausted)
+                    else:
+                        progress_made = True
 
-                    try:
-                        await list_page.goto(page_url, timeout=60000, wait_until="domcontentloaded")
-                        await list_page.wait_for_timeout(1500)
-                    except Exception as e:
-                        print(f"[Bulk] Error loading page {page_num}: {e}")
-                        job["errors"].append(f"Page {page_num}: {str(e)[:100]}")
-                        break
+                # Modo categoría individual: una sola pasada
+                if not is_all_mode:
+                    break
 
-                    # Detect total pages from paginator on first load of this category
-                    if max_page_num is None:
-                        detected = await _extract_max_page(list_page)
-                        if detected and detected > 1:
-                            max_page_num = detected
-                            job["total_pages"] = max_page_num
-                            print(f"[Bulk] Detected {max_page_num} total pages for {cat['name']}")
+                # Todas agotadas
+                if len(exhausted) >= len(cat_keys):
+                    print(f"[Bulk] ✅ Todas las {len(cat_keys)} categorías agotadas. Job completo.")
+                    break
 
-                    links = await _extract_book_links(list_page)
-
-                    if not links:
-                        print(f"[Bulk] No books found on page {page_num}. Ending category.")
-                        break
-
-                    # Detect pagination limit: if the site returns exactly the same fallback list instead of an empty page
-                    current_page_urls = [link["url"] for link in links]
-                    if current_page_urls == previous_page_urls:
-                        print(f"[Bulk] Page {page_num} returned the exact same books as the previous page! End of category reached.")
-                        break
-                    previous_page_urls = current_page_urls
-
-                    print(f"[Bulk] Found {len(links)} book links on page {page_num} — scraping {POOL_SIZE} in parallel")
-
-                    # ── Scrape all books on this page in parallel ──
-                    tasks = [
-                        _scrape_one_book(book_link, page_queue, cat["name"], job, existing_urls, max_books)
-                        for book_link in links
-                    ]
-                    await asyncio.gather(*tasks)
-
-                    if max_books and job["books_scraped"] >= max_books:
-                        print(f"[Bulk] Reached max_books ({max_books}). Stopping.")
-                        break
-
-                    # Limite de paginas por categoria (modo 'all')
-                    pages_done_this_run = page_num - start_page + 1
-                    if pages_cap > 0 and pages_done_this_run >= pages_cap:
-                        print(f"[Bulk] Limite de {pages_cap} pags/categoria alcanzado en {cat['name']}. Continuara en el proximo job.")
-                        break
-
-                    if job["status"] != "stopped":
-                        page_num += 1
-                        update_last_scraped_page(current_cat_key, page_num)
-
-                    await asyncio.sleep(random.uniform(0.5, 1.0))
+                # Si una ronda completa no hizo progreso (todas las restantes erroraron)
+                # rompemos para evitar loop infinito sin avance
+                if not progress_made:
+                    print(f"[Bulk] ⚠️ Ronda {round_num} sin progreso. Deteniendo.")
+                    break
 
             await browser.close()
 
-        # Mark job as completed
         if job["status"] != "stopped":
             job["status"] = "completed"
         job["finished_at"] = datetime.now().isoformat()
@@ -913,7 +1092,9 @@ async def bulk_scrape(category_key: str, max_books: int | None = None):
         print(f"\n[Bulk] Job {job_id} finished: "
               f"{job['books_scraped']} scraped, "
               f"{job['books_skipped']} skipped, "
-              f"{job['books_failed']} failed")
+              f"{job['books_failed']} failed, "
+              f"{round_num} rondas, "
+              f"{len(exhausted)}/{len(cat_keys)} categorías agotadas")
 
     except Exception as e:
         job["status"] = "error"
@@ -937,7 +1118,8 @@ def get_job_status(job_id: str) -> dict | None:
 
 
 def get_categories() -> list[dict]:
-    """Return list of available categories."""
+    """Return list of available categories (incluye las persistidas en BD)."""
+    _load_discovered_into_catalogue()
     cats = [{"key": "all", "name": "📚 TODAS LAS CATEGORÍAS (Extensivo)", "url": ""}]
     cats.extend([
         {"key": k, "name": v["name"], "url": v["url"]}
