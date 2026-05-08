@@ -970,23 +970,13 @@ async def bulk_scrape(category_key: str, max_books: int | None = None):
 
     is_all_mode = category_key == "all"
 
-    if is_all_mode:
-        # Discover top-level + subcategories before starting
-        try:
-            await discover_categories(max_depth=3)
-        except Exception as e:
-            print(f"[Bulk] Discovery failed (continuing with existing catalogue): {e}")
+    # Validate category early — return None so caller can 404
+    if not is_all_mode and category_key not in CATEGORIES:
+        return None
 
-        PRIORITY_FIRST = ["mas-vendidos", "recomendados", "novedades"]
-        remaining = [k for k in CATEGORIES.keys() if k not in PRIORITY_FIRST]
-        cat_keys = [k for k in PRIORITY_FIRST if k in CATEGORIES] + remaining
-        job_category_name = "TODAS LAS CATEGORÍAS"
-    else:
-        if category_key not in CATEGORIES:
-            return None
-        cat_keys = [category_key]
-        job_category_name = CATEGORIES[category_key]["name"]
-
+    # ── Register job IMMEDIATELY so app.py finds it within its 2s wait ──
+    # Discovery + scraping happen later as phases of this job.
+    job_category_name = "TODAS LAS CATEGORÍAS" if is_all_mode else CATEGORIES[category_key]["name"]
     job = {
         "id": job_id,
         "category": job_category_name,
@@ -997,16 +987,40 @@ async def bulk_scrape(category_key: str, max_books: int | None = None):
         "books_scraped": 0,
         "books_skipped": 0,
         "books_failed": 0,
-        "current_book": "",
+        "current_book": "Iniciando..." if not is_all_mode else "Descubriendo categorías y subcategorías...",
         "current_page": 1,
         "total_pages": None,
         "errors": [],
         "max_books": max_books,
         "round": 0,
-        "categories_total": len(cat_keys),
+        "categories_total": 0,
         "categories_exhausted": 0,
     }
     active_jobs[job_id] = job
+
+    # ── Phase 1: Discovery (only in "all" mode) ──
+    if is_all_mode:
+        # Skip rediscovery if catalogue already has plenty of cats persisted —
+        # the user can call POST /api/v1/bulk/discover-categories to refresh manually.
+        SKIP_DISCOVERY_THRESHOLD = int(os.environ.get("SKIP_DISCOVERY_IF_OVER", "500"))
+        if len(CATEGORIES) >= SKIP_DISCOVERY_THRESHOLD:
+            print(f"[Bulk] Skipping discovery: {len(CATEGORIES)} categories already in catalogue "
+                  f"(threshold {SKIP_DISCOVERY_THRESHOLD}). Use /discover-categories to refresh.")
+            job["current_book"] = (f"Catálogo: {len(CATEGORIES)} categorías. Empezando scraping...")
+        else:
+            try:
+                await discover_categories(max_depth=3)
+            except Exception as e:
+                print(f"[Bulk] Discovery failed (continuing with existing catalogue): {e}")
+                job["errors"].append(f"Discovery: {str(e)[:100]}")
+
+        PRIORITY_FIRST = ["mas-vendidos", "recomendados", "novedades"]
+        remaining = [k for k in CATEGORIES.keys() if k not in PRIORITY_FIRST]
+        cat_keys = [k for k in PRIORITY_FIRST if k in CATEGORIES] + remaining
+    else:
+        cat_keys = [category_key]
+
+    job["categories_total"] = len(cat_keys)
 
     try:
         async with async_playwright() as p:
