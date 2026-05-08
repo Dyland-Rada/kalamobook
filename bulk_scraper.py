@@ -955,28 +955,87 @@ async def _scrape_category_slice(
         await asyncio.sleep(random.uniform(0.5, 1.0))
 
 
+SITEMAP_KEY = "sitemap"
+
+
+async def _bulk_scrape_sitemap(job: dict, page_queue: asyncio.Queue,
+                               existing_urls: set, max_books: int | None):
+    """
+    Producer-consumer scraper that pulls book URLs from Casa del Libro's
+    sitemap-index and scrapes each detail page through the existing pool.
+    """
+    from sitemap import iter_book_urls
+
+    url_queue: asyncio.Queue = asyncio.Queue(maxsize=500)
+
+    def progress_cb(msg: str):
+        job["current_book"] = f"📥 {msg}"
+
+    async def producer():
+        yielded = 0
+        try:
+            async for entry in iter_book_urls(progress_cb=progress_cb):
+                if job["status"] == "stopped":
+                    break
+                if max_books and job["books_scraped"] >= max_books:
+                    break
+                await url_queue.put(entry)
+                yielded += 1
+        except Exception as e:
+            job["errors"].append(f"Sitemap producer: {str(e)[:120]}")
+            print(f"[Bulk-Sitemap] Producer error: {e}")
+        finally:
+            # Sentinel per worker
+            for _ in range(POOL_SIZE):
+                await url_queue.put(None)
+            print(f"[Bulk-Sitemap] Producer finished, {yielded} URLs queued")
+
+    async def worker(idx: int):
+        while True:
+            entry = await url_queue.get()
+            if entry is None:
+                return
+            if job["status"] == "stopped":
+                return
+            if max_books and job["books_scraped"] >= max_books:
+                return
+            await _scrape_one_book(entry, page_queue, "sitemap", job, existing_urls, max_books)
+
+    await asyncio.gather(
+        producer(),
+        *(worker(i) for i in range(POOL_SIZE)),
+    )
+
+
 async def bulk_scrape(category_key: str, max_books: int | None = None):
     """
-    Main bulk scraping coroutine.
-    - "all" mode: round-robin infinito. Cada ronda avanza PAGES_PER_ROUND páginas
-      en cada categoría antes de rotar. Se detiene cuando todas las categorías están
-      agotadas o el usuario detiene el job.
-    - Categoría individual: scrapea sin límite hasta agotar o ser detenido.
+    Main bulk scraping coroutine. Supports three modes:
+    - "sitemap": fetch all book URLs from /sitemap-index.xml (fastest discovery,
+       ~300k+ libros). Uses producer-consumer with page pool.
+    - "all": round-robin infinito sobre todas las categorías persistidas.
+       Cada ronda avanza PAGES_PER_ROUND páginas en cada una y rota.
+    - Categoría individual: scrapea esa cat sin límite hasta agotar.
     """
     job_id = str(uuid.uuid4())[:8]
 
     init_db()
     _load_discovered_into_catalogue()  # bring persisted cats into memory
 
+    is_sitemap_mode = category_key == SITEMAP_KEY
     is_all_mode = category_key == "all"
 
     # Validate category early — return None so caller can 404
-    if not is_all_mode and category_key not in CATEGORIES:
+    if not is_all_mode and not is_sitemap_mode and category_key not in CATEGORIES:
         return None
 
     # ── Register job IMMEDIATELY so app.py finds it within its 2s wait ──
     # Discovery + scraping happen later as phases of this job.
-    job_category_name = "TODAS LAS CATEGORÍAS" if is_all_mode else CATEGORIES[category_key]["name"]
+    if is_sitemap_mode:
+        job_category_name = "📥 SITEMAP COMPLETO"
+    elif is_all_mode:
+        job_category_name = "TODAS LAS CATEGORÍAS"
+    else:
+        job_category_name = CATEGORIES[category_key]["name"]
     job = {
         "id": job_id,
         "category": job_category_name,
@@ -987,7 +1046,11 @@ async def bulk_scrape(category_key: str, max_books: int | None = None):
         "books_scraped": 0,
         "books_skipped": 0,
         "books_failed": 0,
-        "current_book": "Iniciando..." if not is_all_mode else "Descubriendo categorías y subcategorías...",
+        "current_book": (
+            "📥 Cargando sitemap..." if is_sitemap_mode
+            else "Descubriendo categorías y subcategorías..." if is_all_mode
+            else "Iniciando..."
+        ),
         "current_page": 1,
         "total_pages": None,
         "errors": [],
@@ -999,7 +1062,10 @@ async def bulk_scrape(category_key: str, max_books: int | None = None):
     active_jobs[job_id] = job
 
     # ── Phase 1: Discovery (only in "all" mode) ──
-    if is_all_mode:
+    cat_keys: list[str] = []
+    if is_sitemap_mode:
+        pass  # No category discovery needed; sitemap drives everything
+    elif is_all_mode:
         # Skip rediscovery if catalogue already has plenty of cats persisted —
         # the user can call POST /api/v1/bulk/discover-categories to refresh manually.
         SKIP_DISCOVERY_THRESHOLD = int(os.environ.get("SKIP_DISCOVERY_IF_OVER", "500"))
@@ -1039,6 +1105,19 @@ async def bulk_scrape(category_key: str, max_books: int | None = None):
                 await page_queue.put(dp)
 
             existing_urls = _load_existing_urls()
+
+            # ── Sitemap mode bypasses round-robin ──
+            if is_sitemap_mode:
+                await _bulk_scrape_sitemap(job, page_queue, existing_urls, max_books)
+                await browser.close()
+                if job["status"] != "stopped":
+                    job["status"] = "completed"
+                job["finished_at"] = datetime.now().isoformat()
+                print(f"\n[Bulk-Sitemap] Job {job_id} done: "
+                      f"{job['books_scraped']} scraped, "
+                      f"{job['books_skipped']} skipped, "
+                      f"{job['books_failed']} failed")
+                return job_id
 
             exhausted: set[str] = set()
             round_num = 0
@@ -1134,7 +1213,10 @@ def get_job_status(job_id: str) -> dict | None:
 def get_categories() -> list[dict]:
     """Return list of available categories (incluye las persistidas en BD)."""
     _load_discovered_into_catalogue()
-    cats = [{"key": "all", "name": "📚 TODAS LAS CATEGORÍAS (Extensivo)", "url": ""}]
+    cats = [
+        {"key": SITEMAP_KEY, "name": "📥 SITEMAP COMPLETO (recomendado, ~300k+ libros)", "url": ""},
+        {"key": "all", "name": "📚 TODAS LAS CATEGORÍAS (round-robin por categoría)", "url": ""},
+    ]
     cats.extend([
         {"key": k, "name": v["name"], "url": v["url"]}
         for k, v in CATEGORIES.items()
