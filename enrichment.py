@@ -1,0 +1,461 @@
+"""
+Odoo enrichment orchestrator.
+
+Three concurrent loops share the Casa del Libro page pool:
+
+1. queue_refill_loop — when the queue has fewer than REFILL_THRESHOLD pending
+   rows, pulls the next batch of books from Odoo (FIFO by create_date) where
+   description_sale is empty.
+
+2. scrape_workers (POOL_SIZE) — each consumes pending rows from the queue,
+   scrapes Casa del Libro by ISBN, stores the scraped JSON. If not found,
+   moves the row to notfound_books.
+
+3. push_loop — periodically takes 'scraped' rows, writes the HTML description
+   back to Odoo in batches, marks them 'written'.
+
+State lives in enrichment_queue + notfound_books tables (schema in scraper.init_db).
+A single global job dict tracks live progress and stop signal.
+"""
+import asyncio
+import html
+import json
+import os
+import random
+import re
+from datetime import datetime
+from typing import Any
+
+from playwright.async_api import async_playwright
+
+import db
+from scraper import (
+    BASE_URL, PROXY_URL, CHROMIUM_ARGS, _setup_page, scrape_book, init_db,
+)
+from odoo_client import OdooClient, OdooError
+
+POOL_SIZE = int(os.environ.get("BULK_POOL_SIZE", "6"))
+REFILL_THRESHOLD = int(os.environ.get("ENRICH_QUEUE_REFILL_AT", "500"))
+REFILL_BATCH = int(os.environ.get("ENRICH_QUEUE_REFILL_SIZE", "2000"))
+PUSH_BATCH = int(os.environ.get("ENRICH_PUSH_BATCH", "50"))
+PUSH_INTERVAL_S = int(os.environ.get("ENRICH_PUSH_INTERVAL_S", "30"))
+MAX_ATTEMPTS = int(os.environ.get("ENRICH_MAX_ATTEMPTS", "3"))
+
+# Global singleton job state (only one enrichment job runs at a time)
+enrichment_job: dict | None = None
+
+
+# ── DB helpers ─────────────────────────────────────────────────────────
+def _count_queue_by_status() -> dict[str, int]:
+    conn = db.get_connection()
+    cur = conn.cursor()
+    out = {}
+    for status in ("pending", "scraping", "scraped", "written"):
+        db.execute_query(cur, "SELECT COUNT(*) FROM enrichment_queue WHERE status = ?", (status,))
+        out[status] = cur.fetchone()[0]
+    db.execute_query(cur, "SELECT COUNT(*) FROM notfound_books")
+    out["notfound"] = cur.fetchone()[0]
+    conn.close()
+    return out
+
+
+def _queue_insert_many(rows: list[dict]) -> int:
+    """Insert new Odoo IDs into the queue, ignoring those already present."""
+    if not rows:
+        return 0
+    conn = db.get_connection()
+    cur = conn.cursor()
+    inserted = 0
+    for r in rows:
+        try:
+            if db.IS_POSTGRES:
+                db.execute_query(cur, """
+                    INSERT INTO enrichment_queue (odoo_id, barcode, name, status)
+                    VALUES (?, ?, ?, 'pending')
+                    ON CONFLICT (odoo_id) DO NOTHING
+                """, (r["id"], r.get("barcode") or "", r.get("name") or ""))
+            else:
+                db.execute_query(cur, """
+                    INSERT OR IGNORE INTO enrichment_queue (odoo_id, barcode, name, status)
+                    VALUES (?, ?, ?, 'pending')
+                """, (r["id"], r.get("barcode") or "", r.get("name") or ""))
+            inserted += cur.rowcount or 0
+        except Exception as e:
+            print(f"[Enrich] Insert error for odoo_id={r.get('id')}: {e}")
+    conn.commit()
+    conn.close()
+    return inserted
+
+
+def _claim_pending(limit: int = 1) -> list[dict]:
+    """
+    Atomically grab pending rows and mark them 'scraping' so other workers skip.
+    Returns list of {odoo_id, barcode, name, attempts}.
+    """
+    conn = db.get_connection()
+    cur = conn.cursor()
+    db.execute_query(cur, """
+        SELECT odoo_id, barcode, name, attempts
+        FROM enrichment_queue
+        WHERE status = 'pending'
+        ORDER BY queued_at ASC
+        LIMIT ?
+    """, (limit,))
+    rows = [
+        {"odoo_id": r[0], "barcode": r[1], "name": r[2], "attempts": r[3]}
+        for r in cur.fetchall()
+    ]
+    if rows:
+        ids = [r["odoo_id"] for r in rows]
+        placeholders = ",".join(["?"] * len(ids))
+        db.execute_query(cur,
+            f"UPDATE enrichment_queue SET status='scraping', "
+            f"updated_at=CURRENT_TIMESTAMP WHERE odoo_id IN ({placeholders})",
+            tuple(ids)
+        )
+        conn.commit()
+    conn.close()
+    return rows
+
+
+def _mark_scraped(odoo_id: int, data: dict):
+    conn = db.get_connection()
+    cur = conn.cursor()
+    db.execute_query(cur, """
+        UPDATE enrichment_queue
+        SET status='scraped', scraped_data=?, updated_at=CURRENT_TIMESTAMP
+        WHERE odoo_id = ?
+    """, (json.dumps(data, ensure_ascii=False), odoo_id))
+    conn.commit()
+    conn.close()
+
+
+def _mark_notfound(odoo_id: int, barcode: str, name: str, reason: str):
+    """Move row from queue → notfound_books (delete from queue)."""
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        if db.IS_POSTGRES:
+            db.execute_query(cur, """
+                INSERT INTO notfound_books (odoo_id, barcode, name, reason)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT (odoo_id) DO UPDATE SET
+                    attempts = notfound_books.attempts + 1,
+                    last_attempt = CURRENT_TIMESTAMP,
+                    reason = EXCLUDED.reason
+            """, (odoo_id, barcode, name, reason))
+        else:
+            db.execute_query(cur, """
+                INSERT OR REPLACE INTO notfound_books
+                (odoo_id, barcode, name, reason, attempts, first_seen, last_attempt)
+                VALUES (?, ?, ?, ?,
+                    COALESCE((SELECT attempts FROM notfound_books WHERE odoo_id = ?), 0) + 1,
+                    COALESCE((SELECT first_seen FROM notfound_books WHERE odoo_id = ?), CURRENT_TIMESTAMP),
+                    CURRENT_TIMESTAMP)
+            """, (odoo_id, barcode, name, reason, odoo_id, odoo_id))
+        db.execute_query(cur, "DELETE FROM enrichment_queue WHERE odoo_id = ?", (odoo_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _bump_attempt(odoo_id: int, err: str):
+    """Failed transient attempt — keep in queue, increment attempts. Will be retried until MAX_ATTEMPTS."""
+    conn = db.get_connection()
+    cur = conn.cursor()
+    db.execute_query(cur, """
+        UPDATE enrichment_queue
+        SET status='pending', attempts=attempts+1,
+            last_error=?, updated_at=CURRENT_TIMESTAMP
+        WHERE odoo_id = ?
+    """, (err[:500], odoo_id))
+    conn.commit()
+    conn.close()
+
+
+def _claim_scraped_batch(limit: int) -> list[dict]:
+    """Grab a batch of 'scraped' rows for pushing to Odoo. Marks them in-flight."""
+    conn = db.get_connection()
+    cur = conn.cursor()
+    db.execute_query(cur, """
+        SELECT odoo_id, scraped_data
+        FROM enrichment_queue
+        WHERE status = 'scraped'
+        ORDER BY updated_at ASC
+        LIMIT ?
+    """, (limit,))
+    rows = [{"odoo_id": r[0], "data": json.loads(r[1])} for r in cur.fetchall() if r[1]]
+    conn.close()
+    return rows
+
+
+def _mark_written(odoo_ids: list[int]):
+    if not odoo_ids:
+        return
+    conn = db.get_connection()
+    cur = conn.cursor()
+    placeholders = ",".join(["?"] * len(odoo_ids))
+    db.execute_query(cur,
+        f"UPDATE enrichment_queue SET status='written', "
+        f"updated_at=CURRENT_TIMESTAMP WHERE odoo_id IN ({placeholders})",
+        tuple(odoo_ids)
+    )
+    conn.commit()
+    conn.close()
+
+
+# ── HTML description renderer ──────────────────────────────────────────
+def render_html_description(d: dict) -> str:
+    """Build an enriched HTML description from scraped Casa del Libro data."""
+    def esc(v: Any) -> str:
+        return html.escape(str(v).strip()) if v else ""
+
+    synopsis = esc(d.get("description", ""))
+    if synopsis in ("No Description", ""):
+        synopsis = ""
+
+    ficha_pairs = [
+        ("ISBN", d.get("isbn")),
+        ("Autor", d.get("author")),
+        ("Editorial", d.get("editorial")),
+        ("Traductor", d.get("translator")),
+        ("Ilustrador", d.get("illustrator")),
+        ("Idioma", d.get("language")),
+        ("Páginas", d.get("pages")),
+        ("Encuadernación", d.get("binding")),
+        ("Fecha de publicación", d.get("release_date")),
+        ("Año de edición", d.get("edition_year")),
+        ("Plaza de edición", d.get("edition_place")),
+        ("Colección", d.get("collection")),
+        ("Tiempo de lectura", d.get("reading_time")),
+        ("Alto", d.get("height")),
+        ("Ancho", d.get("width")),
+        ("Peso", d.get("weight")),
+        ("Origen", d.get("origin")),
+    ]
+    ficha_html = ""
+    rows = [f"<li><strong>{k}:</strong> {esc(v)}</li>"
+            for k, v in ficha_pairs if v and str(v).strip() and str(v).strip().lower() != "unknown"]
+    if rows:
+        ficha_html = (
+            "<h3 style='margin-top:1em'>Ficha técnica</h3>\n"
+            "<ul style='list-style:none;padding-left:0'>\n"
+            + "\n".join(rows) +
+            "\n</ul>"
+        )
+
+    parts = []
+    if synopsis:
+        parts.append(f"<p>{synopsis}</p>")
+    if ficha_html:
+        parts.append(ficha_html)
+    return "\n".join(parts) if parts else ""
+
+
+# ── Loops ──────────────────────────────────────────────────────────────
+async def queue_refill_loop(odoo: OdooClient, job: dict):
+    """Fill the queue from Odoo whenever pending count drops below threshold."""
+    domain = [
+        ["barcode", "!=", False],
+        ["description_sale", "=", False],
+    ]
+    last_offset = job.get("odoo_offset", 0)
+
+    while job["status"] == "running":
+        counts = _count_queue_by_status()
+        if counts["pending"] >= REFILL_THRESHOLD:
+            await asyncio.sleep(20)
+            continue
+
+        try:
+            rows = await odoo.search_read(
+                "product.template", domain,
+                fields=["id", "barcode", "name"],
+                offset=last_offset, limit=REFILL_BATCH,
+                order="create_date asc, id asc",
+            )
+        except Exception as e:
+            job["errors"].append(f"refill: {str(e)[:120]}")
+            print(f"[Enrich] Odoo refill error: {e}")
+            await asyncio.sleep(60)
+            continue
+
+        if not rows:
+            print(f"[Enrich] No more pending books in Odoo at offset {last_offset}. Refill loop done.")
+            job["refill_done"] = True
+            return
+
+        inserted = _queue_insert_many(rows)
+        last_offset += len(rows)
+        job["odoo_offset"] = last_offset
+        job["odoo_total_seen"] = job.get("odoo_total_seen", 0) + len(rows)
+        print(f"[Enrich] Refilled: fetched {len(rows)} from Odoo (offset now {last_offset}), {inserted} new in queue")
+
+
+async def scrape_worker(worker_id: int, page_queue: asyncio.Queue, job: dict):
+    """Pull one row from the queue, scrape CDL by ISBN, update status."""
+    while job["status"] == "running":
+        claimed = _claim_pending(limit=1)
+        if not claimed:
+            await asyncio.sleep(5)
+            continue
+
+        row = claimed[0]
+        odoo_id, barcode, name = row["odoo_id"], row["barcode"], row["name"]
+        attempts = row["attempts"]
+
+        if not barcode or not barcode.strip().isdigit() or len(barcode) < 10:
+            _mark_notfound(odoo_id, barcode, name, "Invalid ISBN/barcode")
+            job["notfound"] += 1
+            continue
+
+        job["current_book"] = f"W{worker_id}: {name[:70] if name else barcode}"
+
+        page = await page_queue.get()
+        try:
+            data = await scrape_book(page, query=barcode)
+            if data and data.get("title") and data["title"] != "Unknown Title":
+                data["odoo_id"] = odoo_id
+                _mark_scraped(odoo_id, data)
+                job["scraped"] += 1
+            else:
+                if attempts + 1 >= MAX_ATTEMPTS:
+                    _mark_notfound(odoo_id, barcode, name, "Not found on Casa del Libro")
+                    job["notfound"] += 1
+                else:
+                    _bump_attempt(odoo_id, "scrape returned no data")
+                    job["retried"] += 1
+        except Exception as e:
+            err = f"{type(e).__name__}: {e}"
+            if attempts + 1 >= MAX_ATTEMPTS:
+                _mark_notfound(odoo_id, barcode, name, err[:200])
+                job["notfound"] += 1
+            else:
+                _bump_attempt(odoo_id, err)
+                job["retried"] += 1
+        finally:
+            await page_queue.put(page)
+
+        await asyncio.sleep(random.uniform(0.5, 1.5))
+
+
+async def push_loop(odoo: OdooClient, job: dict):
+    """Periodically push scraped rows back to Odoo."""
+    while job["status"] == "running":
+        await asyncio.sleep(PUSH_INTERVAL_S)
+        batch = _claim_scraped_batch(PUSH_BATCH)
+        if not batch:
+            continue
+
+        written_ids: list[int] = []
+        for item in batch:
+            try:
+                html_desc = render_html_description(item["data"])
+                if not html_desc:
+                    # Nothing useful to push — treat as notfound
+                    _mark_notfound(
+                        item["odoo_id"],
+                        item["data"].get("isbn", ""),
+                        item["data"].get("title", ""),
+                        "Scraped but no usable content",
+                    )
+                    continue
+                values = {"description": html_desc}
+                ok = await odoo.write("product.template", [item["odoo_id"]], values)
+                if ok:
+                    written_ids.append(item["odoo_id"])
+            except Exception as e:
+                job["errors"].append(f"push odoo_id={item['odoo_id']}: {str(e)[:120]}")
+                print(f"[Enrich] Push error for odoo_id={item['odoo_id']}: {e}")
+                # Leave as 'scraped' so it retries next push cycle
+        if written_ids:
+            _mark_written(written_ids)
+            job["written"] += len(written_ids)
+            print(f"[Enrich] Pushed {len(written_ids)} to Odoo (total written: {job['written']})")
+
+
+# ── Public entry point ────────────────────────────────────────────────
+async def run_enrichment_job() -> str:
+    """
+    Start the enrichment job. Only one runs at a time.
+    Returns a status string when done (or on stop signal).
+    """
+    global enrichment_job
+
+    if enrichment_job and enrichment_job.get("status") == "running":
+        raise RuntimeError("Enrichment job already running")
+
+    init_db()
+    enrichment_job = {
+        "status": "running",
+        "started_at": datetime.now().isoformat(),
+        "current_book": "Conectando a Odoo...",
+        "scraped": 0,
+        "written": 0,
+        "notfound": 0,
+        "retried": 0,
+        "odoo_offset": 0,
+        "odoo_total_seen": 0,
+        "refill_done": False,
+        "errors": [],
+    }
+    job = enrichment_job
+
+    try:
+        async with OdooClient() as odoo:
+            async with async_playwright() as p:
+                launch_opts = {"headless": True, "args": CHROMIUM_ARGS}
+                if PROXY_URL:
+                    launch_opts["proxy"] = {"server": PROXY_URL}
+                browser = await p.chromium.launch(**launch_opts)
+
+                page_queue: asyncio.Queue = asyncio.Queue()
+                for _ in range(POOL_SIZE):
+                    pg = await browser.new_page()
+                    await _setup_page(pg)
+                    await page_queue.put(pg)
+
+                # Start all loops concurrently
+                workers = [scrape_worker(i, page_queue, job) for i in range(POOL_SIZE)]
+                await asyncio.gather(
+                    queue_refill_loop(odoo, job),
+                    push_loop(odoo, job),
+                    *workers,
+                    return_exceptions=True,
+                )
+
+                await browser.close()
+        if job["status"] == "running":
+            job["status"] = "completed"
+    except Exception as e:
+        job["status"] = "error"
+        job["errors"].append(f"Fatal: {str(e)[:200]}")
+        print(f"[Enrich] Fatal: {e}")
+
+    job["finished_at"] = datetime.now().isoformat()
+    return job["status"]
+
+
+def stop_enrichment_job() -> bool:
+    if enrichment_job and enrichment_job.get("status") == "running":
+        enrichment_job["status"] = "stopped"
+        return True
+    return False
+
+
+def get_enrichment_status() -> dict:
+    """Live status for the UI poller."""
+    job = dict(enrichment_job) if enrichment_job else {"status": "idle"}
+    job["queue"] = _count_queue_by_status() if enrichment_job else None
+    if "errors" in job:
+        job["errors"] = job["errors"][-5:]
+    return job
+
+
+def get_notfound_count() -> int:
+    conn = db.get_connection()
+    cur = conn.cursor()
+    db.execute_query(cur, "SELECT COUNT(*) FROM notfound_books")
+    n = cur.fetchone()[0]
+    conn.close()
+    return n

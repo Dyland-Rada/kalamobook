@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.venv/
+venv/
+
+# Env / secrets
+.env
+.env.local
+.env.*.local
+*.key
+
+# Local DB and data
+*.db
+*.db-journal
+*.xlsx
+
+# Logs
+*.log
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.claude/
+
+# Temp Odoo introspection files
+.odoo_*.json

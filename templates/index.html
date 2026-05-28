@@ -721,6 +721,7 @@
             <button class="tab-btn" onclick="switchTab('bulk')" id="tab-bulk">🚀 Scraping Masivo</button>
             <button class="tab-btn" onclick="switchTab('library')" id="tab-library">📚 Biblioteca <span
                     id="lib-count-badge"></span></button>
+            <button class="tab-btn" onclick="switchTab('odoo')" id="tab-odoo">🔄 Odoo Sync</button>
         </div>
 
         <!-- ═══ TAB 1: INDIVIDUAL SEARCH ═══ -->
@@ -974,6 +975,76 @@
                 <button onclick="loadLibrary(currentLibPage + 1)" id="lib-next">Siguiente →</button>
             </div>
         </div>
+
+        <!-- ═══ TAB 4: ODOO SYNC ═══ -->
+        <div class="tab-content" id="content-odoo">
+            <div class="card">
+                <div class="card-title">🔄 Enriquecimiento de Odoo desde Casa del Libro</div>
+                <p style="color:#888; font-size:0.9rem;">
+                    Lee productos de Odoo con barcode (ISBN) pero sin <code>description_sale</code>,
+                    los scrapea en Casa del Libro y escribe HTML enriquecido en el campo
+                    <code>description</code>. Resume entre reinicios.
+                </p>
+                <div style="display:flex; gap:12px; margin-top:18px; flex-wrap:wrap;">
+                    <button class="btn btn-success" id="btn-odoo-start" onclick="odooStart()">
+                        ▶ Iniciar sincronización
+                    </button>
+                    <button class="btn btn-danger" id="btn-odoo-stop" onclick="odooStop()" disabled>
+                        ⏹ Detener
+                    </button>
+                    <a href="/api/v1/odoo/notfound/export" class="btn btn-primary"
+                       style="text-decoration:none; display:inline-flex; align-items:center;">
+                        📥 Excel no encontrados
+                    </a>
+                </div>
+            </div>
+
+            <div class="card" id="odoo-status-card" style="display:none;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+                    <div class="card-title" style="margin-bottom:0;">
+                        📊 Estado del job
+                        <span class="status-badge running" id="odoo-status-badge">RUNNING</span>
+                    </div>
+                </div>
+
+                <div class="progress-stats">
+                    <div class="stat-box">
+                        <div class="stat-number blue" id="odoo-stat-pending">0</div>
+                        <div class="stat-label">Pendientes en cola</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number yellow" id="odoo-stat-scraping">0</div>
+                        <div class="stat-label">Scrapeando</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#9b59b6" id="odoo-stat-scraped">0</div>
+                        <div class="stat-label">Listo para push</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number green" id="odoo-stat-written">0</div>
+                        <div class="stat-label">Escritos a Odoo</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number red" id="odoo-stat-notfound">0</div>
+                        <div class="stat-label">No encontrados</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#bbb" id="odoo-stat-seen">0</div>
+                        <div class="stat-label">Vistos en Odoo</div>
+                    </div>
+                </div>
+
+                <div class="current-book" id="odoo-current">
+                    <span class="dot"></span>
+                    <span id="odoo-current-text">Esperando...</span>
+                </div>
+
+                <div id="odoo-errors" style="display:none;">
+                    <div class="section-label" style="color:#e94560; margin-top:12px;">Últimos errores</div>
+                    <ul id="odoo-errors-list" style="font-size:0.82rem; color:#e94560; padding-left:20px;"></ul>
+                </div>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -986,6 +1057,8 @@
 
             if (tab === 'library') loadLibrary(1);
             if (tab === 'bulk') loadCategories();
+            if (tab === 'odoo') { odooPoll(); odooStartPolling(); }
+            else odooStopPolling();
         }
 
         function showLoading() {
@@ -1216,6 +1289,85 @@
                 const badge = document.getElementById('lib-count-badge');
                 if (data.count > 0) badge.textContent = `(${data.count})`;
             } catch (e) { }
+        }
+
+        // ═══ ODOO SYNC ═══
+        let odooPollTimer = null;
+
+        async function odooStart() {
+            document.getElementById('btn-odoo-start').disabled = true;
+            try {
+                const resp = await fetch('/api/v1/odoo/sync/start', { method: 'POST' });
+                const data = await resp.json();
+                if (data.status === 'started') {
+                    document.getElementById('odoo-status-card').style.display = 'block';
+                    document.getElementById('btn-odoo-stop').disabled = false;
+                    odooStartPolling();
+                    odooPoll();
+                } else {
+                    alert('Error: ' + (data.message || 'No se pudo iniciar'));
+                    document.getElementById('btn-odoo-start').disabled = false;
+                }
+            } catch (e) {
+                alert('Error de conexión: ' + e.message);
+                document.getElementById('btn-odoo-start').disabled = false;
+            }
+        }
+
+        async function odooStop() {
+            try { await fetch('/api/v1/odoo/sync/stop', { method: 'POST' }); }
+            catch (e) { console.error('Stop error:', e); }
+        }
+
+        function odooStartPolling() {
+            if (odooPollTimer) return;
+            odooPollTimer = setInterval(odooPoll, 5000);
+        }
+
+        function odooStopPolling() {
+            if (odooPollTimer) { clearInterval(odooPollTimer); odooPollTimer = null; }
+        }
+
+        async function odooPoll() {
+            try {
+                const resp = await fetch('/api/v1/odoo/sync/status');
+                const job = await resp.json();
+                const card = document.getElementById('odoo-status-card');
+
+                if (job.status === 'idle') {
+                    card.style.display = 'none';
+                    return;
+                }
+                card.style.display = 'block';
+
+                const q = job.queue || {};
+                document.getElementById('odoo-stat-pending').textContent = q.pending || 0;
+                document.getElementById('odoo-stat-scraping').textContent = q.scraping || 0;
+                document.getElementById('odoo-stat-scraped').textContent = q.scraped || 0;
+                document.getElementById('odoo-stat-written').textContent = job.written || 0;
+                document.getElementById('odoo-stat-notfound').textContent = job.notfound || 0;
+                document.getElementById('odoo-stat-seen').textContent = job.odoo_total_seen || 0;
+
+                document.getElementById('odoo-current-text').textContent = job.current_book || '...';
+                const badge = document.getElementById('odoo-status-badge');
+                badge.textContent = (job.status || 'unknown').toUpperCase();
+                badge.className = 'status-badge ' + (job.status || 'running');
+
+                if (job.errors && job.errors.length > 0) {
+                    document.getElementById('odoo-errors').style.display = 'block';
+                    const ul = document.getElementById('odoo-errors-list');
+                    ul.innerHTML = '';
+                    job.errors.forEach(e => { ul.innerHTML += `<li>${e}</li>`; });
+                }
+
+                if (['completed', 'stopped', 'error'].includes(job.status)) {
+                    odooStopPolling();
+                    document.getElementById('btn-odoo-start').disabled = false;
+                    document.getElementById('btn-odoo-stop').disabled = true;
+                }
+            } catch (e) {
+                console.error('Odoo poll error:', e);
+            }
         }
 
         // ═══ INIT ═══

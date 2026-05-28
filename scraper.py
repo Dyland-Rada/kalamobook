@@ -142,6 +142,39 @@ def init_db():
         )
     ''')
 
+    # ── Odoo enrichment pipeline ──
+    # status: pending → scraping → scraped → written
+    #         (terminal failures move to notfound_books)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS enrichment_queue (
+            odoo_id INTEGER PRIMARY KEY,
+            barcode TEXT,
+            name TEXT,
+            status TEXT DEFAULT 'pending',
+            attempts INTEGER DEFAULT 0,
+            last_error TEXT,
+            scraped_data TEXT,
+            queued_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    db.execute_query(cursor, "CREATE INDEX IF NOT EXISTS idx_eq_status ON enrichment_queue(status)")
+    db.execute_query(cursor, "CREATE INDEX IF NOT EXISTS idx_eq_barcode ON enrichment_queue(barcode)")
+
+    # Libros que estan en Odoo pero no aparecen en Casa del Libro
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS notfound_books (
+            odoo_id INTEGER PRIMARY KEY,
+            barcode TEXT,
+            name TEXT,
+            reason TEXT,
+            attempts INTEGER DEFAULT 1,
+            first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_attempt TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    db.execute_query(cursor, "CREATE INDEX IF NOT EXISTS idx_nf_barcode ON notfound_books(barcode)")
+
     conn.commit()
     conn.close()
 

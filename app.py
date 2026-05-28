@@ -18,6 +18,11 @@ from bulk_scraper import (
     get_categories, get_all_books, get_books_count,
     discover_categories,
 )
+from enrichment import (
+    run_enrichment_job, stop_enrichment_job,
+    get_enrichment_status, get_notfound_count,
+)
+import db as dbmod
 
 security = HTTPBasic()
 APP_USERNAME = os.environ.get("APP_USERNAME", "admin")
@@ -240,6 +245,88 @@ async def export_library(background_tasks: BackgroundTasks):
         )
     except Exception as e:
         return JSONResponse(status_code=500, content={"status": "error", "message": f"Error exportando Excel: {e}"})
+
+
+# ─── REST API — Odoo Enrichment ──────────────────────────────────────
+
+@app.post("/api/v1/odoo/sync/start", tags=["Odoo"])
+async def odoo_sync_start():
+    """Inicia el job de enriquecimiento de Odoo en background.
+    Lee libros sin description_sale del Odoo, scrapea en CDL, y escribe
+    HTML enriquecido en el campo `description` del producto."""
+    import threading
+    import sys
+
+    status = get_enrichment_status()
+    if status.get("status") == "running":
+        return JSONResponse(status_code=409, content={
+            "status": "error",
+            "message": "Ya hay un job de enriquecimiento corriendo."
+        })
+
+    def _run_in_thread():
+        if sys.platform == 'win32':
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
+        try:
+            new_loop.run_until_complete(run_enrichment_job())
+        finally:
+            new_loop.close()
+
+    t = threading.Thread(target=_run_in_thread, daemon=True)
+    t.start()
+    await asyncio.sleep(1)
+    return JSONResponse(content={"status": "started"})
+
+
+@app.post("/api/v1/odoo/sync/stop", tags=["Odoo"])
+async def odoo_sync_stop():
+    """Detiene el job de enriquecimiento en curso (los workers terminan su tarea actual)."""
+    if stop_enrichment_job():
+        return JSONResponse(content={"status": "stopped"})
+    return JSONResponse(status_code=400, content={
+        "status": "error", "message": "No hay job corriendo."
+    })
+
+
+@app.get("/api/v1/odoo/sync/status", tags=["Odoo"])
+async def odoo_sync_status():
+    """Estado del job de enriquecimiento + conteos de la cola."""
+    return JSONResponse(content=get_enrichment_status())
+
+
+@app.get("/api/v1/odoo/notfound/count", tags=["Odoo"])
+async def odoo_notfound_count():
+    return JSONResponse(content={"count": get_notfound_count()})
+
+
+@app.get("/api/v1/odoo/notfound/export", tags=["Odoo"])
+async def odoo_notfound_export(background_tasks: BackgroundTasks):
+    """Exporta los libros no encontrados en CDL a Excel."""
+    import uuid as _uuid
+    file_path = f"notfound_{_uuid.uuid4().hex[:8]}.xlsx"
+    try:
+        conn = dbmod.get_connection()
+        df = pd.read_sql_query(
+            "SELECT odoo_id, barcode, name, reason, attempts, "
+            "first_seen, last_attempt FROM notfound_books ORDER BY last_attempt DESC",
+            conn,
+        )
+        conn.close()
+        df.to_excel(file_path, index=False)
+        background_tasks.add_task(
+            lambda: os.remove(file_path) if os.path.exists(file_path) else None
+        )
+        return FileResponse(
+            path=file_path,
+            filename="Libros_No_Encontrados.xlsx",
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    except Exception as e:
+        return JSONResponse(status_code=500, content={
+            "status": "error", "message": f"Error exportando Excel: {e}"
+        })
 
 
 if __name__ == "__main__":
