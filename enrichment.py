@@ -31,6 +31,7 @@ from playwright.async_api import async_playwright
 import db
 from scraper import (
     BASE_URL, PROXY_URL, CHROMIUM_ARGS, _setup_page, scrape_book, init_db,
+    check_in_db_by_isbn, lookup_url_by_isbn,
 )
 from odoo_client import OdooClient, OdooError
 
@@ -39,7 +40,11 @@ REFILL_THRESHOLD = int(os.environ.get("ENRICH_QUEUE_REFILL_AT", "500"))
 REFILL_BATCH = int(os.environ.get("ENRICH_QUEUE_REFILL_SIZE", "2000"))
 PUSH_BATCH = int(os.environ.get("ENRICH_PUSH_BATCH", "50"))
 PUSH_INTERVAL_S = int(os.environ.get("ENRICH_PUSH_INTERVAL_S", "30"))
-MAX_ATTEMPTS = int(os.environ.get("ENRICH_MAX_ATTEMPTS", "3"))
+MAX_ATTEMPTS = int(os.environ.get("ENRICH_MAX_ATTEMPTS", "1"))
+# Si el ISBN no esta en cdl_isbn_index NI en books table, ¿hacer search en CDL?
+# Por defecto NO — fast-fail directo a notfound. Pone esto a "1" si quieres
+# que el worker pague el costo del search para los huerfanos.
+FALLBACK_TO_SEARCH = os.environ.get("ENRICH_FALLBACK_SEARCH", "0") == "1"
 
 # Global singleton job state (only one enrichment job runs at a time)
 enrichment_job: dict | None = None
@@ -293,7 +298,13 @@ async def queue_refill_loop(odoo: OdooClient, job: dict):
 
 
 async def scrape_worker(worker_id: int, page_queue: asyncio.Queue, job: dict):
-    """Pull one row from the queue, scrape CDL by ISBN, update status."""
+    """
+    Cascading cache lookup for each Odoo book:
+      1. books table by ISBN → reuse local data (0 Playwright cost)
+      2. cdl_isbn_index → scrape with direct URL (1 nav instead of 2)
+      3. Search fallback (default OFF) → scrape via search→click
+      4. else → mark notfound
+    """
     while job["status"] == "running":
         claimed = _claim_pending(limit=1)
         if not claimed:
@@ -304,20 +315,44 @@ async def scrape_worker(worker_id: int, page_queue: asyncio.Queue, job: dict):
         odoo_id, barcode, name = row["odoo_id"], row["barcode"], row["name"]
         attempts = row["attempts"]
 
-        if not barcode or not barcode.strip().isdigit() or len(barcode) < 10:
+        if not barcode or not str(barcode).strip().isdigit() or len(str(barcode)) < 10:
             _mark_notfound(odoo_id, barcode, name, "Invalid ISBN/barcode")
             job["notfound"] += 1
             continue
 
-        job["current_book"] = f"W{worker_id}: {name[:70] if name else barcode}"
+        # ── Fast path 1: cache lookup in local books table ──
+        cached = check_in_db_by_isbn(barcode)
+        if cached and cached.get("title") and cached["title"] != "Unknown Title":
+            cached["odoo_id"] = odoo_id
+            cached["isbn"] = cached.get("isbn") or barcode
+            _mark_scraped(odoo_id, cached)
+            job["scraped"] += 1
+            job["cache_hits"] += 1
+            continue
+
+        # ── Fast path 2: direct URL from sitemap ISBN index ──
+        direct_url = lookup_url_by_isbn(barcode)
+
+        # ── Fast-fail: ISBN not in our world at all ──
+        if not direct_url and not FALLBACK_TO_SEARCH:
+            _mark_notfound(odoo_id, barcode, name, "Not in CDL ISBN index")
+            job["notfound"] += 1
+            continue
+
+        job["current_book"] = (
+            f"W{worker_id} {'[direct]' if direct_url else '[search]'}: "
+            f"{(name or barcode)[:60]}"
+        )
 
         page = await page_queue.get()
         try:
-            data = await scrape_book(page, query=barcode)
+            data = await scrape_book(page, query=barcode, direct_url=direct_url)
             if data and data.get("title") and data["title"] != "Unknown Title":
                 data["odoo_id"] = odoo_id
                 _mark_scraped(odoo_id, data)
                 job["scraped"] += 1
+                if direct_url:
+                    job["direct_hits"] += 1
             else:
                 if attempts + 1 >= MAX_ATTEMPTS:
                     _mark_notfound(odoo_id, barcode, name, "Not found on Casa del Libro")
@@ -336,7 +371,8 @@ async def scrape_worker(worker_id: int, page_queue: asyncio.Queue, job: dict):
         finally:
             await page_queue.put(page)
 
-        await asyncio.sleep(random.uniform(0.5, 1.5))
+        # Mucho menor delay porque los cache hits no requieren rate limiting
+        await asyncio.sleep(random.uniform(0.2, 0.6))
 
 
 async def push_loop(odoo: OdooClient, job: dict):
@@ -394,8 +430,11 @@ async def run_enrichment_job() -> str:
         "written": 0,
         "notfound": 0,
         "retried": 0,
+        "cache_hits": 0,       # libros resueltos por books table (0 nav)
+        "direct_hits": 0,      # libros resueltos por URL del sitemap (1 nav)
         "odoo_offset": 0,
         "odoo_total_seen": 0,
+        "odoo_total_target": 0,
         "refill_done": False,
         "errors": [],
     }
@@ -403,6 +442,16 @@ async def run_enrichment_job() -> str:
 
     try:
         async with OdooClient() as odoo:
+            # Cuenta total de target una sola vez (para el % en UI)
+            try:
+                job["odoo_total_target"] = await odoo.search_count(
+                    "product.template",
+                    [["barcode", "!=", False], ["description_sale", "=", False]],
+                )
+                print(f"[Enrich] Target total: {job['odoo_total_target']} libros sin description_sale")
+            except Exception as e:
+                print(f"[Enrich] No pude obtener target count: {e}")
+
             async with async_playwright() as p:
                 launch_opts = {"headless": True, "args": CHROMIUM_ARGS}
                 if PROXY_URL:
@@ -459,3 +508,58 @@ def get_notfound_count() -> int:
     n = cur.fetchone()[0]
     conn.close()
     return n
+
+
+def get_isbn_index_count() -> int:
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        db.execute_query(cur, "SELECT COUNT(*) FROM cdl_isbn_index")
+        n = cur.fetchone()[0]
+    except Exception:
+        n = 0
+    conn.close()
+    return n
+
+
+isbn_index_job: dict | None = None
+
+
+async def run_build_isbn_index_job() -> str:
+    """
+    Standalone one-shot job: read all CDL sitemap sub-files and populate
+    the cdl_isbn_index table. ~5-10 min total. Idempotent (safe to re-run).
+    """
+    global isbn_index_job
+
+    if isbn_index_job and isbn_index_job.get("status") == "running":
+        raise RuntimeError("ISBN index job already running")
+
+    init_db()
+    isbn_index_job = {
+        "status": "running",
+        "started_at": datetime.now().isoformat(),
+        "message": "Iniciando lectura de sitemap...",
+        "indexed": 0,
+    }
+
+    def _progress(msg: str):
+        isbn_index_job["message"] = msg
+
+    try:
+        from sitemap import populate_isbn_index
+        stats = await populate_isbn_index(progress_cb=_progress)
+        isbn_index_job["indexed"] = stats.get("indexed", 0)
+        isbn_index_job["status"] = "completed"
+        isbn_index_job["message"] = f"✅ {isbn_index_job['indexed']} ISBNs indexados"
+    except Exception as e:
+        isbn_index_job["status"] = "error"
+        isbn_index_job["message"] = f"Error: {str(e)[:200]}"
+        print(f"[ISBN-Index] Fatal: {e}")
+
+    isbn_index_job["finished_at"] = datetime.now().isoformat()
+    return isbn_index_job["status"]
+
+
+def get_isbn_index_job_status() -> dict:
+    return dict(isbn_index_job) if isbn_index_job else {"status": "idle"}

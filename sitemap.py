@@ -97,6 +97,69 @@ async def fetch_themes_subsitemaps(session: aiohttp.ClientSession) -> list[str]:
     return urls
 
 
+async def populate_isbn_index(progress_cb=None) -> dict:
+    """
+    Read all sitemap sub-files and bulk-insert {isbn, url, title, image_url}
+    into the cdl_isbn_index table. Returns stats {indexed, sitemaps_read}.
+
+    This is the discovery prerequisite to fast Odoo enrichment: once the
+    table is populated, the enrichment worker can look up the canonical
+    CDL URL by ISBN in O(1) instead of doing a search→click.
+    """
+    import db
+    inserted = 0
+    sitemaps_read = 0
+    buf: list[dict] = []
+    BUF_SIZE = 5000
+
+    def _flush(rows: list[dict]) -> int:
+        if not rows:
+            return 0
+        conn = db.get_connection()
+        cur = conn.cursor()
+        n = 0
+        try:
+            for r in rows:
+                if not r["isbn"]:
+                    continue
+                try:
+                    if db.IS_POSTGRES:
+                        db.execute_query(cur, """
+                            INSERT INTO cdl_isbn_index (isbn, url, title, image_url)
+                            VALUES (?, ?, ?, ?)
+                            ON CONFLICT (isbn) DO UPDATE SET
+                                url = EXCLUDED.url,
+                                title = COALESCE(NULLIF(EXCLUDED.title, ''), cdl_isbn_index.title),
+                                image_url = COALESCE(NULLIF(EXCLUDED.image_url, ''), cdl_isbn_index.image_url)
+                        """, (r["isbn"], r["url"], r["title"], r["image_url"]))
+                    else:
+                        db.execute_query(cur, """
+                            INSERT OR REPLACE INTO cdl_isbn_index
+                            (isbn, url, title, image_url)
+                            VALUES (?, ?, ?, ?)
+                        """, (r["isbn"], r["url"], r["title"], r["image_url"]))
+                    n += 1
+                except Exception as e:
+                    print(f"[Sitemap] Insert error for ISBN {r['isbn']}: {e}")
+            conn.commit()
+        finally:
+            conn.close()
+        return n
+
+    async for entry in iter_book_urls(progress_cb=progress_cb):
+        buf.append(entry)
+        if len(buf) >= BUF_SIZE:
+            inserted += _flush(buf)
+            if progress_cb:
+                progress_cb(f"Indexados {inserted} libros en ISBN cache...")
+            buf = []
+    if buf:
+        inserted += _flush(buf)
+
+    print(f"[Sitemap] populate_isbn_index complete: {inserted} ISBNs indexed")
+    return {"indexed": inserted, "sitemaps_read": sitemaps_read}
+
+
 async def iter_book_urls(
     progress_cb=None,
 ) -> AsyncIterator[dict]:

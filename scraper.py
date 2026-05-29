@@ -175,6 +175,21 @@ def init_db():
     ''')
     db.execute_query(cursor, "CREATE INDEX IF NOT EXISTS idx_nf_barcode ON notfound_books(barcode)")
 
+    # Indice ISBN-URL del sitemap de CDL. Permite scrape directo por URL
+    # sin pagar el costo de search→click.
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS cdl_isbn_index (
+            isbn TEXT PRIMARY KEY,
+            url TEXT,
+            title TEXT,
+            image_url TEXT,
+            populated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    # Indice ISBN sobre la tabla books — speedup brutal para cache lookup.
+    db.execute_query(cursor, "CREATE INDEX IF NOT EXISTS idx_books_isbn ON books(isbn)")
+
     conn.commit()
     conn.close()
 
@@ -183,7 +198,7 @@ def check_in_db(search_query):
     """Check if a search query has already been processed."""
     conn = db.get_connection()
     cursor = conn.cursor()
-    
+
     query = '''
         SELECT title, author, editorial, isbn, price, original_price, discount,
                description, translator, illustrator, language, pages, reading_time,
@@ -196,6 +211,53 @@ def check_in_db(search_query):
     result = cursor.fetchone()
     conn.close()
     return result
+
+
+_BOOK_FIELDS_FOR_CACHE = [
+    'title', 'author', 'editorial', 'isbn', 'price', 'original_price',
+    'discount', 'description', 'translator', 'illustrator', 'language',
+    'pages', 'reading_time', 'binding', 'release_date', 'edition_year',
+    'edition_place', 'collection', 'height', 'width', 'weight', 'origin',
+    'url', 'image_url',
+]
+
+
+def check_in_db_by_isbn(isbn: str) -> dict | None:
+    """
+    Cache lookup by ISBN. Returns a dict with the scraped fields if the book
+    was previously scraped, else None. Used to skip Playwright entirely when
+    enriching Odoo with ISBNs already in our local books table.
+    """
+    if not isbn or not str(isbn).strip():
+        return None
+    conn = db.get_connection()
+    cursor = conn.cursor()
+    fields_csv = ", ".join(_BOOK_FIELDS_FOR_CACHE)
+    db.execute_query(cursor,
+        f"SELECT {fields_csv} FROM books WHERE isbn = ? LIMIT 1",
+        (str(isbn).strip(),))
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {k: (row[i] if i < len(row) else '') for i, k in enumerate(_BOOK_FIELDS_FOR_CACHE)}
+
+
+def lookup_url_by_isbn(isbn: str) -> str | None:
+    """
+    Sitemap-based fast path: return the canonical CDL URL for an ISBN if we
+    have it pre-indexed. Avoids the search→click step.
+    """
+    if not isbn or not str(isbn).strip():
+        return None
+    conn = db.get_connection()
+    cursor = conn.cursor()
+    db.execute_query(cursor,
+        "SELECT url FROM cdl_isbn_index WHERE isbn = ? LIMIT 1",
+        (str(isbn).strip(),))
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else None
 
 
 def save_to_db(data):
@@ -374,8 +436,8 @@ async def scrape_book(page, query, direct_url=None):
             search_url = f"{BASE_URL}/?query={urllib.parse.quote(query)}"
             print(f"Navigating to search URL: {search_url}")
             try:
-                await page.goto(search_url, timeout=60000, wait_until='domcontentloaded')
-                await page.wait_for_timeout(3000)  # let JS results load
+                await page.goto(search_url, timeout=30000, wait_until='domcontentloaded')
+                await page.wait_for_timeout(1200)  # let JS results load
             except Exception as e:
                 print(f"Error navigating to search URL: {e}")
                 return None
@@ -476,12 +538,12 @@ async def scrape_book(page, query, direct_url=None):
 
         page.on("response", handle_response)
 
-        await page.goto(book_url, timeout=60000)
+        await page.goto(book_url, timeout=30000)
         try:
-            await page.wait_for_load_state('networkidle', timeout=8000)
+            await page.wait_for_load_state('networkidle', timeout=3000)
         except:
             await page.wait_for_load_state('domcontentloaded')
-        await page.wait_for_timeout(1500)  # Extra wait for async price API
+        await page.wait_for_timeout(700)  # Extra wait for async price API
 
         # Remove cookie overlays via JS so they don't block any subsequent interactions
         try:

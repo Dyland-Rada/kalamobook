@@ -21,6 +21,8 @@ from bulk_scraper import (
 from enrichment import (
     run_enrichment_job, stop_enrichment_job,
     get_enrichment_status, get_notfound_count,
+    run_build_isbn_index_job, get_isbn_index_job_status,
+    get_isbn_index_count,
 )
 import db as dbmod
 
@@ -299,6 +301,47 @@ async def odoo_sync_status():
 @app.get("/api/v1/odoo/notfound/count", tags=["Odoo"])
 async def odoo_notfound_count():
     return JSONResponse(content={"count": get_notfound_count()})
+
+
+# ─── REST API — CDL ISBN Index (sitemap-based fast path) ─────────────
+
+@app.post("/api/v1/cdl/build-isbn-index", tags=["Odoo"])
+async def cdl_build_isbn_index():
+    """
+    Lee el sitemap-cdl-libros-tematicas y popula la tabla cdl_isbn_index.
+    Job en background. Una vez completado, el scraper de Odoo puede usar
+    direct-URL en vez de search→click para libros conocidos.
+    """
+    import threading
+    import sys
+
+    if get_isbn_index_job_status().get("status") == "running":
+        return JSONResponse(status_code=409, content={
+            "status": "error", "message": "ISBN index job ya está corriendo."
+        })
+
+    def _run_in_thread():
+        if sys.platform == 'win32':
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
+        try:
+            new_loop.run_until_complete(run_build_isbn_index_job())
+        finally:
+            new_loop.close()
+
+    t = threading.Thread(target=_run_in_thread, daemon=True)
+    t.start()
+    await asyncio.sleep(1)
+    return JSONResponse(content={"status": "started"})
+
+
+@app.get("/api/v1/cdl/isbn-index/status", tags=["Odoo"])
+async def cdl_isbn_index_status():
+    """Estado del job + cuantos ISBNs hay indexados en BD."""
+    job = get_isbn_index_job_status()
+    job["total_indexed"] = get_isbn_index_count()
+    return JSONResponse(content=job)
 
 
 @app.get("/api/v1/odoo/notfound/export", tags=["Odoo"])
