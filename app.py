@@ -437,13 +437,25 @@ async def notify_setup_webhook(request: Request):
     Lo llamas UNA VEZ, manualmente, desde el server que quieres que
     responda los comandos. Telegram solo guarda una URL — si lo llamas
     desde otro server despues, queda apuntando ahi.
+
+    Telegram exige HTTPS. Forzamos el esquema https en la URL armada desde
+    el Host header (el dominio publico). Si por alguna razon queres
+    overridear (ej. dominio custom), seteas WEBHOOK_BASE_URL.
     """
     import notify as nfy
     if not nfy.TELEGRAM_BOT_TOKEN:
         return JSONResponse(status_code=400, content={
             "status": "error", "message": "TELEGRAM_BOT_TOKEN no configurado en este server"
         })
-    base = str(request.base_url).rstrip("/")
+
+    override = os.environ.get("WEBHOOK_BASE_URL", "").rstrip("/")
+    if override:
+        base = override if override.startswith("http") else f"https://{override}"
+    else:
+        # Detras de Traefik/nginx el scheme de request.url es http; usamos el
+        # Host header (lo que el cliente ve) y forzamos https.
+        host = request.headers.get("host") or request.url.netloc
+        base = f"https://{host}"
     webhook_url = f"{base}/api/v1/notify/telegram-webhook"
     secret = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "")
     result = await nfy.register_webhook(webhook_url, secret=secret)
