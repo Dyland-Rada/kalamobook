@@ -344,6 +344,42 @@ async def cdl_isbn_index_status():
     return JSONResponse(content=job)
 
 
+# ─── REST API — Telegram notifications ────────────────────────────────
+
+@app.post("/api/v1/notify/test", tags=["Notificaciones"])
+async def notify_test():
+    """
+    Manda un mensaje de prueba al Telegram configurado para verificar que
+    TELEGRAM_BOT_TOKEN y TELEGRAM_CHAT_ID son correctos.
+    """
+    import notify as nfy
+    if not nfy.is_configured():
+        return JSONResponse(status_code=400, content={
+            "status": "error",
+            "message": "TELEGRAM_BOT_TOKEN y/o TELEGRAM_CHAT_ID no estan configurados.",
+            "worker": os.environ.get("WORKER_NAME", "default"),
+        })
+    ok = await nfy.send_telegram(
+        "✅ *Test de notificacion*\nSi ves esto en tu celular, el bot esta listo."
+    )
+    if ok:
+        return JSONResponse(content={"status": "sent", "worker": os.environ.get("WORKER_NAME", "default")})
+    return JSONResponse(status_code=502, content={
+        "status": "error",
+        "message": "No se pudo entregar el mensaje. Revisa el token y el chat_id."
+    })
+
+
+@app.get("/api/v1/notify/status", tags=["Notificaciones"])
+async def notify_status():
+    """¿Esta configurado el Telegram en este server?"""
+    import notify as nfy
+    return JSONResponse(content={
+        "configured": nfy.is_configured(),
+        "worker": os.environ.get("WORKER_NAME", "default"),
+    })
+
+
 @app.get("/api/v1/odoo/notfound/export", tags=["Odoo"])
 async def odoo_notfound_export(background_tasks: BackgroundTasks):
     """Exporta los libros no encontrados en CDL a Excel."""

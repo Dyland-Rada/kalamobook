@@ -34,6 +34,7 @@ from scraper import (
     check_in_db_by_isbn, lookup_url_by_isbn,
 )
 from odoo_client import OdooClient, OdooError
+import notify
 
 POOL_SIZE = int(os.environ.get("BULK_POOL_SIZE", "6"))
 REFILL_THRESHOLD = int(os.environ.get("ENRICH_QUEUE_REFILL_AT", "500"))
@@ -374,6 +375,73 @@ def render_html_description(d: dict) -> str:
 
 
 # ── Loops ──────────────────────────────────────────────────────────────
+async def monitor_loop(job: dict):
+    """
+    Manda un reporte por Telegram cada NOTIFY_INTERVAL_MIN (default 60).
+    No-op si las env vars TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID no estan.
+    Tambien dispara alerta si el ritmo cae a 0 o si la tasa de errores
+    sube por encima de cierto umbral (deteccion basica de ban).
+    """
+    if not notify.is_configured():
+        print("[Monitor] Telegram no configurado, monitor_loop dormido")
+        return
+
+    interval_min = int(os.environ.get("NOTIFY_INTERVAL_MIN", "60"))
+    interval_s = interval_min * 60
+    ban_threshold = float(os.environ.get("NOTIFY_BAN_NOTFOUND_PCT", "0.85"))
+
+    await notify.notify_job_started(job.get("odoo_total_target", 0))
+
+    last_written = job.get("written", 0)
+    last_notfound = job.get("notfound", 0)
+    stagnant_ticks = 0
+
+    while job["status"] == "running":
+        await asyncio.sleep(interval_s)
+        if job["status"] != "running":
+            break
+
+        try:
+            counts = _count_queue_by_status()
+            written = job.get("written", 0)
+            notfound = job.get("notfound", 0)
+            delta_written = written - last_written
+            delta_notfound = notfound - last_notfound
+
+            await notify.notify_stats(job, counts, delta_written, interval_min)
+
+            # Alerta de estancamiento (0 escritos en el ultimo intervalo)
+            if delta_written == 0 and delta_notfound == 0:
+                stagnant_ticks += 1
+                if stagnant_ticks >= 2:
+                    await notify.notify_alert(
+                        "warn", "Estancamiento detectado",
+                        f"0 libros escritos ni notfound en los ultimos "
+                        f"{stagnant_ticks * interval_min} minutos. "
+                        f"Workers vivos: {counts.get('scraping', 0)}. "
+                        f"Pending: {counts.get('pending', 0)}. "
+                        f"Revisa logs del contenedor.")
+                    stagnant_ticks = 0
+            else:
+                stagnant_ticks = 0
+
+            # Alerta de posible ban (tasa notfound muy alta en este intervalo)
+            total_processed = delta_written + delta_notfound
+            if total_processed >= 30:  # solo con muestra significativa
+                notfound_pct = delta_notfound / total_processed
+                if notfound_pct >= ban_threshold:
+                    await notify.notify_alert(
+                        "critical", "Posible ban de IP",
+                        f"En el ultimo intervalo: {delta_notfound}/{total_processed} "
+                        f"libros marcados notfound ({notfound_pct*100:.0f}%). "
+                        f"Casa del Libro puede estar bloqueando.")
+
+            last_written = written
+            last_notfound = notfound
+        except Exception as e:
+            print(f"[Monitor] error: {e}")
+
+
 def _reclaim_stuck_scraping(stuck_minutes: int = 15) -> int:
     """Worker que murio dejo filas en 'scraping'. Devolverlas a 'pending'."""
     conn = db.get_connection()
@@ -639,6 +707,7 @@ async def run_enrichment_job() -> str:
                 await asyncio.gather(
                     queue_refill_loop(odoo, job),
                     push_loop(odoo, job),
+                    monitor_loop(job),
                     *workers,
                     return_exceptions=True,
                 )
@@ -646,6 +715,11 @@ async def run_enrichment_job() -> str:
                 await browser.close()
         if job["status"] == "running":
             job["status"] = "completed"
+
+        try:
+            await notify.notify_job_stopped(job.get("written", 0), reason=job["status"])
+        except Exception:
+            pass
     except Exception as e:
         job["status"] = "error"
         job["errors"].append(f"Fatal: {str(e)[:200]}")
