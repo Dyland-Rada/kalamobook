@@ -143,8 +143,11 @@ def init_db():
     ''')
 
     # ── Odoo enrichment pipeline ──
-    # status: pending → scraping → scraped → written
+    # status: pending → scraping → scraped → pushing → written
     #         (terminal failures move to notfound_books)
+    # claimed_by: WORKER_NAME del proceso que tiene la fila reservada — solo
+    #             para telemetria, la garantia de exclusividad la da el
+    #             FOR UPDATE SKIP LOCKED en _claim_pending.
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS enrichment_queue (
             odoo_id INTEGER PRIMARY KEY,
@@ -154,12 +157,19 @@ def init_db():
             attempts INTEGER DEFAULT 0,
             last_error TEXT,
             scraped_data TEXT,
+            claimed_by TEXT,
             queued_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
     db.execute_query(cursor, "CREATE INDEX IF NOT EXISTS idx_eq_status ON enrichment_queue(status)")
     db.execute_query(cursor, "CREATE INDEX IF NOT EXISTS idx_eq_barcode ON enrichment_queue(barcode)")
+    # Idempotent: si la tabla ya existia sin claimed_by, agregar la columna
+    try:
+        db.execute_query(cursor, "ALTER TABLE enrichment_queue ADD COLUMN claimed_by TEXT")
+        conn.commit()
+    except Exception:
+        conn.rollback()
 
     # Libros que estan en Odoo pero no aparecen en Casa del Libro
     cursor.execute('''

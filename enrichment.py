@@ -41,6 +41,9 @@ REFILL_BATCH = int(os.environ.get("ENRICH_QUEUE_REFILL_SIZE", "2000"))
 PUSH_BATCH = int(os.environ.get("ENRICH_PUSH_BATCH", "50"))
 PUSH_INTERVAL_S = int(os.environ.get("ENRICH_PUSH_INTERVAL_S", "30"))
 MAX_ATTEMPTS = int(os.environ.get("ENRICH_MAX_ATTEMPTS", "1"))
+# Identificador del servidor para multi-server deploy. Solo telemetria —
+# la garantia de no-duplicacion la da FOR UPDATE SKIP LOCKED en Postgres.
+WORKER_NAME = os.environ.get("WORKER_NAME", "default")
 # Si el ISBN no esta en cdl_isbn_index NI en books table, ¿hacer search en CDL?
 # Por defecto NO — fast-fail directo a notfound. Pone esto a "1" si quieres
 # que el worker pague el costo del search para los huerfanos.
@@ -55,7 +58,7 @@ def _count_queue_by_status() -> dict[str, int]:
     conn = db.get_connection()
     cur = conn.cursor()
     out = {}
-    for status in ("pending", "scraping", "scraped", "written"):
+    for status in ("pending", "scraping", "scraped", "pushing", "written"):
         db.execute_query(cur, "SELECT COUNT(*) FROM enrichment_queue WHERE status = ?", (status,))
         out[status] = cur.fetchone()[0]
     db.execute_query(cur, "SELECT COUNT(*) FROM notfound_books")
@@ -94,31 +97,62 @@ def _queue_insert_many(rows: list[dict]) -> int:
 
 def _claim_pending(limit: int = 1) -> list[dict]:
     """
-    Atomically grab pending rows and mark them 'scraping' so other workers skip.
-    Returns list of {odoo_id, barcode, name, attempts}.
+    Atomically claim pending rows: SELECT FOR UPDATE SKIP LOCKED + UPDATE
+    en una sola transacción. Multi-server-safe: dos procesos contra el mismo
+    Postgres NUNCA reclaman la misma fila — el lock de Postgres lo garantiza.
+
+    En SQLite (single-server local) usamos el patron antiguo de 2 pasos
+    porque SQLite no tiene SKIP LOCKED (y locks todo el archivo en escrituras
+    de todos modos, asi que no hay race).
     """
     conn = db.get_connection()
     cur = conn.cursor()
-    db.execute_query(cur, """
-        SELECT odoo_id, barcode, name, attempts
-        FROM enrichment_queue
-        WHERE status = 'pending'
-        ORDER BY queued_at ASC
-        LIMIT ?
-    """, (limit,))
-    rows = [
-        {"odoo_id": r[0], "barcode": r[1], "name": r[2], "attempts": r[3]}
-        for r in cur.fetchall()
-    ]
-    if rows:
-        ids = [r["odoo_id"] for r in rows]
-        placeholders = ",".join(["?"] * len(ids))
-        db.execute_query(cur,
-            f"UPDATE enrichment_queue SET status='scraping', "
-            f"updated_at=CURRENT_TIMESTAMP WHERE odoo_id IN ({placeholders})",
-            tuple(ids)
-        )
+
+    if db.IS_POSTGRES:
+        # Update + RETURNING + subquery con FOR UPDATE SKIP LOCKED = patron
+        # canonico de Postgres para queue workers. Una sola query, atomica.
+        # %s placeholders porque db.execute_query traduce de ? a %s.
+        db.execute_query(cur, """
+            UPDATE enrichment_queue
+            SET status='scraping',
+                claimed_by=?,
+                updated_at=CURRENT_TIMESTAMP
+            WHERE odoo_id IN (
+                SELECT odoo_id FROM enrichment_queue
+                WHERE status='pending'
+                ORDER BY queued_at ASC
+                LIMIT ?
+                FOR UPDATE SKIP LOCKED
+            )
+            RETURNING odoo_id, barcode, name, attempts
+        """, (WORKER_NAME, limit))
+        rows = [
+            {"odoo_id": r[0], "barcode": r[1], "name": r[2], "attempts": r[3]}
+            for r in cur.fetchall()
+        ]
         conn.commit()
+    else:
+        db.execute_query(cur, """
+            SELECT odoo_id, barcode, name, attempts
+            FROM enrichment_queue
+            WHERE status = 'pending'
+            ORDER BY queued_at ASC
+            LIMIT ?
+        """, (limit,))
+        rows = [
+            {"odoo_id": r[0], "barcode": r[1], "name": r[2], "attempts": r[3]}
+            for r in cur.fetchall()
+        ]
+        if rows:
+            ids = [r["odoo_id"] for r in rows]
+            placeholders = ",".join(["?"] * len(ids))
+            db.execute_query(cur,
+                f"UPDATE enrichment_queue SET status='scraping', "
+                f"claimed_by=?, updated_at=CURRENT_TIMESTAMP "
+                f"WHERE odoo_id IN ({placeholders})",
+                (WORKER_NAME, *ids)
+            )
+            conn.commit()
     conn.close()
     return rows
 
@@ -179,17 +213,49 @@ def _bump_attempt(odoo_id: int, err: str):
 
 
 def _claim_scraped_batch(limit: int) -> list[dict]:
-    """Grab a batch of 'scraped' rows for pushing to Odoo. Marks them in-flight."""
+    """
+    Atomically claim a batch of 'scraped' rows for pushing to Odoo: marca
+    como 'pushing' para que otro server no las tome.
+    Multi-server-safe: FOR UPDATE SKIP LOCKED en Postgres.
+    """
     conn = db.get_connection()
     cur = conn.cursor()
-    db.execute_query(cur, """
-        SELECT odoo_id, scraped_data
-        FROM enrichment_queue
-        WHERE status = 'scraped'
-        ORDER BY updated_at ASC
-        LIMIT ?
-    """, (limit,))
-    rows = [{"odoo_id": r[0], "data": json.loads(r[1])} for r in cur.fetchall() if r[1]]
+
+    if db.IS_POSTGRES:
+        db.execute_query(cur, """
+            UPDATE enrichment_queue
+            SET status='pushing',
+                claimed_by=?,
+                updated_at=CURRENT_TIMESTAMP
+            WHERE odoo_id IN (
+                SELECT odoo_id FROM enrichment_queue
+                WHERE status='scraped'
+                ORDER BY updated_at ASC
+                LIMIT ?
+                FOR UPDATE SKIP LOCKED
+            )
+            RETURNING odoo_id, scraped_data
+        """, (WORKER_NAME, limit))
+        rows = [
+            {"odoo_id": r[0], "data": json.loads(r[1])}
+            for r in cur.fetchall() if r[1]
+        ]
+        conn.commit()
+    else:
+        db.execute_query(cur, """
+            SELECT odoo_id, scraped_data FROM enrichment_queue
+            WHERE status = 'scraped' ORDER BY updated_at ASC LIMIT ?
+        """, (limit,))
+        rows = [{"odoo_id": r[0], "data": json.loads(r[1])} for r in cur.fetchall() if r[1]]
+        if rows:
+            ids = [r["odoo_id"] for r in rows]
+            placeholders = ",".join(["?"] * len(ids))
+            db.execute_query(cur,
+                f"UPDATE enrichment_queue SET status='pushing', "
+                f"claimed_by=?, updated_at=CURRENT_TIMESTAMP "
+                f"WHERE odoo_id IN ({placeholders})",
+                (WORKER_NAME, *ids))
+            conn.commit()
     conn.close()
     return rows
 
@@ -207,6 +273,56 @@ def _mark_written(odoo_ids: list[int]):
     )
     conn.commit()
     conn.close()
+
+
+def _revert_pushing(odoo_ids: list[int]):
+    """
+    Si el push a Odoo falla, devolver las filas a 'scraped' para reintento
+    en el siguiente push_loop tick.
+    """
+    if not odoo_ids:
+        return
+    conn = db.get_connection()
+    cur = conn.cursor()
+    placeholders = ",".join(["?"] * len(odoo_ids))
+    db.execute_query(cur,
+        f"UPDATE enrichment_queue SET status='scraped', "
+        f"updated_at=CURRENT_TIMESTAMP WHERE odoo_id IN ({placeholders}) "
+        f"AND status='pushing'",
+        tuple(odoo_ids)
+    )
+    conn.commit()
+    conn.close()
+
+
+def _reclaim_stuck_pushing(stuck_minutes: int = 10):
+    """
+    Recovery: filas marcadas 'pushing' por mas de N minutos probablemente
+    son de un worker que murio. Devolverlas a 'scraped' para que cualquier
+    worker (incluyendo otro server) las re-procese.
+    """
+    conn = db.get_connection()
+    cur = conn.cursor()
+    if db.IS_POSTGRES:
+        db.execute_query(cur, """
+            UPDATE enrichment_queue
+            SET status='scraped', updated_at=CURRENT_TIMESTAMP
+            WHERE status='pushing'
+              AND updated_at < (CURRENT_TIMESTAMP - (? * INTERVAL '1 minute'))
+        """, (stuck_minutes,))
+    else:
+        db.execute_query(cur, """
+            UPDATE enrichment_queue
+            SET status='scraped', updated_at=CURRENT_TIMESTAMP
+            WHERE status='pushing'
+              AND datetime(updated_at) < datetime('now', '-' || ? || ' minutes')
+        """, (stuck_minutes,))
+    n = cur.rowcount or 0
+    conn.commit()
+    conn.close()
+    if n:
+        print(f"[Enrich] Recovery: {n} filas 'pushing' stuck reverted to 'scraped'")
+    return n
 
 
 # ── HTML description renderer ──────────────────────────────────────────
@@ -258,6 +374,32 @@ def render_html_description(d: dict) -> str:
 
 
 # ── Loops ──────────────────────────────────────────────────────────────
+def _reclaim_stuck_scraping(stuck_minutes: int = 15) -> int:
+    """Worker que murio dejo filas en 'scraping'. Devolverlas a 'pending'."""
+    conn = db.get_connection()
+    cur = conn.cursor()
+    if db.IS_POSTGRES:
+        db.execute_query(cur, """
+            UPDATE enrichment_queue
+            SET status='pending', claimed_by=NULL, updated_at=CURRENT_TIMESTAMP
+            WHERE status='scraping'
+              AND updated_at < (CURRENT_TIMESTAMP - (? * INTERVAL '1 minute'))
+        """, (stuck_minutes,))
+    else:
+        db.execute_query(cur, """
+            UPDATE enrichment_queue
+            SET status='pending', claimed_by=NULL, updated_at=CURRENT_TIMESTAMP
+            WHERE status='scraping'
+              AND datetime(updated_at) < datetime('now', '-' || ? || ' minutes')
+        """, (stuck_minutes,))
+    n = cur.rowcount or 0
+    conn.commit()
+    conn.close()
+    if n:
+        print(f"[Enrich] Recovery: {n} filas 'scraping' stuck reverted to 'pending'")
+    return n
+
+
 async def queue_refill_loop(odoo: OdooClient, job: dict):
     """Fill the queue from Odoo whenever pending count drops below threshold."""
     domain = [
@@ -265,9 +407,18 @@ async def queue_refill_loop(odoo: OdooClient, job: dict):
         ["description_sale", "=", False],
     ]
     last_offset = job.get("odoo_offset", 0)
+    recovery_tick = 0
 
     while job["status"] == "running":
         counts = _count_queue_by_status()
+        recovery_tick += 1
+        # Recovery periodico de filas stuck (worker que murio sin liberar)
+        if recovery_tick % 5 == 0:
+            try:
+                _reclaim_stuck_scraping(stuck_minutes=15)
+            except Exception as e:
+                print(f"[Enrich] Scraping recovery error: {e}")
+
         if counts["pending"] >= REFILL_THRESHOLD:
             await asyncio.sleep(20)
             continue
@@ -376,19 +527,32 @@ async def scrape_worker(worker_id: int, page_queue: asyncio.Queue, job: dict):
 
 
 async def push_loop(odoo: OdooClient, job: dict):
-    """Periodically push scraped rows back to Odoo."""
+    """
+    Periodically push scraped rows back to Odoo.
+    Multi-server-safe: _claim_scraped_batch marca como 'pushing' atomicamente.
+    Fallos revierten a 'scraped' para reintento. Cada 5 ticks corre recovery
+    de filas 'pushing' stuck (por si un worker murio sin revertir).
+    """
+    tick = 0
     while job["status"] == "running":
         await asyncio.sleep(PUSH_INTERVAL_S)
+        tick += 1
+        if tick % 5 == 0:
+            try:
+                _reclaim_stuck_pushing(stuck_minutes=10)
+            except Exception as e:
+                print(f"[Enrich] Recovery error: {e}")
+
         batch = _claim_scraped_batch(PUSH_BATCH)
         if not batch:
             continue
 
         written_ids: list[int] = []
+        failed_ids: list[int] = []
         for item in batch:
             try:
                 html_desc = render_html_description(item["data"])
                 if not html_desc:
-                    # Nothing useful to push — treat as notfound
                     _mark_notfound(
                         item["odoo_id"],
                         item["data"].get("isbn", ""),
@@ -400,14 +564,19 @@ async def push_loop(odoo: OdooClient, job: dict):
                 ok = await odoo.write("product.template", [item["odoo_id"]], values)
                 if ok:
                     written_ids.append(item["odoo_id"])
+                else:
+                    failed_ids.append(item["odoo_id"])
             except Exception as e:
                 job["errors"].append(f"push odoo_id={item['odoo_id']}: {str(e)[:120]}")
                 print(f"[Enrich] Push error for odoo_id={item['odoo_id']}: {e}")
-                # Leave as 'scraped' so it retries next push cycle
+                failed_ids.append(item["odoo_id"])
+
         if written_ids:
             _mark_written(written_ids)
             job["written"] += len(written_ids)
             print(f"[Enrich] Pushed {len(written_ids)} to Odoo (total written: {job['written']})")
+        if failed_ids:
+            _revert_pushing(failed_ids)
 
 
 # ── Public entry point ────────────────────────────────────────────────
@@ -425,6 +594,7 @@ async def run_enrichment_job() -> str:
     enrichment_job = {
         "status": "running",
         "started_at": datetime.now().isoformat(),
+        "worker_name": WORKER_NAME,
         "current_book": "Conectando a Odoo...",
         "scraped": 0,
         "written": 0,
