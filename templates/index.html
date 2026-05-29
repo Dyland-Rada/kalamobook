@@ -1000,6 +1000,10 @@
                             style="background:#0088cc;">
                         📨 Probar Telegram
                     </button>
+                    <button class="btn btn-primary" onclick="setupWebhook()"
+                            style="background:#0066aa;" title="Registra este server para recibir /status desde Telegram">
+                        🔗 Setup webhook
+                    </button>
                 </div>
 
                 <div style="margin-top:24px; padding:16px; background:rgba(155,89,182,0.08); border:1px solid rgba(155,89,182,0.25); border-radius:10px;">
@@ -1411,6 +1415,21 @@
                     alert(`✅ Mensaje enviado al Telegram desde server ${data.worker}. Revisa tu celular.`);
                 } else {
                     alert(`❌ ${data.message || 'Error desconocido'}`);
+                }
+            } catch (e) { alert('Error: ' + e.message); }
+        }
+
+        // ═══ TELEGRAM WEBHOOK SETUP ═══
+        async function setupWebhook() {
+            if (!confirm('Esto va a registrar ESTE server como destinatario de los comandos del bot. Telegram solo guarda una URL — si tenías otro server registrado, queda reemplazado. ¿Continuar?')) return;
+            try {
+                const resp = await fetch('/api/v1/notify/setup-webhook', { method: 'POST' });
+                const data = await resp.json();
+                const tg = data.telegram_response || {};
+                if (tg.ok) {
+                    alert(`✅ Webhook configurado en server ${data.worker}\n\nURL: ${data.webhook_url}\n\nAhora desde Telegram mándale /status al bot.`);
+                } else {
+                    alert(`❌ Telegram rechazó:\n${tg.description || JSON.stringify(tg)}`);
                 }
             } catch (e) { alert('Error: ' + e.message); }
         }

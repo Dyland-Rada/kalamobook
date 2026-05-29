@@ -3,7 +3,7 @@ import asyncio
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
-from fastapi import FastAPI, Request, Form, Query, BackgroundTasks, Depends, HTTPException, status
+from fastapi import FastAPI, Request, Form, Query, BackgroundTasks, Depends, HTTPException, Header, status
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 import secrets
@@ -26,11 +26,28 @@ from enrichment import (
 )
 import db as dbmod
 
-security = HTTPBasic()
+security = HTTPBasic(auto_error=False)
 APP_USERNAME = os.environ.get("APP_USERNAME", "admin")
 APP_PASSWORD = os.environ.get("APP_PASSWORD", "admin123")
 
-def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
+# Paths que son publicos (sin HTTP Basic). El webhook de Telegram va aqui
+# porque Telegram no manda credenciales — lo aseguramos con chat_id check
+# + (opcionalmente) secret_token en el header.
+_PUBLIC_PATHS = {"/api/v1/notify/telegram-webhook"}
+
+
+def verify_credentials(
+    request: Request,
+    credentials: HTTPBasicCredentials | None = Depends(security),
+):
+    if request.url.path in _PUBLIC_PATHS:
+        return "public"
+    if not credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing credentials",
+            headers={"WWW-Authenticate": "Basic"},
+        )
     correct_username = secrets.compare_digest(credentials.username.encode("utf8"), APP_USERNAME.encode("utf8"))
     correct_password = secrets.compare_digest(credentials.password.encode("utf8"), APP_PASSWORD.encode("utf8"))
     if not (correct_username and correct_password):
@@ -378,6 +395,71 @@ async def notify_status():
         "configured": nfy.is_configured(),
         "worker": os.environ.get("WORKER_NAME", "default"),
     })
+
+
+@app.post("/api/v1/notify/telegram-webhook", tags=["Notificaciones"])
+async def telegram_webhook(
+    request: Request,
+    x_telegram_bot_api_secret_token: str | None = Header(None),
+):
+    """
+    Endpoint publico que recibe updates de Telegram. Telegram llama aqui
+    cuando alguien manda un mensaje al bot. Procesa comandos como /status.
+
+    Seguridad:
+      1. Si TELEGRAM_WEBHOOK_SECRET esta seteado, verifica el header.
+      2. handle_command() verifica que el chat_id sea el autorizado.
+    """
+    expected_secret = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "")
+    if expected_secret and x_telegram_bot_api_secret_token != expected_secret:
+        return JSONResponse(status_code=403, content={"ok": False, "error": "bad secret"})
+
+    try:
+        update = await request.json()
+    except Exception:
+        return JSONResponse(content={"ok": True})
+
+    message = update.get("message") or update.get("edited_message")
+    if not message:
+        return JSONResponse(content={"ok": True})
+
+    import notify as nfy
+    reply = await nfy.handle_command(message)
+    if reply:
+        await nfy.send_telegram(reply)
+    return JSONResponse(content={"ok": True})
+
+
+@app.post("/api/v1/notify/setup-webhook", tags=["Notificaciones"])
+async def notify_setup_webhook(request: Request):
+    """
+    Registra este server como webhook target del bot de Telegram.
+    Lo llamas UNA VEZ, manualmente, desde el server que quieres que
+    responda los comandos. Telegram solo guarda una URL — si lo llamas
+    desde otro server despues, queda apuntando ahi.
+    """
+    import notify as nfy
+    if not nfy.TELEGRAM_BOT_TOKEN:
+        return JSONResponse(status_code=400, content={
+            "status": "error", "message": "TELEGRAM_BOT_TOKEN no configurado en este server"
+        })
+    base = str(request.base_url).rstrip("/")
+    webhook_url = f"{base}/api/v1/notify/telegram-webhook"
+    secret = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "")
+    result = await nfy.register_webhook(webhook_url, secret=secret)
+    return JSONResponse(content={
+        "webhook_url": webhook_url,
+        "telegram_response": result,
+        "worker": os.environ.get("WORKER_NAME", "default"),
+    })
+
+
+@app.post("/api/v1/notify/delete-webhook", tags=["Notificaciones"])
+async def notify_delete_webhook():
+    """Quita el webhook (apaga los comandos sin tocar el token)."""
+    import notify as nfy
+    result = await nfy.delete_webhook()
+    return JSONResponse(content={"telegram_response": result})
 
 
 @app.get("/api/v1/odoo/notfound/export", tags=["Odoo"])

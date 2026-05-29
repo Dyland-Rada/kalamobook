@@ -124,3 +124,137 @@ async def notify_alert(level: str, title: str, body: str = ""):
     if body:
         msg += f"\n{body}"
     await send_telegram(msg, silent=False)
+
+
+# ── Command dispatcher (incoming webhook) ───────────────────────────────
+async def build_status_text() -> str:
+    """Snapshot del estado actual de la cola compartida en Postgres."""
+    import db
+    from enrichment import _count_queue_by_status, get_enrichment_status, get_notfound_count
+
+    try:
+        counts = _count_queue_by_status()
+        notfound = get_notfound_count()
+    except Exception as e:
+        return f"❌ Error al consultar la BD: {e}"
+
+    # Desglose por servidor para los workers activos
+    try:
+        conn = db.get_connection()
+        cur = conn.cursor()
+        db.execute_query(cur, """
+            SELECT claimed_by, status, COUNT(*)
+            FROM enrichment_queue
+            WHERE status IN ('scraping', 'pushing')
+            GROUP BY claimed_by, status
+            ORDER BY claimed_by, status
+        """, ())
+        by_server = cur.fetchall()
+        conn.close()
+    except Exception:
+        by_server = []
+
+    job = get_enrichment_status() or {}
+    target = job.get("odoo_total_target", 0)
+
+    written = counts.get("written", 0)
+    pending = counts.get("pending", 0)
+    scraping = counts.get("scraping", 0)
+    pushing = counts.get("pushing", 0)
+    scraped = counts.get("scraped", 0)
+
+    total_processed = written + notfound
+    progress_pct = (total_processed / target * 100) if target else 0
+
+    by_server_lines = []
+    for row in by_server:
+        cb = (row[0] or "?")
+        by_server_lines.append(f"  `{cb}` {row[1]}: *{row[2]}*")
+    by_server_text = "\n".join(by_server_lines) if by_server_lines else "  _(sin workers activos)_"
+
+    progress_line = (
+        f"📈 Progreso: *{progress_pct:.2f}%*  ({_fmt_int(total_processed)} / {_fmt_int(target)})"
+        if target else
+        f"📈 Procesados: *{_fmt_int(total_processed)}*  _(target desconocido en este server)_"
+    )
+
+    return (
+        f"📊 *Status actual*\n\n"
+        f"{progress_line}\n\n"
+        f"✅ Escritos: *{_fmt_int(written)}*\n"
+        f"❌ Not found: {_fmt_int(notfound)}\n"
+        f"⏳ Pendientes: {_fmt_int(pending)}\n"
+        f"🔄 Scraping: {scraping}\n"
+        f"📤 Pushing: {pushing}\n"
+        + (f"📦 Scraped en espera: {scraped}\n" if scraped else "")
+        + f"\n*Workers activos por server:*\n{by_server_text}"
+    )
+
+
+def _help_text() -> str:
+    return (
+        "🤖 *Comandos disponibles*\n\n"
+        "/status — snapshot actual de la cola compartida\n"
+        "/ping — verificar que el bot responde\n"
+        "/help — esta ayuda\n\n"
+        "_Los datos vienen del Postgres compartido entre ambos servers._"
+    )
+
+
+async def handle_command(message: dict) -> str | None:
+    """
+    Procesa un mensaje de Telegram. Retorna el texto de respuesta o None
+    si no es un comando reconocido o si el chat_id no esta autorizado.
+    """
+    chat_id = str(message.get("chat", {}).get("id", ""))
+    if not chat_id or chat_id != TELEGRAM_CHAT_ID:
+        # Ignorar mensajes de chats no autorizados (seguridad basica)
+        print(f"[Notify] Ignored message from chat={chat_id}")
+        return None
+
+    text = (message.get("text") or "").strip()
+    if not text.startswith("/"):
+        return None
+
+    # Soporta /status@nombre_bot tambien
+    cmd = text.split()[0].split("@")[0].lower()
+
+    if cmd in ("/start", "/help"):
+        return _help_text()
+    if cmd == "/ping":
+        return f"🏓 Pong desde *{WORKER_LABEL}*"
+    if cmd == "/status":
+        return await build_status_text()
+
+    return f"❓ Comando desconocido: `{cmd}`\nUsa /help para ver opciones."
+
+
+async def register_webhook(webhook_url: str, secret: str = "") -> dict:
+    """Llama a Telegram setWebhook para apuntar el bot a webhook_url."""
+    if not TELEGRAM_BOT_TOKEN:
+        return {"ok": False, "error": "TELEGRAM_BOT_TOKEN no configurado"}
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/setWebhook"
+    payload = {"url": webhook_url, "allowed_updates": ["message"]}
+    if secret:
+        payload["secret_token"] = secret
+    try:
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with aiohttp.ClientSession(timeout=timeout) as s:
+            async with s.post(url, json=payload) as r:
+                return await r.json()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+async def delete_webhook() -> dict:
+    """Quita el webhook (para apagar comandos sin tocar tokens)."""
+    if not TELEGRAM_BOT_TOKEN:
+        return {"ok": False, "error": "TELEGRAM_BOT_TOKEN no configurado"}
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteWebhook"
+    try:
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with aiohttp.ClientSession(timeout=timeout) as s:
+            async with s.post(url) as r:
+                return await r.json()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
