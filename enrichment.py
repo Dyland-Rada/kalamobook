@@ -590,8 +590,11 @@ async def scrape_worker(worker_id: int, page_queue: asyncio.Queue, job: dict):
         finally:
             await page_queue.put(page)
 
-        # Mucho menor delay porque los cache hits no requieren rate limiting
-        await asyncio.sleep(random.uniform(0.2, 0.6))
+        # Delay entre requests por worker. Configurable via ENRICH_WORKER_DELAY_MIN/MAX
+        # Subir si CDL te empieza a tirar timeouts (throttle).
+        delay_min = float(os.environ.get("ENRICH_WORKER_DELAY_MIN", "1.5"))
+        delay_max = float(os.environ.get("ENRICH_WORKER_DELAY_MAX", "3.5"))
+        await asyncio.sleep(random.uniform(delay_min, delay_max))
 
 
 async def push_loop(odoo: OdooClient, job: dict):

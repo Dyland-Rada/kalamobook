@@ -446,8 +446,8 @@ async def scrape_book(page, query, direct_url=None):
             search_url = f"{BASE_URL}/?query={urllib.parse.quote(query)}"
             print(f"Navigating to search URL: {search_url}")
             try:
-                await page.goto(search_url, timeout=30000, wait_until='domcontentloaded')
-                await page.wait_for_timeout(1200)  # let JS results load
+                await page.goto(search_url, timeout=60000, wait_until='domcontentloaded')
+                await page.wait_for_timeout(1500)  # let JS results load
             except Exception as e:
                 print(f"Error navigating to search URL: {e}")
                 return None
@@ -548,12 +548,12 @@ async def scrape_book(page, query, direct_url=None):
 
         page.on("response", handle_response)
 
-        await page.goto(book_url, timeout=30000)
+        await page.goto(book_url, timeout=60000)
         try:
-            await page.wait_for_load_state('networkidle', timeout=3000)
+            await page.wait_for_load_state('networkidle', timeout=5000)
         except:
             await page.wait_for_load_state('domcontentloaded')
-        await page.wait_for_timeout(700)  # Extra wait for async price API
+        await page.wait_for_timeout(800)  # Extra wait for async price API
 
         # Remove cookie overlays via JS so they don't block any subsequent interactions
         try:
