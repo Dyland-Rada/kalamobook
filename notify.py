@@ -55,7 +55,9 @@ async def send_telegram(text: str, parse_mode: str = "Markdown",
                 print(f"[Notify] Telegram returned {r.status}: {body[:200]}")
                 return False
     except Exception as e:
-        print(f"[Notify] Telegram send error: {e}")
+        # repr() captura el tipo de excepcion incluso cuando str(e) es ''
+        # (aiohttp.ClientConnectorError sin mensaje, etc.)
+        print(f"[Notify] Telegram send error: {type(e).__name__}: {e!r}")
         return False
 
 

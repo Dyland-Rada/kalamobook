@@ -570,8 +570,9 @@ async def queue_refill_loop(odoo: OdooClient, job: dict):
                 order="create_date asc, id asc",
             )
         except Exception as e:
-            job["errors"].append(f"refill: {str(e)[:120]}")
-            print(f"[Enrich] Odoo refill error: {e}")
+            err_repr = f"{type(e).__name__}: {e!r}"
+            job["errors"].append(f"refill: {err_repr[:200]}")
+            print(f"[Enrich] Odoo refill error: {err_repr}")
             await asyncio.sleep(60)
             continue
 
