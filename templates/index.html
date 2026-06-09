@@ -1022,6 +1022,118 @@
                 </div>
             </div>
 
+            <!-- ── Espejo de Odoo → Postgres ── -->
+            <div class="card">
+                <div class="card-title">📥 Espejo de Odoo → Postgres</div>
+                <p style="color:#888; font-size:0.9rem;">
+                    Copia los libros de Odoo a la BD local (tabla <code>odoo_books_mirror</code>)
+                    para queries offline, exportes CSV y cross-reference con el catálogo de
+                    distribuidores. Idempotente — re-ejecutar actualiza los registros existentes.
+                </p>
+                <div style="display:flex; gap:12px; margin-top:18px; flex-wrap:wrap; align-items:center;">
+                    <label style="display:flex; align-items:center; gap:6px; color:#bbb; font-size:0.9rem;">
+                        <input type="checkbox" id="mirror-only-pending">
+                        Solo libros sin <code>description_sale</code> (~727k)
+                    </label>
+                    <button class="btn btn-success" id="btn-mirror-start" onclick="mirrorStart()">
+                        ▶ Iniciar espejo
+                    </button>
+                    <button class="btn btn-danger" id="btn-mirror-stop" onclick="mirrorStop()" disabled>
+                        ⏹ Detener
+                    </button>
+                    <a href="/api/v1/odoo/mirror/export.csv" class="btn btn-primary"
+                       style="text-decoration:none; display:inline-flex; align-items:center; background:#16a085;">
+                        📤 Exportar CSV
+                    </a>
+                </div>
+
+                <div id="mirror-status-block" style="margin-top:20px; display:none;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
+                        <strong style="color:#fff;">
+                            Estado:
+                            <span class="status-badge running" id="mirror-status-badge">RUNNING</span>
+                        </strong>
+                        <span style="color:#bbb; font-size:0.9rem;" id="mirror-progress-text">0 / 0</span>
+                    </div>
+                    <div style="background:#2c2f3e; border-radius:6px; height:14px; overflow:hidden;">
+                        <div id="mirror-progress-fill"
+                             style="background:linear-gradient(90deg,#3498db,#9b59b6); height:100%; width:0%; transition:width 0.3s;"></div>
+                    </div>
+                </div>
+
+                <div style="margin-top:14px; display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px;">
+                    <div class="stat-box">
+                        <div class="stat-number blue" id="mirror-stat-mirrored">0</div>
+                        <div class="stat-label">Espejados (esta corrida)</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#bbb" id="mirror-stat-total">0</div>
+                        <div class="stat-label">Target Odoo</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#1abc9c" id="mirror-stat-local">0</div>
+                        <div class="stat-label">Total en BD local</div>
+                    </div>
+                </div>
+
+                <div id="mirror-errors" style="display:none; margin-top:12px;">
+                    <div class="section-label" style="color:#e94560;">Últimos errores</div>
+                    <ul id="mirror-errors-list" style="font-size:0.82rem; color:#e94560; padding-left:20px;"></ul>
+                </div>
+            </div>
+
+            <!-- ── Importar XLSX de distribuidores ── -->
+            <div class="card">
+                <div class="card-title">📦 Catálogo de distribuidores (Excel → Postgres)</div>
+                <p style="color:#888; font-size:0.9rem;">
+                    Sube los XLSX de ANAYA, PLANETA, PODIPRINT, etc. Los libros se upsertan a
+                    <code>distributor_books</code> por ISBN. Si un libro existe ya, se actualiza
+                    con los campos del archivo nuevo.
+                </p>
+                <div style="display:flex; gap:12px; margin-top:18px; flex-wrap:wrap; align-items:center;">
+                    <input type="file" id="dist-file-input" accept=".xlsx"
+                           style="color:#bbb; background:#2c2f3e; padding:6px; border-radius:6px; border:1px solid #444;">
+                    <input type="text" id="dist-fuente-input" placeholder="Fuente (auto)"
+                           style="color:#fff; background:#2c2f3e; padding:8px 12px; border-radius:6px; border:1px solid #444; width:140px;">
+                    <button class="btn btn-success" id="btn-dist-upload" onclick="distUpload()">
+                        ▶ Subir e importar
+                    </button>
+                    <button class="btn btn-primary" onclick="distRefreshStats()" style="background:#34495e;">
+                        🔁 Refrescar stats
+                    </button>
+                </div>
+
+                <div id="dist-status-block" style="margin-top:20px; display:none;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                        <strong style="color:#fff;">
+                            Estado:
+                            <span class="status-badge running" id="dist-status-badge">RUNNING</span>
+                        </strong>
+                        <span style="color:#bbb; font-size:0.9rem;" id="dist-progress-text">0 procesados</span>
+                    </div>
+                </div>
+
+                <div style="margin-top:14px; display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px;">
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#1abc9c" id="dist-stat-total">0</div>
+                        <div class="stat-label">Total en BD</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#9b59b6" id="dist-stat-overlap">0</div>
+                        <div class="stat-label">Ya están en Odoo</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#e67e22" id="dist-stat-only">0</div>
+                        <div class="stat-label">Solo en distribuidores</div>
+                    </div>
+                </div>
+
+                <div id="dist-sources" style="margin-top:14px; display:none;">
+                    <div class="section-label">Por distribuidor</div>
+                    <ul id="dist-sources-list" style="font-size:0.85rem; color:#bbb; padding-left:20px;"></ul>
+                </div>
+            </div>
+
             <div class="card" id="odoo-status-card" style="display:none;">
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
                     <div class="card-title" style="margin-bottom:0;">
@@ -1088,8 +1200,8 @@
 
             if (tab === 'library') loadLibrary(1);
             if (tab === 'bulk') loadCategories();
-            if (tab === 'odoo') { odooPoll(); odooStartPolling(); isbnIndexPoll(); }
-            else odooStopPolling();
+            if (tab === 'odoo') { odooPoll(); odooStartPolling(); isbnIndexPoll(); loadMirrorAndDistInitial(); }
+            else { odooStopPolling(); mirrorStopPolling(); distStopPolling(); }
         }
 
         function showLoading() {
@@ -1404,6 +1516,206 @@
             } catch (e) {
                 console.error('Odoo poll error:', e);
             }
+        }
+
+        // ═══ ODOO MIRROR ═══
+        let mirrorPollTimer = null;
+
+        async function mirrorStart() {
+            const onlyPending = document.getElementById('mirror-only-pending').checked;
+            document.getElementById('btn-mirror-start').disabled = true;
+            try {
+                const resp = await fetch(`/api/v1/odoo/mirror/start?only_pending=${onlyPending}&batch_size=1000`, { method: 'POST' });
+                const data = await resp.json();
+                if (data.status === 'started') {
+                    document.getElementById('mirror-status-block').style.display = 'block';
+                    document.getElementById('btn-mirror-stop').disabled = false;
+                    mirrorStartPolling();
+                    mirrorPoll();
+                } else {
+                    alert('Error: ' + (data.message || 'No se pudo iniciar'));
+                    document.getElementById('btn-mirror-start').disabled = false;
+                }
+            } catch (e) {
+                alert('Error de conexion: ' + e.message);
+                document.getElementById('btn-mirror-start').disabled = false;
+            }
+        }
+
+        async function mirrorStop() {
+            try { await fetch('/api/v1/odoo/mirror/stop', { method: 'POST' }); }
+            catch (e) { console.error('Mirror stop error:', e); }
+        }
+
+        function mirrorStartPolling() {
+            if (mirrorPollTimer) return;
+            mirrorPollTimer = setInterval(mirrorPoll, 3000);
+        }
+
+        function mirrorStopPolling() {
+            if (mirrorPollTimer) { clearInterval(mirrorPollTimer); mirrorPollTimer = null; }
+        }
+
+        async function mirrorPoll() {
+            try {
+                const resp = await fetch('/api/v1/odoo/mirror/status');
+                const job = await resp.json();
+
+                const local = job.mirror_count_local || 0;
+                document.getElementById('mirror-stat-local').textContent = local.toLocaleString();
+
+                if (job.status === 'idle') return;
+
+                const target = job.total_target || 0;
+                const mirrored = job.mirrored || 0;
+                const offset = job.offset || 0;
+                const pct = target > 0 ? (offset / target * 100) : 0;
+
+                document.getElementById('mirror-status-block').style.display = 'block';
+                document.getElementById('mirror-stat-mirrored').textContent = mirrored.toLocaleString();
+                document.getElementById('mirror-stat-total').textContent = target.toLocaleString();
+                document.getElementById('mirror-progress-text').textContent =
+                    `${offset.toLocaleString()} / ${target.toLocaleString()} (${pct.toFixed(1)}%)`;
+                document.getElementById('mirror-progress-fill').style.width = pct.toFixed(2) + '%';
+
+                const badge = document.getElementById('mirror-status-badge');
+                badge.textContent = (job.status || 'unknown').toUpperCase();
+                badge.className = 'status-badge ' + (job.status || 'running');
+
+                if (job.errors && job.errors.length > 0) {
+                    document.getElementById('mirror-errors').style.display = 'block';
+                    const ul = document.getElementById('mirror-errors-list');
+                    ul.innerHTML = '';
+                    job.errors.forEach(e => { const li = document.createElement('li'); li.textContent = e; ul.appendChild(li); });
+                }
+
+                if (['completed', 'stopped', 'error'].includes(job.status)) {
+                    mirrorStopPolling();
+                    document.getElementById('btn-mirror-start').disabled = false;
+                    document.getElementById('btn-mirror-stop').disabled = true;
+                }
+            } catch (e) {
+                console.error('Mirror poll error:', e);
+            }
+        }
+
+        // ═══ DISTRIBUIDORES (XLSX import) ═══
+        let distPollTimer = null;
+
+        async function distUpload() {
+            const fileInput = document.getElementById('dist-file-input');
+            const fuenteInput = document.getElementById('dist-fuente-input');
+            const file = fileInput.files[0];
+            if (!file) { alert('Selecciona un archivo XLSX primero'); return; }
+
+            const fuente = fuenteInput.value.trim();
+            const url = '/api/v1/distributors/import' + (fuente ? `?fuente=${encodeURIComponent(fuente)}` : '');
+
+            document.getElementById('btn-dist-upload').disabled = true;
+            const fd = new FormData();
+            fd.append('file', file);
+
+            try {
+                const resp = await fetch(url, { method: 'POST', body: fd });
+                const data = await resp.json();
+                if (data.status === 'started') {
+                    document.getElementById('dist-status-block').style.display = 'block';
+                    distStartPolling();
+                    distPoll();
+                } else {
+                    alert('Error: ' + (data.message || 'No se pudo iniciar'));
+                    document.getElementById('btn-dist-upload').disabled = false;
+                }
+            } catch (e) {
+                alert('Error de conexion: ' + e.message);
+                document.getElementById('btn-dist-upload').disabled = false;
+            }
+        }
+
+        function distStartPolling() {
+            if (distPollTimer) return;
+            distPollTimer = setInterval(distPoll, 3000);
+        }
+
+        function distStopPolling() {
+            if (distPollTimer) { clearInterval(distPollTimer); distPollTimer = null; }
+        }
+
+        async function distPoll() {
+            try {
+                const resp = await fetch('/api/v1/distributors/status');
+                const job = await resp.json();
+                const total = job.total_in_db || 0;
+                document.getElementById('dist-stat-total').textContent = total.toLocaleString();
+
+                if (job.status === 'idle') return;
+
+                document.getElementById('dist-status-block').style.display = 'block';
+                document.getElementById('dist-progress-text').textContent =
+                    `${(job.processed || 0).toLocaleString()} procesados — ${(job.inserted || 0).toLocaleString()} insertados`;
+
+                const badge = document.getElementById('dist-status-badge');
+                badge.textContent = (job.status || 'unknown').toUpperCase();
+                badge.className = 'status-badge ' + (job.status || 'running');
+
+                if (['completed', 'error'].includes(job.status)) {
+                    distStopPolling();
+                    document.getElementById('btn-dist-upload').disabled = false;
+                    distRefreshStats();
+                }
+            } catch (e) {
+                console.error('Dist poll error:', e);
+            }
+        }
+
+        async function distRefreshStats() {
+            try {
+                const resp = await fetch('/api/v1/distributors/stats');
+                const data = await resp.json();
+                document.getElementById('dist-stat-total').textContent = (data.total_distributor_books || 0).toLocaleString();
+                document.getElementById('dist-stat-overlap').textContent = (data.overlap_with_odoo || 0).toLocaleString();
+                document.getElementById('dist-stat-only').textContent = (data.only_in_distributors_not_in_odoo || 0).toLocaleString();
+
+                const sources = data.by_source || [];
+                if (sources.length) {
+                    document.getElementById('dist-sources').style.display = 'block';
+                    const ul = document.getElementById('dist-sources-list');
+                    ul.innerHTML = '';
+                    sources.forEach(s => {
+                        const li = document.createElement('li');
+                        li.textContent = `${s.fuente}: ${s.count.toLocaleString()}`;
+                        ul.appendChild(li);
+                    });
+                }
+            } catch (e) {
+                console.error('Dist stats error:', e);
+            }
+        }
+
+        // Carga inicial cuando se entra a la pestaña Odoo (auto-resume si el job ya esta corriendo)
+        async function loadMirrorAndDistInitial() {
+            try {
+                const resp = await fetch('/api/v1/odoo/mirror/status');
+                const job = await resp.json();
+                document.getElementById('mirror-stat-local').textContent = (job.mirror_count_local || 0).toLocaleString();
+                if (job.status === 'running') {
+                    document.getElementById('mirror-status-block').style.display = 'block';
+                    document.getElementById('btn-mirror-stop').disabled = false;
+                    document.getElementById('btn-mirror-start').disabled = true;
+                    mirrorStartPolling();
+                    mirrorPoll();
+                }
+            } catch (e) {}
+            distRefreshStats();
+            try {
+                const resp = await fetch('/api/v1/distributors/status');
+                const job = await resp.json();
+                if (job.status === 'running') {
+                    document.getElementById('dist-status-block').style.display = 'block';
+                    distStartPolling();
+                    distPoll();
+                }
+            } catch (e) {}
         }
 
         // ═══ TELEGRAM TEST ═══
