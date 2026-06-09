@@ -415,8 +415,64 @@ def infer_categories_from_scraped() -> dict:
     conn = db.get_connection()
     cur = conn.cursor()
 
-    # Path 1: books table (CDL scraped)
-    print("[Infer] Cruzando con books (scrapeo CDL)...")
+    # Path 0: enrichment_queue.scraped_data (categorias del enricher en JSON)
+    # Es la fuente mas autoritativa: data fresca de CDL via el flujo del
+    # enricher, que es lo que lleva dias procesando libros.
+    infer_job["from_enrichment_queue"] = 0
+    print("[Infer] Cruzando con enrichment_queue.scraped_data (enricher)...")
+    try:
+        if db.IS_POSTGRES:
+            cur.execute("""
+                UPDATE odoo_books_mirror m
+                SET inferred_categories = TRIM(BOTH ' > ' FROM CONCAT_WS(' > ',
+                    NULLIF(eq.scraped_data::jsonb->>'categoria_1', ''),
+                    NULLIF(eq.scraped_data::jsonb->>'categoria_2', ''),
+                    NULLIF(eq.scraped_data::jsonb->>'categoria_3', ''),
+                    NULLIF(eq.scraped_data::jsonb->>'categoria_4', ''),
+                    NULLIF(eq.scraped_data::jsonb->>'categoria_5', ''))),
+                    inferred_source = 'enrichment_queue'
+                FROM enrichment_queue eq
+                WHERE m.odoo_id = eq.odoo_id
+                  AND eq.scraped_data IS NOT NULL
+                  AND eq.scraped_data <> ''
+                  AND (eq.scraped_data::jsonb->>'categoria_1') IS NOT NULL
+                  AND (eq.scraped_data::jsonb->>'categoria_1') <> ''
+            """)
+            infer_job["from_enrichment_queue"] = cur.rowcount or 0
+            conn.commit()
+        else:
+            cur.execute("""
+                SELECT odoo_id, scraped_data FROM enrichment_queue
+                WHERE scraped_data IS NOT NULL AND scraped_data <> ''
+            """)
+            n = 0
+            for row in cur.fetchall():
+                odoo_id = row[0]
+                try:
+                    data = json.loads(row[1])
+                except Exception:
+                    continue
+                cats = [data.get(f"categoria_{i}") for i in range(1, 6)]
+                cats = [c for c in cats if c and str(c).strip()]
+                if not cats:
+                    continue
+                cur.execute("""
+                    UPDATE odoo_books_mirror
+                    SET inferred_categories = ?, inferred_source = 'enrichment_queue'
+                    WHERE odoo_id = ?
+                """, (" > ".join(cats), odoo_id))
+                n += 1
+            infer_job["from_enrichment_queue"] = n
+            conn.commit()
+        print(f"[Infer] {infer_job['from_enrichment_queue']} libros desde enricher (JSON)")
+    except Exception as e:
+        err = f"enrichment_queue: {type(e).__name__}: {e!r}"
+        infer_job["errors"].append(err)
+        print(f"[Infer] Error: {err}")
+
+    # Path 1: books table (CDL scraped del bulk scraper)
+    # Solo donde aun no inferimos (para no pisar al enricher).
+    print("[Infer] Cruzando con books (scrapeo CDL bulk)...")
     try:
         if db.IS_POSTGRES:
             cur.execute("""
@@ -432,11 +488,13 @@ def infer_categories_from_scraped() -> dict:
                 WHERE m.barcode = b.isbn
                   AND m.barcode IS NOT NULL
                   AND (b.categoria_1 IS NOT NULL AND b.categoria_1 <> '')
+                  AND (m.inferred_categories IS NULL OR m.inferred_categories = '')
             """)
             infer_job["from_books"] = cur.rowcount or 0
             conn.commit()
         else:
-            # SQLite no soporta UPDATE...FROM, hacemos lookup row-a-row
+            # SQLite no soporta UPDATE...FROM, hacemos lookup row-a-row.
+            # Solo si la fila no tiene aun inferred_categories.
             cur.execute("""
                 SELECT m.odoo_id, m.barcode,
                        b.categoria_1, b.categoria_2, b.categoria_3,
@@ -444,6 +502,7 @@ def infer_categories_from_scraped() -> dict:
                 FROM odoo_books_mirror m
                 INNER JOIN books b ON m.barcode = b.isbn
                 WHERE b.categoria_1 IS NOT NULL AND b.categoria_1 <> ''
+                  AND (m.inferred_categories IS NULL OR m.inferred_categories = '')
             """)
             n = 0
             for row in cur.fetchall():

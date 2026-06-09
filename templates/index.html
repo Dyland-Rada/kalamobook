@@ -1647,7 +1647,13 @@
                             if (s.status === 'completed' || s.status === 'error') {
                                 clearInterval(t);
                                 if (s.status === 'completed') {
-                                    alert(`✅ Inferencia OK: ${s.from_books} desde CDL · ${s.from_distributors} desde distribuidores · ${s.no_match} sin match`);
+                                    alert(
+                                        `✅ Inferencia OK:\n` +
+                                        `• ${(s.from_enrichment_queue || 0).toLocaleString()} desde enricher (Odoo Sync)\n` +
+                                        `• ${(s.from_books || 0).toLocaleString()} desde scrapeo bulk (books)\n` +
+                                        `• ${(s.from_distributors || 0).toLocaleString()} desde distribuidores\n` +
+                                        `• ${(s.no_match || 0).toLocaleString()} sin match`
+                                    );
                                 }
                             }
                         } catch (_) {}
