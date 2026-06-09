@@ -304,11 +304,41 @@ def init_db():
             list_price NUMERIC,
             categ_id INTEGER,
             categ_name TEXT,
+            public_categ_ids TEXT,
+            public_categ_names TEXT,
+            inferred_categories TEXT,
+            inferred_source TEXT,
             synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    # Para installs viejos: agregar las columnas si no existen
+    for col in (
+        "public_categ_ids TEXT",
+        "public_categ_names TEXT",
+        "inferred_categories TEXT",
+        "inferred_source TEXT",
+    ):
+        col_name = col.split()[0]
+        try:
+            db.execute_query(cursor, f"ALTER TABLE odoo_books_mirror ADD COLUMN {col}")
+        except Exception:
+            pass  # ya existe
     db.execute_query(cursor, "CREATE INDEX IF NOT EXISTS idx_odoo_mirror_barcode ON odoo_books_mirror(barcode)")
     db.execute_query(cursor, "CREATE INDEX IF NOT EXISTS idx_odoo_mirror_synced ON odoo_books_mirror(synced_at)")
+
+    # Cache de nombres de product.public.category (tienda Odoo).
+    # Lo populamos una sola vez con /api/v1/odoo/mirror/sync-categories.
+    # Permite resolver los IDs en public_categ_ids -> nombres legibles.
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS odoo_public_categories (
+            categ_id INTEGER PRIMARY KEY,
+            name TEXT,
+            parent_id INTEGER,
+            complete_name TEXT,
+            synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    db.execute_query(cursor, "CREATE INDEX IF NOT EXISTS idx_opc_parent ON odoo_public_categories(parent_id)")
 
     # Catalogo importado desde distribuidores (Excel: ANAYA, PLANETA, PODIPRINT...).
     # Schema replica el de la tabla books + campo `fuente` + `imported_at`.

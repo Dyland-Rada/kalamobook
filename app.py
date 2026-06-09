@@ -420,6 +420,58 @@ async def odoo_mirror_status():
     return JSONResponse(content=odoo_mirror.get_mirror_status())
 
 
+@app.post("/api/v1/odoo/mirror/sync-categories", tags=["Odoo"])
+async def odoo_mirror_sync_categories():
+    """
+    Pulla todas las product.public.category de Odoo y las cachea localmente.
+    Tras esto, public_categ_ids -> public_categ_names se resuelven legibles.
+    Si Odoo no tiene categorias asignadas a los libros, este endpoint no
+    ayuda — usar /infer-categories en su lugar.
+    """
+    import odoo_mirror
+    try:
+        result = await odoo_mirror.sync_public_categories()
+        return JSONResponse(content=result)
+    except Exception as e:
+        return JSONResponse(status_code=500, content={
+            "status": "error", "message": f"{type(e).__name__}: {e}"
+        })
+
+
+@app.post("/api/v1/odoo/mirror/infer-categories", tags=["Odoo"])
+async def odoo_mirror_infer_categories():
+    """
+    Llena inferred_categories en odoo_books_mirror cruzando ISBN con las
+    categorias scrapeadas de CDL (tabla books) y los XLSX de distribuidores
+    (distributor_books). Prefiere books > distribuidores.
+    Util cuando Odoo no tiene public_categ_ids asignados pero el scraper si.
+    """
+    import threading
+    import sys
+    import odoo_mirror
+
+    if odoo_mirror.get_infer_status().get("status") == "running":
+        return JSONResponse(status_code=409, content={
+            "status": "error", "message": "Inferencia ya esta corriendo."
+        })
+
+    def _run_in_thread():
+        try:
+            odoo_mirror.infer_categories_from_scraped()
+        except Exception:
+            pass
+
+    t = threading.Thread(target=_run_in_thread, daemon=True)
+    t.start()
+    return JSONResponse(content={"status": "started"})
+
+
+@app.get("/api/v1/odoo/mirror/infer-status", tags=["Odoo"])
+async def odoo_mirror_infer_status():
+    import odoo_mirror
+    return JSONResponse(content=odoo_mirror.get_infer_status())
+
+
 @app.get("/api/v1/odoo/mirror/export.csv", tags=["Odoo"])
 async def odoo_mirror_export_csv():
     """

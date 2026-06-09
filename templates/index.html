@@ -1045,6 +1045,14 @@
                        style="text-decoration:none; display:inline-flex; align-items:center; background:#16a085;">
                         📤 Exportar CSV
                     </a>
+                    <button class="btn btn-primary" onclick="mirrorSyncCategories()" style="background:#8e44ad;"
+                            title="Pulla los nombres de las public_categ_ids de Odoo (solo si Odoo tiene categorias)">
+                        🏷 Sync categorías Odoo
+                    </button>
+                    <button class="btn btn-primary" onclick="mirrorInferCategories()" style="background:#e67e22;"
+                            title="Llena categorías cruzando ISBN con books (CDL) y distributor_books (XLSX)">
+                        🧩 Inferir desde scrapes
+                    </button>
                 </div>
 
                 <div id="mirror-status-block" style="margin-top:20px; display:none;">
@@ -1073,6 +1081,14 @@
                     <div class="stat-box">
                         <div class="stat-number" style="color:#1abc9c" id="mirror-stat-local">0</div>
                         <div class="stat-label">Total en BD local</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#e67e22" id="mirror-stat-inferred">0</div>
+                        <div class="stat-label">Con categorías inferidas</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#8e44ad" id="mirror-stat-categ-cache">0</div>
+                        <div class="stat-label">Categorías Odoo cacheadas</div>
                     </div>
                 </div>
 
@@ -1563,6 +1579,8 @@
 
                 const local = job.mirror_count_local || 0;
                 document.getElementById('mirror-stat-local').textContent = local.toLocaleString();
+                document.getElementById('mirror-stat-inferred').textContent = (job.inferred_categorized || 0).toLocaleString();
+                document.getElementById('mirror-stat-categ-cache').textContent = (job.public_categories_cached || 0).toLocaleString();
 
                 if (job.status === 'idle') return;
 
@@ -1597,6 +1615,47 @@
             } catch (e) {
                 console.error('Mirror poll error:', e);
             }
+        }
+
+        async function mirrorSyncCategories() {
+            if (!confirm('Pullar todas las categorías de Odoo (~10-30s)?')) return;
+            try {
+                const resp = await fetch('/api/v1/odoo/mirror/sync-categories', { method: 'POST' });
+                const data = await resp.json();
+                if (data.status === 'ok') {
+                    alert(`✅ ${data.fetched_categories} categorías cacheadas. ${data.backfilled_mirror_rows} filas del mirror enriquecidas con nombres.`);
+                    mirrorPoll();
+                } else {
+                    alert(`❌ ${data.error || data.message || 'Error'}`);
+                }
+            } catch (e) { alert('Error: ' + e.message); }
+        }
+
+        async function mirrorInferCategories() {
+            if (!confirm('Inferir categorías cruzando con books y distributor_books? Puede tardar 1-2 min.')) return;
+            try {
+                const resp = await fetch('/api/v1/odoo/mirror/infer-categories', { method: 'POST' });
+                const data = await resp.json();
+                if (data.status === 'started') {
+                    alert('▶ Inferencia arrancada. El contador "Con categorías inferidas" se va a llenar.');
+                    // Poll de inferencia
+                    const t = setInterval(async () => {
+                        try {
+                            const r = await fetch('/api/v1/odoo/mirror/infer-status');
+                            const s = await r.json();
+                            document.getElementById('mirror-stat-inferred').textContent = (s.inferred_count || 0).toLocaleString();
+                            if (s.status === 'completed' || s.status === 'error') {
+                                clearInterval(t);
+                                if (s.status === 'completed') {
+                                    alert(`✅ Inferencia OK: ${s.from_books} desde CDL · ${s.from_distributors} desde distribuidores · ${s.no_match} sin match`);
+                                }
+                            }
+                        } catch (_) {}
+                    }, 3000);
+                } else {
+                    alert(`❌ ${data.message || 'No se pudo iniciar'}`);
+                }
+            } catch (e) { alert('Error: ' + e.message); }
         }
 
         // ═══ DISTRIBUIDORES (XLSX import) ═══
