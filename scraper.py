@@ -292,6 +292,24 @@ def init_db():
     # Indice ISBN sobre la tabla books — speedup brutal para cache lookup.
     db.execute_query(cursor, "CREATE INDEX IF NOT EXISTS idx_books_isbn ON books(isbn)")
 
+    # Espejo local de product.template — para queries offline, exportes CSV,
+    # auditorias. Se popula con POST /api/v1/odoo/mirror/start.
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS odoo_books_mirror (
+            odoo_id INTEGER PRIMARY KEY,
+            barcode TEXT,
+            name TEXT,
+            description TEXT,
+            description_sale TEXT,
+            list_price NUMERIC,
+            categ_id INTEGER,
+            categ_name TEXT,
+            synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    db.execute_query(cursor, "CREATE INDEX IF NOT EXISTS idx_odoo_mirror_barcode ON odoo_books_mirror(barcode)")
+    db.execute_query(cursor, "CREATE INDEX IF NOT EXISTS idx_odoo_mirror_synced ON odoo_books_mirror(synced_at)")
+
     conn.commit()
     conn.close()
 

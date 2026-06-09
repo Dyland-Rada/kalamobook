@@ -360,6 +360,83 @@ async def odoo_notfound_retry(
         })
 
 
+# ─── REST API — Odoo Mirror (jala todos los libros a Postgres) ───────
+
+@app.post("/api/v1/odoo/mirror/start", tags=["Odoo"])
+async def odoo_mirror_start(
+    only_pending: bool = Query(True, description="True = solo sin description_sale (~727k). False = todos (~1M)."),
+    batch_size: int = Query(1000, ge=100, le=5000),
+):
+    """
+    Arranca un job en background que espeja product.template a la tabla
+    local odoo_books_mirror. Idempotente — re-ejecutar actualiza los
+    registros existentes.
+    Tiempo estimado: 15-40 min dependiendo del alcance y la salud de Odoo.
+    """
+    import threading
+    import sys
+    import odoo_mirror
+
+    if odoo_mirror.get_mirror_status().get("status") == "running":
+        return JSONResponse(status_code=409, content={
+            "status": "error", "message": "Mirror job ya está corriendo."
+        })
+
+    def _run_in_thread():
+        if sys.platform == 'win32':
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
+        try:
+            new_loop.run_until_complete(
+                odoo_mirror.run_mirror_job(only_pending=only_pending, batch_size=batch_size)
+            )
+        finally:
+            new_loop.close()
+
+    t = threading.Thread(target=_run_in_thread, daemon=True)
+    t.start()
+    return JSONResponse(content={
+        "status": "started",
+        "only_pending": only_pending,
+        "batch_size": batch_size,
+    })
+
+
+@app.post("/api/v1/odoo/mirror/stop", tags=["Odoo"])
+async def odoo_mirror_stop():
+    import odoo_mirror
+    if odoo_mirror.stop_mirror_job():
+        return JSONResponse(content={"status": "stopping"})
+    return JSONResponse(status_code=400, content={
+        "status": "error", "message": "No hay mirror job corriendo."
+    })
+
+
+@app.get("/api/v1/odoo/mirror/status", tags=["Odoo"])
+async def odoo_mirror_status():
+    """Estado del job + cuantos libros tenemos espejados localmente."""
+    import odoo_mirror
+    return JSONResponse(content=odoo_mirror.get_mirror_status())
+
+
+@app.get("/api/v1/odoo/mirror/export.csv", tags=["Odoo"])
+async def odoo_mirror_export_csv():
+    """
+    Descarga la tabla espejo como CSV. Streamea sin cargar todo a memoria.
+    """
+    import odoo_mirror
+    from fastapi.responses import StreamingResponse
+    headers = {
+        "Content-Disposition": 'attachment; filename="odoo_books_mirror.csv"'
+    }
+    return StreamingResponse(
+        odoo_mirror.export_csv_streaming(),
+        media_type="text/csv",
+        headers=headers,
+    )
+
+
 # ─── REST API — CDL ISBN Index (sitemap-based fast path) ─────────────
 
 @app.post("/api/v1/cdl/build-isbn-index", tags=["Odoo"])
