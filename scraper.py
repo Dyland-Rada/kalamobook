@@ -13,7 +13,99 @@ DB_NAME = 'books.db'
 INPUT_FILE = 'librosbuscar.xlsx'
 OUTPUT_REPORT = 'reporte_libros.xlsx'
 BASE_URL = 'https://www.casadellibro.com'  # Spanish version (EUR)
-PROXY_URL = os.environ.get('PROXY_URL', '')  # e.g. http://user:pass@host:port
+PROXY_URL = os.environ.get('PROXY_URL', '')  # legacy: un solo proxy
+# Pool de proxies — formato: lista separada por comas, cada entrada acepta:
+#   - host:port:user:pass         (formato Webshare/Bright dat export)
+#   - http://user:pass@host:port  (formato Playwright/curl)
+#   - host:port                   (sin auth)
+# Ej: 38.154.203.95:5863:user:pass,198.105.121.200:6462:user:pass
+PROXY_POOL = [p.strip() for p in os.environ.get('PROXY_POOL', '').split(',') if p.strip()]
+
+
+def parse_proxy(s: str) -> dict | None:
+    """
+    Convierte un proxy en formato heterogeneo al dict que espera Playwright:
+      {server: 'http://host:port', username?: '...', password?: '...'}
+    Retorna None si no se reconoce.
+    """
+    s = (s or '').strip()
+    if not s:
+        return None
+    # URL-style (http://user:pass@host:port o socks5://...)
+    if s.startswith(('http://', 'https://', 'socks5://', 'socks4://')):
+        return {'server': s}
+    # Webshare-style: host:port:user:pass
+    parts = s.split(':')
+    if len(parts) == 4:
+        host, port, user, pwd = parts
+        return {'server': f'http://{host}:{port}', 'username': user, 'password': pwd}
+    if len(parts) == 2:
+        host, port = parts
+        return {'server': f'http://{host}:{port}'}
+    return None
+
+
+async def launch_browser_pool(playwright, total_pages: int):
+    """
+    Lanza N browsers (uno por proxy en PROXY_POOL) y distribuye total_pages
+    paginas entre ellos. Cada pagina queda preconfigurada con _setup_page.
+
+    Retorna (browsers, page_queue). El caller debe cerrar los browsers al final
+    con close_browser_pool().
+
+    Si PROXY_POOL esta vacio, se usa el comportamiento clasico: 1 browser con
+    PROXY_URL (opcional) y total_pages paginas.
+    """
+    import asyncio as _asyncio
+    page_queue: _asyncio.Queue = _asyncio.Queue()
+    browsers = []
+
+    if PROXY_POOL:
+        n_proxies = len(PROXY_POOL)
+        per_browser = max(1, total_pages // n_proxies)
+        remainder = max(0, total_pages - per_browser * n_proxies)
+        for i, proxy_spec in enumerate(PROXY_POOL):
+            count = per_browser + (1 if i < remainder else 0)
+            proxy = parse_proxy(proxy_spec)
+            if not proxy:
+                print(f"[Proxy] Saltando spec invalido: {proxy_spec[:40]}")
+                continue
+            opts = {'headless': True, 'args': CHROMIUM_ARGS, 'proxy': proxy}
+            try:
+                br = await playwright.chromium.launch(**opts)
+            except Exception as e:
+                print(f"[Proxy] Error lanzando browser con {proxy['server']}: {e}")
+                continue
+            browsers.append(br)
+            for _ in range(count):
+                pg = await br.new_page()
+                await _setup_page(pg)
+                await page_queue.put(pg)
+            print(f"[Proxy] Browser via {proxy['server']} con {count} paginas")
+        if not browsers:
+            raise RuntimeError("Ningun proxy del PROXY_POOL pudo arrancar")
+    else:
+        # Sin pool — comportamiento original
+        opts = {'headless': True, 'args': CHROMIUM_ARGS}
+        if PROXY_URL:
+            opts['proxy'] = parse_proxy(PROXY_URL) or {'server': PROXY_URL}
+        br = await playwright.chromium.launch(**opts)
+        browsers.append(br)
+        for _ in range(total_pages):
+            pg = await br.new_page()
+            await _setup_page(pg)
+            await page_queue.put(pg)
+
+    return browsers, page_queue
+
+
+async def close_browser_pool(browsers: list):
+    """Cierra todos los browsers del pool, ignorando errores individuales."""
+    for br in browsers:
+        try:
+            await br.close()
+        except Exception:
+            pass
 
 # ── CPU optimisation ─────────────────────────────────────────────────────
 # Flags para reducir consumo de CPU de Chromium en servidor headless/Docker

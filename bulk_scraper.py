@@ -13,6 +13,7 @@ from playwright.async_api import async_playwright
 from scraper import (
     BASE_URL, PROXY_URL, scrape_book, save_to_db, init_db,
     CHROMIUM_ARGS, _setup_page,
+    launch_browser_pool, close_browser_pool,
 )
 
 # Número de páginas Playwright scrapeando detalles de libros en paralelo.
@@ -1090,26 +1091,18 @@ async def bulk_scrape(category_key: str, max_books: int | None = None):
 
     try:
         async with async_playwright() as p:
-            launch_opts = {"headless": True, "args": CHROMIUM_ARGS}
-            if PROXY_URL:
-                launch_opts["proxy"] = {"server": PROXY_URL}
-            browser = await p.chromium.launch(**launch_opts)
-
-            list_page = await browser.new_page()
-            await _setup_page(list_page)
-
-            page_queue: asyncio.Queue = asyncio.Queue()
-            for _ in range(POOL_SIZE):
-                dp = await browser.new_page()
-                await _setup_page(dp)
-                await page_queue.put(dp)
+            # Pool de browsers (uno por proxy si PROXY_POOL esta seteado, sino uno solo).
+            # Pedimos POOL_SIZE+1 paginas (POOL_SIZE para el queue + 1 para listing).
+            browsers, page_queue = await launch_browser_pool(p, POOL_SIZE + 1)
+            # Una pagina del queue se reserva para listing (browsing de categorias).
+            list_page = await page_queue.get()
 
             existing_urls = _load_existing_urls()
 
             # ── Sitemap mode bypasses round-robin ──
             if is_sitemap_mode:
                 await _bulk_scrape_sitemap(job, page_queue, existing_urls, max_books)
-                await browser.close()
+                await close_browser_pool(browsers)
                 if job["status"] != "stopped":
                     job["status"] = "completed"
                 job["finished_at"] = datetime.now().isoformat()
@@ -1176,7 +1169,7 @@ async def bulk_scrape(category_key: str, max_books: int | None = None):
                     print(f"[Bulk] ⚠️ Ronda {round_num} sin progreso. Deteniendo.")
                     break
 
-            await browser.close()
+            await close_browser_pool(browsers)
 
         if job["status"] != "stopped":
             job["status"] = "completed"

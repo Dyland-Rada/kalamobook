@@ -32,6 +32,7 @@ import db
 from scraper import (
     BASE_URL, PROXY_URL, CHROMIUM_ARGS, _setup_page, scrape_book, init_db,
     check_in_db_by_isbn, lookup_url_by_isbn,
+    launch_browser_pool, close_browser_pool,
 )
 from odoo_client import OdooClient, OdooError
 import notify
@@ -694,16 +695,9 @@ async def run_enrichment_job() -> str:
                 print(f"[Enrich] No pude obtener target count: {e}")
 
             async with async_playwright() as p:
-                launch_opts = {"headless": True, "args": CHROMIUM_ARGS}
-                if PROXY_URL:
-                    launch_opts["proxy"] = {"server": PROXY_URL}
-                browser = await p.chromium.launch(**launch_opts)
-
-                page_queue: asyncio.Queue = asyncio.Queue()
-                for _ in range(POOL_SIZE):
-                    pg = await browser.new_page()
-                    await _setup_page(pg)
-                    await page_queue.put(pg)
+                # Si hay PROXY_POOL, levanta N browsers (uno por proxy). Si no,
+                # un solo browser (con PROXY_URL opcional).
+                browsers, page_queue = await launch_browser_pool(p, POOL_SIZE)
 
                 # Start all loops concurrently
                 workers = [scrape_worker(i, page_queue, job) for i in range(POOL_SIZE)]
@@ -715,18 +709,29 @@ async def run_enrichment_job() -> str:
                     return_exceptions=True,
                 )
 
-                await browser.close()
+                await close_browser_pool(browsers)
         if job["status"] == "running":
             job["status"] = "completed"
-
-        try:
-            await notify.notify_job_stopped(job.get("written", 0), reason=job["status"])
-        except Exception:
-            pass
     except Exception as e:
         job["status"] = "error"
-        job["errors"].append(f"Fatal: {str(e)[:200]}")
+        err_msg = f"{type(e).__name__}: {e}"
+        job["errors"].append(f"Fatal: {err_msg[:200]}")
         print(f"[Enrich] Fatal: {e}")
+        # Avisar por Telegram que el job murio. Antes era silencioso → user
+        # se quedo 3 dias sin notificaciones porque el job habia explotado.
+        try:
+            await notify.notify_alert("critical", "Enrichment job murio",
+                                      f"Excepcion fatal: {err_msg[:300]}")
+        except Exception:
+            pass
+    finally:
+        # notify_job_stopped en finally — siempre se manda, incluso si el job
+        # exploto con excepcion antes de llegar al codigo normal de cierre.
+        try:
+            await notify.notify_job_stopped(job.get("written", 0),
+                                            reason=job.get("status", "stopped"))
+        except Exception:
+            pass
 
     job["finished_at"] = datetime.now().isoformat()
     return job["status"]
@@ -755,6 +760,72 @@ def get_notfound_count() -> int:
     n = cur.fetchone()[0]
     conn.close()
     return n
+
+
+def retry_notfound_books(older_than_hours: int = 12, limit: int = 50000) -> int:
+    """
+    Mueve filas de notfound_books de vuelta a enrichment_queue (status=pending)
+    para reintentar. Util tras un ban — muchos libros marcados notfound en
+    realidad existian pero CDL los rechazo por throttle.
+
+    older_than_hours: solo recuperar las marcadas hace mas de X horas (evita
+                      reintentar libros que apenas fueron descartados).
+    limit:            tope de filas a mover en una sola llamada.
+
+    Retorna: cantidad de filas movidas.
+    """
+    conn = db.get_connection()
+    cur = conn.cursor()
+    moved = 0
+    try:
+        if db.IS_POSTGRES:
+            db.execute_query(cur, """
+                WITH retrieved AS (
+                    DELETE FROM notfound_books
+                    WHERE odoo_id IN (
+                        SELECT odoo_id FROM notfound_books
+                        WHERE last_attempt < (CURRENT_TIMESTAMP - (? * INTERVAL '1 hour'))
+                        ORDER BY last_attempt ASC
+                        LIMIT ?
+                    )
+                    RETURNING odoo_id, barcode, name
+                )
+                INSERT INTO enrichment_queue (odoo_id, barcode, name, status, attempts, claimed_by)
+                SELECT odoo_id, barcode, name, 'pending', 0, NULL
+                FROM retrieved
+                ON CONFLICT (odoo_id) DO UPDATE SET
+                    status = 'pending', attempts = 0, claimed_by = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+            """, (older_than_hours, limit))
+            moved = cur.rowcount or 0
+        else:
+            # SQLite no tiene DELETE...RETURNING bien. Hacemos en 2 pasos.
+            db.execute_query(cur, """
+                SELECT odoo_id, barcode, name FROM notfound_books
+                WHERE datetime(last_attempt) < datetime('now', '-' || ? || ' hours')
+                ORDER BY last_attempt ASC LIMIT ?
+            """, (older_than_hours, limit))
+            rows = cur.fetchall()
+            for r in rows:
+                db.execute_query(cur, """
+                    INSERT OR REPLACE INTO enrichment_queue
+                    (odoo_id, barcode, name, status, attempts, claimed_by)
+                    VALUES (?, ?, ?, 'pending', 0, NULL)
+                """, (r[0], r[1], r[2]))
+            ids = [r[0] for r in rows]
+            if ids:
+                ph = ",".join(["?"] * len(ids))
+                db.execute_query(cur, f"DELETE FROM notfound_books WHERE odoo_id IN ({ph})", tuple(ids))
+            moved = len(rows)
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(f"[Enrich] retry_notfound error: {e}")
+        raise
+    finally:
+        conn.close()
+    print(f"[Enrich] retry_notfound: {moved} filas movidas a pending")
+    return moved
 
 
 def get_isbn_index_count() -> int:

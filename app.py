@@ -23,6 +23,7 @@ from enrichment import (
     get_enrichment_status, get_notfound_count,
     run_build_isbn_index_job, get_isbn_index_job_status,
     get_isbn_index_count,
+    retry_notfound_books,
 )
 import db as dbmod
 
@@ -318,6 +319,28 @@ async def odoo_sync_status():
 @app.get("/api/v1/odoo/notfound/count", tags=["Odoo"])
 async def odoo_notfound_count():
     return JSONResponse(content={"count": get_notfound_count()})
+
+
+@app.post("/api/v1/odoo/notfound/retry", tags=["Odoo"])
+async def odoo_notfound_retry(
+    older_than_hours: int = Query(12, ge=0),
+    limit: int = Query(50000, ge=1, le=500000),
+):
+    """
+    Mueve libros marcados notfound de vuelta a la cola para reintento.
+    Util tras un periodo de ban/throttle — muchos notfound son falsos.
+
+    older_than_hours: solo libros marcados notfound hace mas de X horas
+                     (default 12, evita recuperar los que acabamos de descartar).
+    limit: max filas a mover de un golpe (default 50k).
+    """
+    try:
+        n = retry_notfound_books(older_than_hours=older_than_hours, limit=limit)
+        return JSONResponse(content={"status": "ok", "moved_to_pending": n})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={
+            "status": "error", "message": f"{type(e).__name__}: {e}"
+        })
 
 
 # ─── REST API — CDL ISBN Index (sitemap-based fast path) ─────────────
