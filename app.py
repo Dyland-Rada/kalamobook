@@ -74,6 +74,23 @@ templates = Jinja2Templates(directory="templates")
 @app.on_event("startup")
 async def startup():
     init_db()
+    # Diagnostico de proxy pool — visible al instante en cualquier log viewer.
+    from scraper import PROXY_POOL, PROXY_URL, parse_proxy
+    print("=" * 60)
+    print(f"[Startup] WORKER_NAME={os.environ.get('WORKER_NAME', '(unset)')}")
+    if PROXY_POOL:
+        valid = [p for p in PROXY_POOL if parse_proxy(p)]
+        print(f"[Startup] PROXY_POOL: {len(valid)}/{len(PROXY_POOL)} proxies validos")
+        for i, p in enumerate(valid[:3]):
+            parsed = parse_proxy(p)
+            print(f"[Startup]   #{i+1}: {parsed['server']}")
+        if len(valid) > 3:
+            print(f"[Startup]   ... y {len(valid) - 3} mas")
+    elif PROXY_URL:
+        print(f"[Startup] PROXY_URL (singular): {PROXY_URL}")
+    else:
+        print("[Startup] PROXY: NINGUNO — saliendo con IP directa del server")
+    print("=" * 60)
 
 
 # ─── Web Interface (HTML) ────────────────────────────────────────────
@@ -417,6 +434,72 @@ async def notify_status():
     return JSONResponse(content={
         "configured": nfy.is_configured(),
         "worker": os.environ.get("WORKER_NAME", "default"),
+    })
+
+
+@app.get("/api/v1/proxies/status", tags=["Diagnostico"])
+async def proxies_status():
+    """
+    Lista los proxies cargados desde la env var PROXY_POOL al arrancar.
+    Si esta vacio, el server saldra con su IP directa hacia CDL.
+    Usar para confirmar tras un redeploy que las env vars se leyeron OK.
+    """
+    from scraper import PROXY_POOL, PROXY_URL, parse_proxy
+    parsed = []
+    for spec in PROXY_POOL:
+        p = parse_proxy(spec)
+        if p:
+            parsed.append({"server": p["server"], "auth": bool(p.get("username"))})
+        else:
+            parsed.append({"server": None, "raw": spec[:30], "error": "invalid format"})
+    return JSONResponse(content={
+        "worker": os.environ.get("WORKER_NAME", "default"),
+        "proxy_pool_count": len(PROXY_POOL),
+        "proxy_pool_valid": sum(1 for p in parsed if p.get("server")),
+        "proxies": parsed,
+        "proxy_url_legacy": bool(PROXY_URL),
+    })
+
+
+@app.post("/api/v1/proxies/healthcheck", tags=["Diagnostico"])
+async def proxies_healthcheck():
+    """
+    Prueba cada proxy contactando https://api.ipify.org para ver que IP
+    aparece desde el lado del destino. Si la IP devuelta es la del proxy,
+    funciona; si timeout o ConnectionError, el proxy esta muerto.
+    Util tras un redeploy para detectar proxies bloqueados antes de
+    arrancar un job.
+    """
+    import aiohttp
+    from scraper import PROXY_POOL, parse_proxy
+
+    if not PROXY_POOL:
+        return JSONResponse(content={"error": "PROXY_POOL vacio", "results": []})
+
+    async def _check_one(spec: str):
+        proxy = parse_proxy(spec)
+        if not proxy:
+            return {"spec": spec[:30], "ok": False, "error": "invalid format"}
+        proxy_url = proxy["server"]
+        if proxy.get("username"):
+            host = proxy_url.replace("http://", "")
+            proxy_url = f"http://{proxy['username']}:{proxy['password']}@{host}"
+        try:
+            timeout = aiohttp.ClientTimeout(total=15)
+            async with aiohttp.ClientSession(timeout=timeout) as sess:
+                async with sess.get("https://api.ipify.org?format=json", proxy=proxy_url) as resp:
+                    body = await resp.json()
+                    return {"spec": proxy["server"], "ok": True, "exit_ip": body.get("ip")}
+        except Exception as e:
+            return {"spec": proxy["server"], "ok": False, "error": f"{type(e).__name__}: {str(e)[:100]}"}
+
+    results = await asyncio.gather(*(_check_one(s) for s in PROXY_POOL))
+    ok_count = sum(1 for r in results if r.get("ok"))
+    return JSONResponse(content={
+        "checked": len(results),
+        "alive": ok_count,
+        "dead": len(results) - ok_count,
+        "results": results,
     })
 
 
