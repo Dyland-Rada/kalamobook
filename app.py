@@ -472,6 +472,98 @@ async def odoo_mirror_infer_status():
     return JSONResponse(content=odoo_mirror.get_infer_status())
 
 
+@app.post("/api/v1/odoo/categories/push", tags=["Odoo"])
+async def odoo_categories_push():
+    """
+    Crea/encuentra en Odoo todas las product.category necesarias para
+    las inferred_categories del mirror. Construye la jerarquia.
+    Cachea cada path para idempotencia.
+    """
+    import threading
+    import sys
+    import odoo_mirror
+
+    if odoo_mirror.get_push_categ_status().get("status") == "running":
+        return JSONResponse(status_code=409, content={
+            "status": "error", "message": "Push de categorias ya esta corriendo."
+        })
+
+    def _run_in_thread():
+        if sys.platform == 'win32':
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
+        try:
+            new_loop.run_until_complete(odoo_mirror.push_categories_to_odoo())
+        finally:
+            new_loop.close()
+
+    t = threading.Thread(target=_run_in_thread, daemon=True)
+    t.start()
+    return JSONResponse(content={"status": "started"})
+
+
+@app.post("/api/v1/odoo/categories/push-stop", tags=["Odoo"])
+async def odoo_categories_push_stop():
+    import odoo_mirror
+    if odoo_mirror.stop_push_categories():
+        return JSONResponse(content={"status": "stopping"})
+    return JSONResponse(status_code=400, content={"status": "error", "message": "No hay job corriendo."})
+
+
+@app.get("/api/v1/odoo/categories/push-status", tags=["Odoo"])
+async def odoo_categories_push_status():
+    import odoo_mirror
+    return JSONResponse(content=odoo_mirror.get_push_categ_status())
+
+
+@app.post("/api/v1/odoo/categories/assign", tags=["Odoo"])
+async def odoo_categories_assign(batch_size: int = Query(100, ge=10, le=500)):
+    """
+    Asigna product.template.categ_id a cada libro del mirror que tenga
+    inferred_categories. Usa el cache local para resolver path -> categ_id.
+    Requiere haber corrido /push antes.
+    """
+    import threading
+    import sys
+    import odoo_mirror
+
+    if odoo_mirror.get_assign_categ_status().get("status") == "running":
+        return JSONResponse(status_code=409, content={
+            "status": "error", "message": "Assign de categorias ya esta corriendo."
+        })
+
+    def _run_in_thread():
+        if sys.platform == 'win32':
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
+        try:
+            new_loop.run_until_complete(
+                odoo_mirror.assign_books_to_odoo_categories(batch_size=batch_size)
+            )
+        finally:
+            new_loop.close()
+
+    t = threading.Thread(target=_run_in_thread, daemon=True)
+    t.start()
+    return JSONResponse(content={"status": "started"})
+
+
+@app.post("/api/v1/odoo/categories/assign-stop", tags=["Odoo"])
+async def odoo_categories_assign_stop():
+    import odoo_mirror
+    if odoo_mirror.stop_assign_categories():
+        return JSONResponse(content={"status": "stopping"})
+    return JSONResponse(status_code=400, content={"status": "error", "message": "No hay job corriendo."})
+
+
+@app.get("/api/v1/odoo/categories/assign-status", tags=["Odoo"])
+async def odoo_categories_assign_status():
+    import odoo_mirror
+    return JSONResponse(content=odoo_mirror.get_assign_categ_status())
+
+
 @app.get("/api/v1/odoo/mirror/export.csv", tags=["Odoo"])
 async def odoo_mirror_export_csv():
     """

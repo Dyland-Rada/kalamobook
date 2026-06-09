@@ -340,6 +340,21 @@ def init_db():
     ''')
     db.execute_query(cursor, "CREATE INDEX IF NOT EXISTS idx_opc_parent ON odoo_public_categories(parent_id)")
 
+    # Cache de product.category creadas/encontradas en Odoo desde nuestras
+    # inferred_categories. Mapea "Literatura > Novela > Ciencia ficcion"
+    # al ID en Odoo. Sirve para idempotencia: si ya creamos la rama, no
+    # duplicamos.
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS odoo_product_categories_cache (
+            full_path TEXT PRIMARY KEY,
+            odoo_categ_id INTEGER NOT NULL,
+            name TEXT,
+            parent_path TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    db.execute_query(cursor, "CREATE INDEX IF NOT EXISTS idx_opcc_categ ON odoo_product_categories_cache(odoo_categ_id)")
+
     # Catalogo importado desde distribuidores (Excel: ANAYA, PLANETA, PODIPRINT...).
     # Schema replica el de la tabla books + campo `fuente` + `imported_at`.
     # PK por ISBN; el mismo libro puede aparecer en >1 distribuidor — gana el

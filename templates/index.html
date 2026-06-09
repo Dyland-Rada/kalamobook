@@ -1053,6 +1053,14 @@
                             title="Llena categorías cruzando ISBN con books (CDL) y distributor_books (XLSX)">
                         🧩 Inferir desde scrapes
                     </button>
+                    <button class="btn btn-primary" onclick="categoriesPush()" style="background:#27ae60;"
+                            title="Crea las categorías inferidas EN Odoo (product.category)">
+                        🚀 Crear categorías en Odoo
+                    </button>
+                    <button class="btn btn-primary" onclick="categoriesAssign()" style="background:#2980b9;"
+                            title="Asigna categ_id a cada libro en Odoo">
+                        🔗 Asignar libros → categorías
+                    </button>
                 </div>
 
                 <div id="mirror-status-block" style="margin-top:20px; display:none;">
@@ -1661,6 +1669,76 @@
                 } else {
                     alert(`❌ ${data.message || 'No se pudo iniciar'}`);
                 }
+            } catch (e) { alert('Error: ' + e.message); }
+        }
+
+        async function categoriesPush() {
+            if (!confirm('Crear las categorías inferidas en Odoo (product.category)?\n\n' +
+                         'Esto crea la jerarquía Literatura > Novela > etc. Idempotente — re-ejecutar no duplica.\n' +
+                         'Puede tardar 1-5 min dependiendo de cuántos paths únicos haya.')) return;
+            try {
+                const resp = await fetch('/api/v1/odoo/categories/push', { method: 'POST' });
+                const data = await resp.json();
+                if (data.status !== 'started') {
+                    alert(`❌ ${data.message || 'No se pudo iniciar'}`);
+                    return;
+                }
+                alert('▶ Push arrancado. Ve a Odoo → Inventario → Configuración → Categorías de Producto para verlas aparecer.');
+                const t = setInterval(async () => {
+                    try {
+                        const r = await fetch('/api/v1/odoo/categories/push-status');
+                        const s = await r.json();
+                        if (s.status === 'completed' || s.status === 'error' || s.status === 'stopped') {
+                            clearInterval(t);
+                            if (s.status === 'completed') {
+                                alert(
+                                    `✅ Push categorías OK:\n` +
+                                    `• ${(s.distinct_paths || 0).toLocaleString()} paths únicos\n` +
+                                    `• ${(s.created_or_found || 0).toLocaleString()} creadas/encontradas en Odoo\n` +
+                                    `• ${(s.from_cache || 0).toLocaleString()} ya estaban en cache local\n` +
+                                    `• ${(s.cached_paths || 0).toLocaleString()} paths en cache final\n\n` +
+                                    `Ahora dale a "Asignar libros → categorías" para que cada libro tenga su categ_id.`
+                                );
+                            } else if (s.status === 'error') {
+                                alert(`❌ Push falló:\n${(s.errors || []).join('\n')}`);
+                            }
+                        }
+                    } catch (_) {}
+                }, 4000);
+            } catch (e) { alert('Error: ' + e.message); }
+        }
+
+        async function categoriesAssign() {
+            if (!confirm('Asignar categ_id a cada libro de Odoo?\n\n' +
+                         'Requiere haber corrido "Crear categorías en Odoo" antes.\n' +
+                         'Puede tardar 10-30 min dependiendo de cuántos libros tengan inferred_categories.')) return;
+            try {
+                const resp = await fetch('/api/v1/odoo/categories/assign', { method: 'POST' });
+                const data = await resp.json();
+                if (data.status !== 'started') {
+                    alert(`❌ ${data.message || 'No se pudo iniciar'}`);
+                    return;
+                }
+                alert('▶ Assign arrancado. Mira el progreso aquí o en Odoo (en cada libro verás "Categoría interna" llenada).');
+                const t = setInterval(async () => {
+                    try {
+                        const r = await fetch('/api/v1/odoo/categories/assign-status');
+                        const s = await r.json();
+                        if (s.status === 'completed' || s.status === 'error' || s.status === 'stopped') {
+                            clearInterval(t);
+                            if (s.status === 'completed') {
+                                alert(
+                                    `✅ Assign OK:\n` +
+                                    `• ${(s.to_assign || 0).toLocaleString()} libros a asignar\n` +
+                                    `• ${(s.assigned || 0).toLocaleString()} asignados con exito\n` +
+                                    `• ${(s.skipped_no_cache || 0).toLocaleString()} omitidos (path sin cache)`
+                                );
+                            } else if (s.status === 'error') {
+                                alert(`❌ Assign falló:\n${(s.errors || []).join('\n')}`);
+                            }
+                        }
+                    } catch (_) {}
+                }, 5000);
             } catch (e) { alert('Error: ' + e.message); }
         }
 

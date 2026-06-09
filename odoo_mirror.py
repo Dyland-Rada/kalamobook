@@ -21,11 +21,14 @@ import db
 from odoo_client import OdooClient, OdooError
 
 MIRROR_BATCH_SIZE = int(os.environ.get("MIRROR_BATCH_SIZE", "1000"))
-MIRROR_FIELDS = [
+# Campos siempre presentes en product.template (Odoo core)
+MIRROR_FIELDS_CORE = [
     "id", "barcode", "name", "description",
     "description_sale", "list_price", "categ_id",
-    "public_categ_ids",
 ]
+# Campos opcionales que dependen de modulos (website_sale para public_categ_ids).
+# Se prueban al arranque del job y si Odoo dice "Invalid field" se quitan.
+MIRROR_FIELDS_OPTIONAL = ["public_categ_ids"]
 
 mirror_job: dict | None = None
 
@@ -207,6 +210,11 @@ async def run_mirror_job(only_pending: bool = True,
 
     try:
         async with OdooClient() as odoo:
+            # Detectar que campos opcionales soporta esta instancia de Odoo.
+            # Sin website_sale no existe public_categ_ids — y el job
+            # entero falla en cada fetch si lo pedimos.
+            mirror_fields = await _detect_supported_fields(odoo)
+            print(f"[Mirror] Campos a pullar: {mirror_fields}")
             try:
                 total = await odoo.search_count("product.template", domain)
                 job["total_target"] = total
@@ -223,7 +231,7 @@ async def run_mirror_job(only_pending: bool = True,
                     break
                 try:
                     rows = await odoo.search_read(
-                        "product.template", domain, MIRROR_FIELDS,
+                        "product.template", domain, mirror_fields,
                         offset=offset, limit=batch_size, order="id",
                     )
                 except Exception as e:
@@ -258,6 +266,33 @@ async def run_mirror_job(only_pending: bool = True,
 
 
 # ── Sync de categorias de tienda (product.public.category) ─────────────
+async def _detect_supported_fields(odoo: OdooClient) -> list[str]:
+    """
+    Devuelve la lista de campos a usar en search_read sobre product.template,
+    saltando los opcionales (public_categ_ids) que no existen en instancias
+    sin website_sale instalado.
+
+    Hace un fields_get una sola vez al inicio del job para evitar errores
+    repetidos en cada batch.
+    """
+    fields = list(MIRROR_FIELDS_CORE)
+    try:
+        info = await odoo.execute_kw(
+            "product.template", "fields_get",
+            [],
+            {"attributes": ["type"]},
+        )
+        available = set(info.keys()) if isinstance(info, dict) else set()
+        for opt in MIRROR_FIELDS_OPTIONAL:
+            if opt in available:
+                fields.append(opt)
+            else:
+                print(f"[Mirror] Campo opcional '{opt}' no existe en Odoo (saltando)")
+    except Exception as e:
+        print(f"[Mirror] fields_get fallo ({type(e).__name__}: {e!r}) — uso solo core")
+    return fields
+
+
 async def sync_public_categories() -> dict:
     """
     Pulla TODAS las product.public.category de Odoo y las cachea en
@@ -606,6 +641,307 @@ def count_public_categories() -> int:
         return 0
     finally:
         conn.close()
+
+
+# ── Push de categorias a Odoo (product.category) ──────────────────────
+push_categ_job: dict | None = None
+assign_categ_job: dict | None = None
+
+
+def get_push_categ_status() -> dict:
+    job = dict(push_categ_job) if push_categ_job else {"status": "idle"}
+    job["cached_paths"] = _count_pushed_categories()
+    if "errors" in job:
+        job["errors"] = job["errors"][-10:]
+    return job
+
+
+def get_assign_categ_status() -> dict:
+    job = dict(assign_categ_job) if assign_categ_job else {"status": "idle"}
+    if "errors" in job:
+        job["errors"] = job["errors"][-10:]
+    return job
+
+
+def _count_pushed_categories() -> int:
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        db.execute_query(cur, "SELECT COUNT(*) FROM odoo_product_categories_cache")
+        return cur.fetchone()[0]
+    except Exception:
+        return 0
+    finally:
+        conn.close()
+
+
+def _lookup_cached_path(full_path: str) -> int | None:
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        db.execute_query(cur,
+            "SELECT odoo_categ_id FROM odoo_product_categories_cache WHERE full_path = ?",
+            (full_path,))
+        row = cur.fetchone()
+        return row[0] if row else None
+    except Exception:
+        return None
+    finally:
+        conn.close()
+
+
+def _save_cached_path(full_path: str, categ_id: int, name: str, parent_path: str | None):
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        if db.IS_POSTGRES:
+            db.execute_query(cur, """
+                INSERT INTO odoo_product_categories_cache
+                    (full_path, odoo_categ_id, name, parent_path, created_at)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT (full_path) DO UPDATE SET
+                    odoo_categ_id = EXCLUDED.odoo_categ_id,
+                    name = EXCLUDED.name,
+                    parent_path = EXCLUDED.parent_path
+            """, (full_path, categ_id, name, parent_path))
+        else:
+            db.execute_query(cur, """
+                INSERT OR REPLACE INTO odoo_product_categories_cache
+                    (full_path, odoo_categ_id, name, parent_path, created_at)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """, (full_path, categ_id, name, parent_path))
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        conn.close()
+
+
+def _get_distinct_inferred_paths() -> list[str]:
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        db.execute_query(cur, """
+            SELECT DISTINCT inferred_categories
+            FROM odoo_books_mirror
+            WHERE inferred_categories IS NOT NULL
+              AND inferred_categories <> ''
+        """)
+        return [r[0] for r in cur.fetchall() if r[0]]
+    finally:
+        conn.close()
+
+
+async def _ensure_category(odoo: OdooClient, name: str,
+                            parent_id: int | bool) -> int:
+    """
+    Devuelve el id de la product.category con (name, parent_id). Si no
+    existe en Odoo la crea. Si parent_id es None, se trata como root (False).
+    """
+    p = parent_id if isinstance(parent_id, int) else False
+    # Buscar primero
+    domain = [["name", "=", name]]
+    if p:
+        domain.append(["parent_id", "=", p])
+    else:
+        domain.append(["parent_id", "=", False])
+    existing = await odoo.search_read(
+        "product.category", domain, ["id"], limit=1,
+    )
+    if existing:
+        return existing[0]["id"]
+    # Crear
+    create_vals = {"name": name}
+    if p:
+        create_vals["parent_id"] = p
+    new_id = await odoo.execute_kw(
+        "product.category", "create", [create_vals]
+    )
+    return new_id
+
+
+async def push_categories_to_odoo() -> dict:
+    """
+    Crea/encuentra en Odoo todas las product.category necesarias para
+    cubrir las inferred_categories del mirror. Cachea cada path -> id en
+    odoo_product_categories_cache para idempotencia.
+    """
+    global push_categ_job
+    push_categ_job = {
+        "status": "running",
+        "started_at": datetime.now().isoformat(),
+        "distinct_paths": 0,
+        "created_or_found": 0,
+        "from_cache": 0,
+        "errors": [],
+    }
+
+    try:
+        paths = _get_distinct_inferred_paths()
+        push_categ_job["distinct_paths"] = len(paths)
+        print(f"[PushCat] {len(paths)} paths unicos a procesar")
+
+        if not paths:
+            push_categ_job["status"] = "completed"
+            return push_categ_job
+
+        # Memo en memoria — clave: full_path, valor: odoo_categ_id
+        path_to_id: dict[str, int] = {}
+
+        async with OdooClient() as odoo:
+            for path in paths:
+                if push_categ_job["status"] != "running":
+                    break
+                parts = [p.strip() for p in path.split(" > ") if p.strip()]
+                if not parts:
+                    continue
+                parent_id: int | bool = False
+                for i, part in enumerate(parts):
+                    full = " > ".join(parts[: i + 1])
+                    if full in path_to_id:
+                        parent_id = path_to_id[full]
+                        continue
+                    cached = _lookup_cached_path(full)
+                    if cached:
+                        path_to_id[full] = cached
+                        push_categ_job["from_cache"] += 1
+                        parent_id = cached
+                        continue
+                    try:
+                        cid = await _ensure_category(odoo, part, parent_id)
+                    except Exception as e:
+                        err = f"path '{full}': {type(e).__name__}: {e!r}"
+                        push_categ_job["errors"].append(err[:200])
+                        print(f"[PushCat] {err}")
+                        break
+                    path_to_id[full] = cid
+                    parent_path = " > ".join(parts[:i]) if i > 0 else None
+                    _save_cached_path(full, cid, part, parent_path)
+                    push_categ_job["created_or_found"] += 1
+                    parent_id = cid
+
+        push_categ_job["status"] = "completed"
+        print(f"[PushCat] DONE: {push_categ_job['created_or_found']} creadas/encontradas, "
+              f"{push_categ_job['from_cache']} desde cache local")
+    except Exception as e:
+        push_categ_job["status"] = "error"
+        err = f"{type(e).__name__}: {e!r}"
+        push_categ_job["errors"].append(err[:200])
+        print(f"[PushCat] Fatal: {err}")
+
+    return push_categ_job
+
+
+def stop_push_categories():
+    global push_categ_job
+    if push_categ_job and push_categ_job.get("status") == "running":
+        push_categ_job["status"] = "stopped"
+        return True
+    return False
+
+
+async def assign_books_to_odoo_categories(batch_size: int = 100) -> dict:
+    """
+    Para cada libro en odoo_books_mirror con inferred_categories, asigna su
+    product.template.categ_id al ID de la categoria leaf correspondiente en
+    Odoo. Usa el cache odoo_product_categories_cache para resolver paths.
+    """
+    global assign_categ_job
+    assign_categ_job = {
+        "status": "running",
+        "started_at": datetime.now().isoformat(),
+        "to_assign": 0,
+        "assigned": 0,
+        "skipped_no_cache": 0,
+        "errors": [],
+    }
+
+    # Leer todos los libros con categoria inferida y traer su path
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        db.execute_query(cur, """
+            SELECT odoo_id, inferred_categories
+            FROM odoo_books_mirror
+            WHERE inferred_categories IS NOT NULL
+              AND inferred_categories <> ''
+            ORDER BY odoo_id
+        """)
+        rows = cur.fetchall()
+    finally:
+        conn.close()
+
+    assign_categ_job["to_assign"] = len(rows)
+    print(f"[AssignCat] {len(rows)} libros a asignar")
+
+    # Pre-cargar TODO el cache de paths a memoria (rapido, max ~50k entries)
+    conn = db.get_connection()
+    cur = conn.cursor()
+    path_to_id: dict[str, int] = {}
+    try:
+        db.execute_query(cur,
+            "SELECT full_path, odoo_categ_id FROM odoo_product_categories_cache")
+        for row in cur.fetchall():
+            path_to_id[row[0]] = row[1]
+    finally:
+        conn.close()
+    print(f"[AssignCat] Cache local con {len(path_to_id)} paths")
+
+    if not path_to_id:
+        assign_categ_job["status"] = "error"
+        err = "Cache vacio. Corre push_categories_to_odoo() primero."
+        assign_categ_job["errors"].append(err)
+        print(f"[AssignCat] {err}")
+        return assign_categ_job
+
+    # Agrupar libros por leaf categ_id para batchear writes
+    by_cat: dict[int, list[int]] = {}
+    for odoo_id, path in rows:
+        cat_id = path_to_id.get(path)
+        if not cat_id:
+            assign_categ_job["skipped_no_cache"] += 1
+            continue
+        by_cat.setdefault(cat_id, []).append(odoo_id)
+
+    print(f"[AssignCat] Agrupados en {len(by_cat)} categorias distintas")
+
+    try:
+        async with OdooClient() as odoo:
+            for cat_id, odoo_ids in by_cat.items():
+                if assign_categ_job["status"] != "running":
+                    break
+                # Batchear writes
+                for i in range(0, len(odoo_ids), batch_size):
+                    chunk = odoo_ids[i:i + batch_size]
+                    try:
+                        await odoo.write("product.template", chunk, {"categ_id": cat_id})
+                        assign_categ_job["assigned"] += len(chunk)
+                    except Exception as e:
+                        err = f"cat {cat_id}: {type(e).__name__}: {e!r}"
+                        assign_categ_job["errors"].append(err[:200])
+                        print(f"[AssignCat] {err}")
+                if assign_categ_job["assigned"] % 1000 == 0:
+                    print(f"[AssignCat] {assign_categ_job['assigned']}/{assign_categ_job['to_assign']}")
+
+        if assign_categ_job["status"] == "running":
+            assign_categ_job["status"] = "completed"
+        print(f"[AssignCat] DONE: asignados {assign_categ_job['assigned']}, "
+              f"skipped {assign_categ_job['skipped_no_cache']}")
+    except Exception as e:
+        assign_categ_job["status"] = "error"
+        err = f"{type(e).__name__}: {e!r}"
+        assign_categ_job["errors"].append(err[:200])
+        print(f"[AssignCat] Fatal: {err}")
+
+    return assign_categ_job
+
+
+def stop_assign_categories():
+    global assign_categ_job
+    if assign_categ_job and assign_categ_job.get("status") == "running":
+        assign_categ_job["status"] = "stopped"
+        return True
+    return False
 
 
 # ── CSV streaming export ───────────────────────────────────────────────
