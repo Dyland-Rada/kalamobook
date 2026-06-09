@@ -36,6 +36,8 @@ from scraper import (
 )
 from odoo_client import OdooClient, OdooError
 import notify
+import google_books
+import aiohttp
 
 POOL_SIZE = int(os.environ.get("BULK_POOL_SIZE", "6"))
 REFILL_THRESHOLD = int(os.environ.get("ENRICH_QUEUE_REFILL_AT", "500"))
@@ -50,6 +52,15 @@ WORKER_NAME = os.environ.get("WORKER_NAME", "default")
 # Por defecto NO — fast-fail directo a notfound. Pone esto a "1" si quieres
 # que el worker pague el costo del search para los huerfanos.
 FALLBACK_TO_SEARCH = os.environ.get("ENRICH_FALLBACK_SEARCH", "0") == "1"
+# Google Books como fuente cascada cuando CDL no tiene el libro (o falla).
+# Por defecto ENCENDIDO — es gratis, no usa Playwright y suele recuperar
+# 60-80% de los libros que CDL no listo.
+GBOOKS_FALLBACK = os.environ.get("ENRICH_GBOOKS_FALLBACK", "1") == "1"
+# Cuando CDL si tiene el libro pero le faltan campos (description/idioma/etc),
+# rellenar los huecos con Google Books. Cuesta 1 API call extra por libro
+# scrapeado en CDL. Por defecto APAGADO — actviar si te importa la cobertura
+# de campos mas que la velocidad.
+GBOOKS_ENRICH_CDL = os.environ.get("ENRICH_GBOOKS_ENRICH_CDL", "0") == "1"
 
 # Global singleton job state (only one enrichment job runs at a time)
 enrichment_job: dict | None = None
@@ -329,7 +340,11 @@ def _reclaim_stuck_pushing(stuck_minutes: int = 10):
 
 # ── HTML description renderer ──────────────────────────────────────────
 def render_html_description(d: dict) -> str:
-    """Build an enriched HTML description from scraped Casa del Libro data."""
+    """
+    Construye el HTML enriquecido que va al campo `description` de Odoo.
+    Acepta datos de Casa del Libro y/o Google Books (mismas keys, ver
+    google_books._normalize). Solo emite secciones que tengan datos.
+    """
     def esc(v: Any) -> str:
         return html.escape(str(v).strip()) if v else ""
 
@@ -353,6 +368,7 @@ def render_html_description(d: dict) -> str:
         ("Tiempo de lectura", d.get("reading_time")),
         ("Alto", d.get("height")),
         ("Ancho", d.get("width")),
+        ("Grosor", d.get("thickness")),
         ("Peso", d.get("weight")),
         ("Origen", d.get("origin")),
     ]
@@ -367,11 +383,65 @@ def render_html_description(d: dict) -> str:
             "\n</ul>"
         )
 
+    # Categorias / tags (CDL los trae como > separado; Google Books como lista)
+    cats_html = ""
+    cats = d.get("categories") or d.get("tags") or []
+    if isinstance(cats, str):
+        cats = [cats]
+    cats = [c for c in cats if c]
+    if cats:
+        chips = "".join(f"<span style='background:#eef;padding:2px 8px;border-radius:12px;margin:2px;display:inline-block;font-size:0.9em'>{esc(c)}</span>" for c in cats[:10])
+        cats_html = f"<p style='margin-top:1em'><strong>Categorías:</strong> {chips}</p>"
+
+    # Rating si Google Books lo trajo
+    rating = d.get("average_rating")
+    rating_count = d.get("ratings_count")
+    rating_html = ""
+    if rating:
+        rating_html = f"<p><strong>Valoración:</strong> {esc(rating)}/5"
+        if rating_count:
+            rating_html += f" ({esc(rating_count)} valoraciones)"
+        rating_html += "</p>"
+
+    # Link a preview de Google Books si esta
+    preview_html = ""
+    preview = d.get("preview_link")
+    if preview:
+        preview_html = (
+            f"<p style='margin-top:0.5em'><a href='{esc(preview)}' target='_blank' "
+            f"rel='noopener'>Ver vista previa en Google Books</a></p>"
+        )
+
+    # Fuente (atribucion discreta al final)
+    source_html = ""
+    source = d.get("source") or ""
+    if source:
+        labels = {
+            "cdl": "Casa del Libro",
+            "cdl_cache": "Casa del Libro (cache local)",
+            "google_books": "Google Books",
+            "cdl+google_books": "Casa del Libro + Google Books",
+            "google_books+cdl": "Casa del Libro + Google Books",
+        }
+        label = labels.get(source, source)
+        source_html = (
+            f"<p style='font-size:0.75em;color:#888;margin-top:1em;font-style:italic'>"
+            f"Fuente: {esc(label)}</p>"
+        )
+
     parts = []
     if synopsis:
         parts.append(f"<p>{synopsis}</p>")
     if ficha_html:
         parts.append(ficha_html)
+    if cats_html:
+        parts.append(cats_html)
+    if rating_html:
+        parts.append(rating_html)
+    if preview_html:
+        parts.append(preview_html)
+    if source_html:
+        parts.append(source_html)
     return "\n".join(parts) if parts else ""
 
 
@@ -517,13 +587,30 @@ async def queue_refill_loop(odoo: OdooClient, job: dict):
         print(f"[Enrich] Refilled: fetched {len(rows)} from Odoo (offset now {last_offset}), {inserted} new in queue")
 
 
-async def scrape_worker(worker_id: int, page_queue: asyncio.Queue, job: dict):
+async def _try_google_books(gb_session, barcode: str) -> dict | None:
+    """Lookup en Google Books con timeout corto. Devuelve None si falla o sin data."""
+    if not gb_session:
+        return None
+    try:
+        return await google_books.fetch_by_isbn(gb_session, barcode, timeout_s=10.0)
+    except Exception:
+        return None
+
+
+async def scrape_worker(
+    worker_id: int,
+    page_queue: asyncio.Queue,
+    job: dict,
+    gb_session: aiohttp.ClientSession | None = None,
+):
     """
-    Cascading cache lookup for each Odoo book:
-      1. books table by ISBN → reuse local data (0 Playwright cost)
-      2. cdl_isbn_index → scrape with direct URL (1 nav instead of 2)
-      3. Search fallback (default OFF) → scrape via search→click
-      4. else → mark notfound
+    Cascading lookup for each Odoo book:
+      1. books table by ISBN          → reuse local data (0 cost)
+      2. cdl_isbn_index → scrape CDL  → datos completos (peso/altura/etc)
+         2a. opcional: enriquecer con Google Books si CDL deja huecos
+      3. Google Books API fallback    → para libros que CDL no tiene
+      4. Search fallback en CDL (OFF) → cuando todo lo anterior falla
+      5. else → mark notfound
     """
     while job["status"] == "running":
         claimed = _claim_pending(limit=1)
@@ -545,6 +632,7 @@ async def scrape_worker(worker_id: int, page_queue: asyncio.Queue, job: dict):
         if cached and cached.get("title") and cached["title"] != "Unknown Title":
             cached["odoo_id"] = odoo_id
             cached["isbn"] = cached.get("isbn") or barcode
+            cached.setdefault("source", "cdl_cache")
             _mark_scraped(odoo_id, cached)
             job["scraped"] += 1
             job["cache_hits"] += 1
@@ -553,46 +641,73 @@ async def scrape_worker(worker_id: int, page_queue: asyncio.Queue, job: dict):
         # ── Fast path 2: direct URL from sitemap ISBN index ──
         direct_url = lookup_url_by_isbn(barcode)
 
-        # ── Fast-fail: ISBN not in our world at all ──
-        if not direct_url and not FALLBACK_TO_SEARCH:
-            _mark_notfound(odoo_id, barcode, name, "Not in CDL ISBN index")
-            job["notfound"] += 1
-            continue
-
         job["current_book"] = (
-            f"W{worker_id} {'[direct]' if direct_url else '[search]'}: "
+            f"W{worker_id} {'[direct]' if direct_url else '[gbooks]'}: "
             f"{(name or barcode)[:60]}"
         )
 
-        page = await page_queue.get()
-        try:
-            data = await scrape_book(page, query=barcode, direct_url=direct_url)
-            if data and data.get("title") and data["title"] != "Unknown Title":
-                data["odoo_id"] = odoo_id
-                _mark_scraped(odoo_id, data)
-                job["scraped"] += 1
-                if direct_url:
-                    job["direct_hits"] += 1
-            else:
-                if attempts + 1 >= MAX_ATTEMPTS:
-                    _mark_notfound(odoo_id, barcode, name, "Not found on Casa del Libro")
-                    job["notfound"] += 1
-                else:
-                    _bump_attempt(odoo_id, "scrape returned no data")
-                    job["retried"] += 1
-        except Exception as e:
-            err = f"{type(e).__name__}: {e}"
-            if attempts + 1 >= MAX_ATTEMPTS:
-                _mark_notfound(odoo_id, barcode, name, err[:200])
-                job["notfound"] += 1
-            else:
-                _bump_attempt(odoo_id, err)
-                job["retried"] += 1
-        finally:
-            await page_queue.put(page)
+        cdl_data: dict | None = None
+        cdl_error: str | None = None
 
-        # Delay entre requests por worker. Configurable via ENRICH_WORKER_DELAY_MIN/MAX
-        # Subir si CDL te empieza a tirar timeouts (throttle).
+        # ── Path A: CDL via direct URL ──
+        if direct_url:
+            page = await page_queue.get()
+            try:
+                data = await scrape_book(page, query=barcode, direct_url=direct_url)
+                if data and data.get("title") and data["title"] != "Unknown Title":
+                    data["source"] = "cdl"
+                    cdl_data = data
+                else:
+                    cdl_error = "Not found on Casa del Libro"
+            except Exception as e:
+                cdl_error = f"{type(e).__name__}: {e}"
+            finally:
+                await page_queue.put(page)
+
+        # ── Path B: Google Books (fallback o enrich) ──
+        gb_data: dict | None = None
+        need_gb = False
+        if cdl_data is None and GBOOKS_FALLBACK:
+            need_gb = True
+        elif cdl_data is not None and GBOOKS_ENRICH_CDL:
+            # Solo pegar GB si CDL no trajo description
+            if not cdl_data.get("description") or cdl_data.get("description") in ("No Description", ""):
+                need_gb = True
+
+        if need_gb and gb_session:
+            gb_data = await _try_google_books(gb_session, barcode)
+
+        # ── Decision ──
+        final_data = google_books.merge_book_data(cdl_data, gb_data)
+
+        if final_data and final_data.get("title") and final_data.get("title") != "Unknown Title":
+            final_data["odoo_id"] = odoo_id
+            final_data["isbn"] = final_data.get("isbn") or barcode
+            _mark_scraped(odoo_id, final_data)
+            job["scraped"] += 1
+            src = final_data.get("source", "")
+            if direct_url and cdl_data:
+                job["direct_hits"] += 1
+            if "google_books" in src:
+                job["gbooks_hits"] = job.get("gbooks_hits", 0) + 1
+            if "+" in src:
+                job["gbooks_merged"] = job.get("gbooks_merged", 0) + 1
+            # Delay entre requests
+            delay_min = float(os.environ.get("ENRICH_WORKER_DELAY_MIN", "1.5"))
+            delay_max = float(os.environ.get("ENRICH_WORKER_DELAY_MAX", "3.5"))
+            await asyncio.sleep(random.uniform(delay_min, delay_max))
+            continue
+
+        # ── Nothing worked: retry or mark notfound ──
+        reason = cdl_error or "Not in CDL ISBN index and Google Books has no match"
+        if attempts + 1 >= MAX_ATTEMPTS:
+            _mark_notfound(odoo_id, barcode, name, reason[:200])
+            job["notfound"] += 1
+        else:
+            _bump_attempt(odoo_id, reason)
+            job["retried"] += 1
+
+        # Delay
         delay_min = float(os.environ.get("ENRICH_WORKER_DELAY_MIN", "1.5"))
         delay_max = float(os.environ.get("ENRICH_WORKER_DELAY_MAX", "3.5"))
         await asyncio.sleep(random.uniform(delay_min, delay_max))
@@ -674,6 +789,8 @@ async def run_enrichment_job() -> str:
         "retried": 0,
         "cache_hits": 0,       # libros resueltos por books table (0 nav)
         "direct_hits": 0,      # libros resueltos por URL del sitemap (1 nav)
+        "gbooks_hits": 0,      # libros resueltos solo por Google Books
+        "gbooks_merged": 0,    # libros con CDL + Google Books mergeados
         "odoo_offset": 0,
         "odoo_total_seen": 0,
         "odoo_total_target": 0,
@@ -699,8 +816,16 @@ async def run_enrichment_job() -> str:
                 # un solo browser (con PROXY_URL opcional).
                 browsers, page_queue = await launch_browser_pool(p, POOL_SIZE)
 
+                # Sesion aiohttp compartida para Google Books (sin proxy — la
+                # API es publica y no necesita rotacion IP).
+                gb_session = None
+                if GBOOKS_FALLBACK or GBOOKS_ENRICH_CDL:
+                    gb_session = aiohttp.ClientSession()
+                    print(f"[Enrich] Google Books cascade: fallback={GBOOKS_FALLBACK}, "
+                          f"enrich_cdl={GBOOKS_ENRICH_CDL}")
+
                 # Start all loops concurrently
-                workers = [scrape_worker(i, page_queue, job) for i in range(POOL_SIZE)]
+                workers = [scrape_worker(i, page_queue, job, gb_session) for i in range(POOL_SIZE)]
                 await asyncio.gather(
                     queue_refill_loop(odoo, job),
                     push_loop(odoo, job),
@@ -710,6 +835,11 @@ async def run_enrichment_job() -> str:
                 )
 
                 await close_browser_pool(browsers)
+                if gb_session:
+                    try:
+                        await gb_session.close()
+                    except Exception:
+                        pass
         if job["status"] == "running":
             job["status"] = "completed"
     except Exception as e:

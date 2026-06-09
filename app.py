@@ -503,6 +503,23 @@ async def proxies_healthcheck():
     })
 
 
+@app.get("/api/v1/gbooks/lookup", tags=["Diagnostico"])
+async def gbooks_lookup(isbn: str = Query(..., description="ISBN-10 o ISBN-13", min_length=10)):
+    """
+    Prueba directa a Google Books con un ISBN. Devuelve los datos normalizados
+    que el enricher usaria para ese libro, sin escribir nada a Odoo.
+    Util para verificar que la cascada funciona antes de arrancar el job.
+    """
+    import google_books
+    try:
+        data = await google_books.fetch_by_isbn_with_session(isbn)
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": f"{type(e).__name__}: {e}"})
+    if not data:
+        return JSONResponse(status_code=404, content={"isbn": isbn, "found": False})
+    return JSONResponse(content={"isbn": isbn, "found": True, "data": data})
+
+
 @app.post("/api/v1/notify/telegram-webhook", tags=["Notificaciones"])
 async def telegram_webhook(
     request: Request,

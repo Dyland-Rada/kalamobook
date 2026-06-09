@@ -91,11 +91,17 @@ async def notify_stats(job: dict, counts: dict, delta_written: int,
     notfound = job.get("notfound", 0)
     cache_hits = job.get("cache_hits", 0)
     direct_hits = job.get("direct_hits", 0)
+    gbooks_hits = job.get("gbooks_hits", 0)
+    gbooks_merged = job.get("gbooks_merged", 0)
     progress = (written / target * 100) if target else 0
     rate_min = delta_written / interval_min if interval_min else 0
 
     eta_h = (target - written) / max(rate_min * 60, 1) if rate_min > 0 else 0
     eta_str = f"{eta_h:.0f}h" if eta_h < 72 else f"{eta_h / 24:.1f} días"
+
+    gb_line = f"📚 Google Books: {_fmt_int(gbooks_hits)}"
+    if gbooks_merged:
+        gb_line += f" (+{_fmt_int(gbooks_merged)} mergeados)"
 
     msg = (
         f"📊 *Reporte {interval_min} min*\n\n"
@@ -108,7 +114,8 @@ async def notify_stats(job: dict, counts: dict, delta_written: int,
         f"📤 Pushing: {counts.get('pushing', 0)}\n"
         f"❌ Not found: {_fmt_int(notfound)}\n\n"
         f"🎯 Cache hits: {_fmt_int(cache_hits)}\n"
-        f"⚡ Direct URL: {_fmt_int(direct_hits)}"
+        f"⚡ Direct URL: {_fmt_int(direct_hits)}\n"
+        f"{gb_line}"
     )
     await send_telegram(msg, silent=True)
 
