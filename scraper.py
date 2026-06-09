@@ -308,6 +308,11 @@ def init_db():
             public_categ_names TEXT,
             inferred_categories TEXT,
             inferred_source TEXT,
+            gbooks_publisher TEXT,
+            gbooks_language TEXT,
+            gbooks_pages INTEGER,
+            gbooks_thumbnail TEXT,
+            gbooks_fetched_at TIMESTAMP,
             synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
@@ -317,6 +322,11 @@ def init_db():
         "public_categ_names TEXT",
         "inferred_categories TEXT",
         "inferred_source TEXT",
+        "gbooks_publisher TEXT",
+        "gbooks_language TEXT",
+        "gbooks_pages INTEGER",
+        "gbooks_thumbnail TEXT",
+        "gbooks_fetched_at TIMESTAMP",
     ):
         col_name = col.split()[0]
         try:

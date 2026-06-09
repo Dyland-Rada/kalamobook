@@ -944,6 +944,225 @@ def stop_assign_categories():
     return False
 
 
+# ── Bulk fill desde Google Books (rapido, sin Playwright) ─────────────
+gbooks_fill_job: dict | None = None
+
+
+def get_gbooks_fill_status() -> dict:
+    job = dict(gbooks_fill_job) if gbooks_fill_job else {"status": "idle"}
+    if "errors" in job:
+        job["errors"] = job["errors"][-10:]
+    return job
+
+
+def stop_gbooks_fill():
+    global gbooks_fill_job
+    if gbooks_fill_job and gbooks_fill_job.get("status") == "running":
+        gbooks_fill_job["status"] = "stopped"
+        return True
+    return False
+
+
+def _gbooks_needs_fill_count() -> int:
+    """Cuantos libros necesitan datos de Google Books (no fetched aun)."""
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        db.execute_query(cur, """
+            SELECT COUNT(*) FROM odoo_books_mirror
+            WHERE barcode IS NOT NULL
+              AND barcode <> ''
+              AND gbooks_fetched_at IS NULL
+        """)
+        return cur.fetchone()[0]
+    except Exception:
+        return 0
+    finally:
+        conn.close()
+
+
+def _gbooks_fetch_targets(limit: int = 1000) -> list[tuple[int, str]]:
+    """Lista (odoo_id, barcode) para libros sin gbooks_fetched_at."""
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        db.execute_query(cur, """
+            SELECT odoo_id, barcode FROM odoo_books_mirror
+            WHERE barcode IS NOT NULL
+              AND barcode <> ''
+              AND gbooks_fetched_at IS NULL
+            ORDER BY odoo_id
+            LIMIT ?
+        """, (limit,))
+        return [(r[0], r[1]) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def _gbooks_save(odoo_id: int, gb_data: dict | None) -> bool:
+    """
+    Persiste lo que Google Books devolvio. Marca fetched_at incluso si no hubo
+    match (None) — asi no se re-pregunta el mismo ISBN cada corrida.
+    """
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        if gb_data is None:
+            # No match — solo marca fetched para no reintentarlo
+            db.execute_query(cur, """
+                UPDATE odoo_books_mirror
+                SET gbooks_fetched_at = CURRENT_TIMESTAMP
+                WHERE odoo_id = ?
+            """, (odoo_id,))
+            conn.commit()
+            return False
+
+        # Categorias: si gb tiene, llenamos solo si esta vacio
+        cats = gb_data.get("categories") or []
+        cats_str = " > ".join([c for c in cats if c]) if cats else None
+        # Description: solo si no hay
+        desc = gb_data.get("description") or None
+        # Otros
+        publisher = gb_data.get("editorial") or None
+        language = gb_data.get("language") or None
+        try:
+            pages = int(gb_data.get("pages") or 0) or None
+        except (ValueError, TypeError):
+            pages = None
+        thumb = gb_data.get("image_url") or None
+
+        # UPDATE condicional: rellenamos solo huecos (COALESCE)
+        if db.IS_POSTGRES:
+            db.execute_query(cur, """
+                UPDATE odoo_books_mirror
+                SET description = COALESCE(NULLIF(description, ''), ?),
+                    inferred_categories = COALESCE(NULLIF(inferred_categories, ''), ?),
+                    inferred_source = CASE
+                        WHEN inferred_categories IS NULL OR inferred_categories = ''
+                            THEN 'google_books'
+                        ELSE inferred_source
+                    END,
+                    gbooks_publisher = ?,
+                    gbooks_language = ?,
+                    gbooks_pages = ?,
+                    gbooks_thumbnail = ?,
+                    gbooks_fetched_at = CURRENT_TIMESTAMP
+                WHERE odoo_id = ?
+            """, (desc, cats_str, publisher, language, pages, thumb, odoo_id))
+        else:
+            # SQLite: COALESCE tambien soportado
+            db.execute_query(cur, """
+                UPDATE odoo_books_mirror
+                SET description = COALESCE(NULLIF(description, ''), ?),
+                    inferred_categories = COALESCE(NULLIF(inferred_categories, ''), ?),
+                    inferred_source = CASE
+                        WHEN inferred_categories IS NULL OR inferred_categories = ''
+                            THEN 'google_books'
+                        ELSE inferred_source
+                    END,
+                    gbooks_publisher = ?,
+                    gbooks_language = ?,
+                    gbooks_pages = ?,
+                    gbooks_thumbnail = ?,
+                    gbooks_fetched_at = CURRENT_TIMESTAMP
+                WHERE odoo_id = ?
+            """, (desc, cats_str, publisher, language, pages, thumb, odoo_id))
+        conn.commit()
+        return True
+    except Exception:
+        return False
+    finally:
+        conn.close()
+
+
+async def fill_from_google_books(concurrency: int = 15,
+                                  chunk_size: int = 1000) -> dict:
+    """
+    Itera todos los libros del mirror sin gbooks_fetched_at y los enriquece
+    con Google Books API (categorias, description, idioma, editorial,
+    paginas, thumbnail). Async puro, sin Playwright — 100-1000x mas rapido
+    que CDL.
+
+    Trabaja en chunks de 1000 books con semaphore de N requests en
+    paralelo. Marca fetched_at en cada uno (incluso si no hay match) para
+    no reintentar.
+
+    Estimado:
+      - Sin API key:  ~1000 libros/dia (free tier limit Google)
+      - Con API key:  ~100k libros/dia (subir GOOGLE_BOOKS_API_KEY)
+    """
+    import aiohttp
+    import google_books
+
+    global gbooks_fill_job
+    gbooks_fill_job = {
+        "status": "running",
+        "started_at": datetime.now().isoformat(),
+        "concurrency": concurrency,
+        "target": _gbooks_needs_fill_count(),
+        "processed": 0,
+        "matched": 0,
+        "no_match": 0,
+        "errors": [],
+    }
+    job = gbooks_fill_job
+    print(f"[GBFill] Target: {job['target']} libros sin datos de Google Books")
+
+    if job["target"] == 0:
+        job["status"] = "completed"
+        return job
+
+    sem = asyncio.Semaphore(concurrency)
+
+    async def _process_one(session, odoo_id, isbn):
+        if job["status"] != "running":
+            return
+        async with sem:
+            try:
+                data = await google_books.fetch_by_isbn(session, isbn, timeout_s=10.0)
+            except Exception as e:
+                err = f"{type(e).__name__}: {str(e)[:80]}"
+                job["errors"].append(f"isbn {isbn}: {err}")
+                # Aun asi marcamos fetched_at con None para no reintentarlo
+                _gbooks_save(odoo_id, None)
+                job["processed"] += 1
+                job["no_match"] += 1
+                return
+            ok = _gbooks_save(odoo_id, data)
+            job["processed"] += 1
+            if ok:
+                job["matched"] += 1
+            else:
+                job["no_match"] += 1
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            while job["status"] == "running":
+                targets = _gbooks_fetch_targets(limit=chunk_size)
+                if not targets:
+                    print("[GBFill] Sin mas targets — fin")
+                    break
+
+                tasks = [_process_one(session, oid, isbn) for oid, isbn in targets]
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+                pct = (job["processed"] / job["target"] * 100) if job["target"] else 0
+                print(f"[GBFill] {job['processed']}/{job['target']} "
+                      f"({pct:.1f}%) — match:{job['matched']} no:{job['no_match']}")
+
+        if job["status"] == "running":
+            job["status"] = "completed"
+        print(f"[GBFill] DONE — processed:{job['processed']} "
+              f"matched:{job['matched']} no_match:{job['no_match']}")
+    except Exception as e:
+        job["status"] = "error"
+        err = f"{type(e).__name__}: {e!r}"
+        job["errors"].append(err[:200])
+        print(f"[GBFill] Fatal: {err}")
+
+    return job
+
+
 # ── CSV streaming export ───────────────────────────────────────────────
 def export_csv_streaming():
     """
@@ -956,18 +1175,25 @@ def export_csv_streaming():
     conn = db.get_connection()
     cur = conn.cursor()
     db.execute_query(cur, """
-        SELECT odoo_id, barcode, name, description_sale,
-               list_price, categ_id, categ_name,
-               public_categ_ids, public_categ_names,
-               inferred_categories, inferred_source, synced_at
+        SELECT odoo_id, barcode, name, list_price,
+               inferred_categories, inferred_source,
+               gbooks_language, gbooks_publisher,
+               gbooks_pages, gbooks_thumbnail,
+               description, description_sale, synced_at
         FROM odoo_books_mirror
         ORDER BY odoo_id
     """)
 
-    headers = ["odoo_id", "barcode", "name", "description_sale",
-               "list_price", "categ_id", "categ_name",
-               "public_categ_ids", "public_categ_names",
-               "inferred_categories", "inferred_source", "synced_at"]
+    headers = ["odoo_id", "barcode", "name", "list_price",
+               "categorias", "fuente_categoria",
+               "idioma", "editorial", "paginas", "imagen",
+               "descripcion", "descripcion_corta", "synced_at"]
+
+    def _truncate(v, n):
+        if v is None:
+            return ""
+        s = str(v)
+        return s[:n] + ("..." if len(s) > n else "")
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(headers)
@@ -981,7 +1207,12 @@ def export_csv_streaming():
             if not rows:
                 break
             for r in rows:
-                w.writerow(r)
+                # Truncar description y description_sale para que Excel no
+                # rompa por celdas > 32k caracteres
+                row_list = list(r)
+                row_list[10] = _truncate(row_list[10], 2000)  # description
+                row_list[11] = _truncate(row_list[11], 500)   # description_sale
+                w.writerow(row_list)
             yield buf.getvalue()
             buf.seek(0)
             buf.truncate()

@@ -1061,6 +1061,10 @@
                             title="Asigna categ_id a cada libro en Odoo">
                         🔗 Asignar libros → categorías
                     </button>
+                    <button class="btn btn-primary" onclick="gbooksFill()" style="background:#0984e3;"
+                            title="Bulk fill: pulla Google Books API para cada libro sin datos. Async, super rapido.">
+                        📚 Rellenar con Google Books
+                    </button>
                 </div>
 
                 <div id="mirror-status-block" style="margin-top:20px; display:none;">
@@ -1736,6 +1740,44 @@
                             } else if (s.status === 'error') {
                                 alert(`❌ Assign falló:\n${(s.errors || []).join('\n')}`);
                             }
+                        }
+                    } catch (_) {}
+                }, 5000);
+            } catch (e) { alert('Error: ' + e.message); }
+        }
+
+        async function gbooksFill() {
+            if (!confirm('Bulk fill desde Google Books?\n\n' +
+                         'Llena description + categorias + idioma + editorial + paginas para libros sin datos.\n' +
+                         'Si tienes GOOGLE_BOOKS_API_KEY, ~100k libros/dia. Si no, ~1000/dia.\n' +
+                         'Puede tardar varias horas/dias dependiendo del tamano.')) return;
+            try {
+                const resp = await fetch('/api/v1/odoo/mirror/gbooks-fill', { method: 'POST' });
+                const data = await resp.json();
+                if (data.status !== 'started') {
+                    alert(`❌ ${data.message || 'No se pudo iniciar'}`);
+                    return;
+                }
+                alert('▶ Bulk fill arrancado. Polleo cada 5s.');
+                const t = setInterval(async () => {
+                    try {
+                        const r = await fetch('/api/v1/odoo/mirror/gbooks-fill-status');
+                        const s = await r.json();
+                        if (s.status === 'completed' || s.status === 'error' || s.status === 'stopped') {
+                            clearInterval(t);
+                            if (s.status === 'completed') {
+                                alert(
+                                    `✅ Bulk fill OK:\n` +
+                                    `• ${(s.processed || 0).toLocaleString()} procesados (de ${(s.target || 0).toLocaleString()})\n` +
+                                    `• ${(s.matched || 0).toLocaleString()} con datos\n` +
+                                    `• ${(s.no_match || 0).toLocaleString()} sin match`
+                                );
+                                mirrorPoll();
+                            } else if (s.status === 'error') {
+                                alert(`❌ Bulk fill fallo:\n${(s.errors || []).join('\n')}`);
+                            }
+                        } else {
+                            console.log(`[GBFill] ${s.processed}/${s.target} match:${s.matched}`);
                         }
                     } catch (_) {}
                 }, 5000);
