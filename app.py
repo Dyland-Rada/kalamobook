@@ -3,7 +3,7 @@ import asyncio
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
-from fastapi import FastAPI, Request, Form, Query, BackgroundTasks, Depends, HTTPException, Header, status
+from fastapi import FastAPI, Request, Form, Query, BackgroundTasks, Depends, HTTPException, Header, UploadFile, File, status
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 import secrets
@@ -435,6 +435,100 @@ async def odoo_mirror_export_csv():
         media_type="text/csv",
         headers=headers,
     )
+
+
+# ─── REST API — Import desde distribuidores (Excel -> Postgres) ──────
+
+@app.post("/api/v1/distributors/import", tags=["Distribuidores"])
+async def distributors_import(
+    file: UploadFile = File(..., description="XLSX de un distribuidor (ANAYA, PLANETA, PODIPRINT...)"),
+    fuente: str = Query(None, description="Etiqueta de distribuidor. Si vacio, se adivina del nombre del archivo."),
+    batch_size: int = Query(500, ge=100, le=2000),
+):
+    """
+    Sube un Excel del catalogo de un distribuidor y lo upserta a la tabla
+    `distributor_books` (PK por ISBN). Si el ISBN ya existe, se actualizan
+    los campos con los del XLSX nuevo. Idempotente: re-subir el mismo
+    archivo no duplica.
+    """
+    import distributor_import
+    import threading
+    import sys
+
+    if distributor_import.get_import_status().get("status") == "running":
+        return JSONResponse(status_code=409, content={
+            "status": "error", "message": "Otro import esta corriendo."
+        })
+
+    content = await file.read()
+    fuente_hint = fuente or distributor_import._guess_fuente_from_path(file.filename or "")
+
+    def _run_in_thread():
+        if sys.platform == 'win32':
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        try:
+            distributor_import.import_xlsx_bytes(
+                content, fuente_hint=fuente_hint, batch_size=batch_size
+            )
+        except Exception:
+            pass
+
+    t = threading.Thread(target=_run_in_thread, daemon=True)
+    t.start()
+    return JSONResponse(content={
+        "status": "started",
+        "filename": file.filename,
+        "fuente": fuente_hint,
+        "size_bytes": len(content),
+    })
+
+
+@app.get("/api/v1/distributors/status", tags=["Distribuidores"])
+async def distributors_status():
+    """Estado del ultimo import + total de filas en distributor_books."""
+    import distributor_import
+    return JSONResponse(content=distributor_import.get_import_status())
+
+
+@app.get("/api/v1/distributors/stats", tags=["Distribuidores"])
+async def distributors_stats():
+    """Conteo por fuente + cross-stats vs odoo_books_mirror."""
+    import distributor_import
+    from db import get_connection, execute_query, IS_POSTGRES
+
+    by_source = distributor_import.count_by_source()
+    total = sum(s["count"] for s in by_source)
+
+    # Cuantos de los distributor_books estan tambien en Odoo (matching ISBN/barcode)
+    overlap = 0
+    only_dist = 0
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        execute_query(cur, """
+            SELECT COUNT(*) FROM distributor_books d
+            WHERE EXISTS (
+                SELECT 1 FROM odoo_books_mirror m WHERE m.barcode = d.isbn
+            )
+        """)
+        overlap = cur.fetchone()[0]
+        execute_query(cur, """
+            SELECT COUNT(*) FROM distributor_books d
+            WHERE NOT EXISTS (
+                SELECT 1 FROM odoo_books_mirror m WHERE m.barcode = d.isbn
+            )
+        """)
+        only_dist = cur.fetchone()[0]
+        conn.close()
+    except Exception:
+        pass
+
+    return JSONResponse(content={
+        "total_distributor_books": total,
+        "by_source": by_source,
+        "overlap_with_odoo": overlap,
+        "only_in_distributors_not_in_odoo": only_dist,
+    })
 
 
 # ─── REST API — CDL ISBN Index (sitemap-based fast path) ─────────────

@@ -310,6 +310,52 @@ def init_db():
     db.execute_query(cursor, "CREATE INDEX IF NOT EXISTS idx_odoo_mirror_barcode ON odoo_books_mirror(barcode)")
     db.execute_query(cursor, "CREATE INDEX IF NOT EXISTS idx_odoo_mirror_synced ON odoo_books_mirror(synced_at)")
 
+    # Catalogo importado desde distribuidores (Excel: ANAYA, PLANETA, PODIPRINT...).
+    # Schema replica el de la tabla books + campo `fuente` + `imported_at`.
+    # PK por ISBN; el mismo libro puede aparecer en >1 distribuidor — gana el
+    # ultimo importado (upsert por ISBN).
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS distributor_books (
+            isbn TEXT PRIMARY KEY,
+            title TEXT,
+            author TEXT,
+            editorial TEXT,
+            price NUMERIC,
+            original_price NUMERIC,
+            discount TEXT,
+            description TEXT,
+            translator TEXT,
+            illustrator TEXT,
+            language TEXT,
+            pages TEXT,
+            reading_time TEXT,
+            binding TEXT,
+            release_date TEXT,
+            edition_year TEXT,
+            edition_place TEXT,
+            collection TEXT,
+            height TEXT,
+            width TEXT,
+            weight TEXT,
+            origin TEXT,
+            url TEXT,
+            image_url TEXT,
+            category TEXT,
+            categoria_1 TEXT,
+            categoria_2 TEXT,
+            categoria_3 TEXT,
+            categoria_4 TEXT,
+            categoria_5 TEXT,
+            price_eur NUMERIC,
+            sinli_situacion TEXT,
+            sinli_updated_at TEXT,
+            fuente TEXT,
+            imported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    db.execute_query(cursor, "CREATE INDEX IF NOT EXISTS idx_distbooks_fuente ON distributor_books(fuente)")
+    db.execute_query(cursor, "CREATE INDEX IF NOT EXISTS idx_distbooks_imported ON distributor_books(imported_at)")
+
     conn.commit()
     conn.close()
 
