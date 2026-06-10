@@ -686,6 +686,54 @@ async def odoo_mirror_cdl_fill_status():
     return JSONResponse(content=odoo_mirror.get_cdl_fill_status())
 
 
+@app.post("/api/v1/odoo/mirror/cdl-search-fill", tags=["Odoo"])
+async def odoo_mirror_cdl_search_fill(chunk_size: int = Query(200, ge=50, le=1000)):
+    """
+    Bulk scrape Casa del Libro buscando cada ISBN del mirror via search.
+    NO requiere cdl_isbn_index — cubre TODOS los libros del mirror sin
+    cdl_fetched_at. Mas lento por libro que /cdl-fill (sitemap) pero
+    cubertura total. Corre en PARALELO con /cdl-fill y /gbooks-fill.
+    """
+    import threading
+    import sys
+    import odoo_mirror
+
+    if odoo_mirror.get_cdl_search_fill_status().get("status") == "running":
+        return JSONResponse(status_code=409, content={
+            "status": "error", "message": "CDL search fill ya esta corriendo."
+        })
+
+    def _run_in_thread():
+        if sys.platform == 'win32':
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
+        try:
+            new_loop.run_until_complete(
+                odoo_mirror.fill_from_cdl_search(chunk_size=chunk_size)
+            )
+        finally:
+            new_loop.close()
+
+    t = threading.Thread(target=_run_in_thread, daemon=True)
+    t.start()
+    return JSONResponse(content={"status": "started"})
+
+
+@app.post("/api/v1/odoo/mirror/cdl-search-fill-stop", tags=["Odoo"])
+async def odoo_mirror_cdl_search_fill_stop():
+    import odoo_mirror
+    if odoo_mirror.stop_cdl_search_fill():
+        return JSONResponse(content={"status": "stopping"})
+    return JSONResponse(status_code=400, content={"status": "error", "message": "No hay job corriendo."})
+
+
+@app.get("/api/v1/odoo/mirror/cdl-search-fill-status", tags=["Odoo"])
+async def odoo_mirror_cdl_search_fill_status():
+    import odoo_mirror
+    return JSONResponse(content=odoo_mirror.get_cdl_search_fill_status())
+
+
 @app.get("/api/v1/odoo/mirror/export.csv", tags=["Odoo"])
 async def odoo_mirror_export_csv(
     only_with_categories: bool = Query(

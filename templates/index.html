@@ -551,6 +551,16 @@
             color: #e94560;
         }
 
+        .status-badge.idle {
+            background: rgba(255, 255, 255, 0.08);
+            color: #888;
+        }
+
+        .status-badge.rate_limited {
+            background: rgba(155, 89, 182, 0.2);
+            color: #9b59b6;
+        }
+
         /* ── LIBRARY TABLE ─────────────────────────────────── */
         .library-table-wrap {
             overflow-x: auto;
@@ -978,209 +988,224 @@
 
         <!-- ═══ TAB 4: ODOO SYNC ═══ -->
         <div class="tab-content" id="content-odoo">
-            <div class="card">
-                <div class="card-title">🔄 Enriquecimiento de Odoo desde Casa del Libro</div>
-                <p style="color:#888; font-size:0.9rem;">
-                    Lee productos de Odoo con barcode (ISBN) pero sin <code>description_sale</code>,
-                    los scrapea en Casa del Libro y escribe HTML enriquecido en el campo
-                    <code>description</code>. Resume entre reinicios.
-                </p>
-                <div style="display:flex; gap:12px; margin-top:18px; flex-wrap:wrap;">
-                    <button class="btn btn-success" id="btn-odoo-start" onclick="odooStart()">
-                        ▶ Iniciar sincronización
-                    </button>
-                    <button class="btn btn-danger" id="btn-odoo-stop" onclick="odooStop()" disabled>
-                        ⏹ Detener
-                    </button>
-                    <a href="/api/v1/odoo/notfound/export" class="btn btn-primary"
-                       style="text-decoration:none; display:inline-flex; align-items:center;">
-                        📥 Excel no encontrados
-                    </a>
-                    <button class="btn btn-primary" onclick="testTelegram()"
-                            style="background:#0088cc;">
-                        📨 Probar Telegram
-                    </button>
-                    <button class="btn btn-primary" onclick="setupWebhook()"
-                            style="background:#0066aa;" title="Registra este server para recibir /status desde Telegram">
-                        🔗 Setup webhook
-                    </button>
-                </div>
 
-                <div style="margin-top:24px; padding:16px; background:rgba(155,89,182,0.08); border:1px solid rgba(155,89,182,0.25); border-radius:10px;">
-                    <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
-                        <div>
-                            <div style="font-weight:600; color:#fff; margin-bottom:4px;">⚡ Índice ISBN del sitemap (fast-path)</div>
-                            <div style="font-size:0.85rem; color:#bbb;">
-                                Pre-indexa todos los ISBN del sitemap de CDL para que el worker scrape por URL directa (1 nav en vez de 2). Solo se corre 1 vez. <strong style="color:#9b59b6;" id="isbn-index-count">— ISBNs indexados.</strong>
-                            </div>
-                            <div style="font-size:0.8rem; color:#888; margin-top:4px;" id="isbn-index-msg"></div>
-                        </div>
-                        <button class="btn btn-primary" id="btn-build-isbn" onclick="buildIsbnIndex()" style="background:#9b59b6;">
-                            🛠 Construir índice
-                        </button>
+            <!-- ═══ RESUMEN GLOBAL DEL CATÁLOGO ═══ -->
+            <div class="card">
+                <div class="card-title">📊 Resumen del catálogo local</div>
+                <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px; margin-top:8px;">
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#1abc9c" id="mirror-stat-local">0</div>
+                        <div class="stat-label">Libros en mirror</div>
                     </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#e67e22" id="mirror-stat-inferred">0</div>
+                        <div class="stat-label">Con categorías</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#0984e3" id="mirror-stat-gbooks-done">0</div>
+                        <div class="stat-label">Google Books fetched</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#d35400" id="mirror-stat-cdl-done">0</div>
+                        <div class="stat-label">CDL fetched</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#8e44ad" id="mirror-stat-categ-cache">0</div>
+                        <div class="stat-label">Categorías Odoo cache</div>
+                    </div>
+                </div>
+                <div style="margin-top:16px; display:flex; gap:10px; flex-wrap:wrap;">
+                    <a href="/api/v1/odoo/mirror/export.csv" class="btn btn-primary"
+                       style="text-decoration:none; display:inline-flex; align-items:center; background:#16a085;">
+                        📤 Excel completo (todos los libros)
+                    </a>
+                    <a href="/api/v1/odoo/mirror/export.csv?only_with_categories=true" class="btn btn-primary"
+                       style="text-decoration:none; display:inline-flex; align-items:center; background:#27ae60;">
+                        🏷 Excel solo con categorías
+                    </a>
+                    <button class="btn btn-primary" onclick="refreshAllStats()" style="background:#34495e;">
+                        🔁 Refrescar
+                    </button>
                 </div>
             </div>
 
-            <!-- ── Espejo de Odoo → Postgres ── -->
+            <!-- ═══ JOB 1 — ESPEJO ODOO → POSTGRES ═══ -->
             <div class="card">
-                <div class="card-title">📥 Espejo de Odoo → Postgres</div>
-                <p style="color:#888; font-size:0.9rem;">
-                    Copia los libros de Odoo a la BD local (tabla <code>odoo_books_mirror</code>)
-                    para queries offline, exportes CSV y cross-reference con el catálogo de
-                    distribuidores. Idempotente — re-ejecutar actualiza los registros existentes.
-                </p>
-                <div style="display:flex; gap:12px; margin-top:18px; flex-wrap:wrap; align-items:center;">
-                    <label style="display:flex; align-items:center; gap:6px; color:#bbb; font-size:0.9rem;">
-                        <input type="checkbox" id="mirror-only-pending">
-                        Solo libros sin <code>description_sale</code> (~727k)
-                    </label>
-                    <button class="btn btn-success" id="btn-mirror-start" onclick="mirrorStart()">
-                        ▶ Iniciar espejo
-                    </button>
-                    <button class="btn btn-danger" id="btn-mirror-stop" onclick="mirrorStop()" disabled>
-                        ⏹ Detener
-                    </button>
-                    <a href="/api/v1/odoo/mirror/export.csv" class="btn btn-primary"
-                       style="text-decoration:none; display:inline-flex; align-items:center; background:#16a085;"
-                       title="Exporta TODO el catalogo (incluye libros sin datos)">
-                        📤 Excel completo
-                    </a>
-                    <a href="/api/v1/odoo/mirror/export.csv?only_with_categories=true" class="btn btn-primary"
-                       style="text-decoration:none; display:inline-flex; align-items:center; background:#27ae60;"
-                       title="Solo libros que ya tienen categoria inferida">
-                        🏷 Excel solo con categorías
-                    </a>
-                    <button class="btn btn-primary" onclick="mirrorSyncCategories()" style="background:#8e44ad;"
-                            title="Pulla los nombres de las public_categ_ids de Odoo (solo si Odoo tiene categorias)">
-                        🏷 Sync categorías Odoo
-                    </button>
-                    <button class="btn btn-primary" onclick="mirrorInferCategories()" style="background:#e67e22;"
-                            title="Llena categorías cruzando ISBN con books (CDL) y distributor_books (XLSX)">
-                        🧩 Inferir desde scrapes
-                    </button>
-                    <button class="btn btn-primary" onclick="categoriesPush()" style="background:#27ae60;"
-                            title="Crea las categorías inferidas EN Odoo (product.category)">
-                        🚀 Crear categorías en Odoo
-                    </button>
-                    <button class="btn btn-primary" onclick="categoriesAssign()" style="background:#2980b9;"
-                            title="Asigna categ_id a cada libro en Odoo">
-                        🔗 Asignar libros → categorías
-                    </button>
-                    <button class="btn btn-primary" onclick="gbooksFill()" style="background:#0984e3;"
-                            title="Bulk fill: pulla Google Books API para cada libro sin datos. Async, super rapido.">
-                        📚 Rellenar con Google Books
-                    </button>
-                    <button class="btn btn-primary" onclick="cdlFill()" style="background:#d35400;"
-                            title="Bulk scrape Casa del Libro via proxies (libros en cdl_isbn_index). Datos ricos: peso, alto, ancho, encuadernacion, traductor. Corre en PARALELO con GoogleBooks.">
-                        🕷 Bulk scrape CDL al mirror
-                    </button>
+                <div class="card-title">
+                    📥 Espejo Odoo → Postgres
+                    <span class="status-badge" id="mirror-status-badge" style="font-size:0.7rem;">IDLE</span>
                 </div>
-
-                <div id="mirror-status-block" style="margin-top:20px; display:none;">
-                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
-                        <strong style="color:#fff;">
-                            Estado:
-                            <span class="status-badge running" id="mirror-status-badge">RUNNING</span>
-                        </strong>
-                        <span style="color:#bbb; font-size:0.9rem;" id="mirror-progress-text">0 / 0</span>
+                <p style="color:#888; font-size:0.88rem;">
+                    Copia todos los libros de Odoo a <code>odoo_books_mirror</code>. Idempotente.
+                </p>
+                <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:12px;">
+                    <label style="display:flex; align-items:center; gap:6px; color:#bbb; font-size:0.88rem;">
+                        <input type="checkbox" id="mirror-only-pending">
+                        Solo sin <code>description_sale</code>
+                    </label>
+                    <button class="btn btn-success" id="btn-mirror-start" onclick="mirrorStart()">▶ Iniciar</button>
+                    <button class="btn btn-danger" id="btn-mirror-stop" onclick="mirrorStop()" disabled>⏹ Detener</button>
+                </div>
+                <div style="margin-top:14px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; font-size:0.85rem; color:#bbb;">
+                        <span id="mirror-progress-text">— / —</span>
+                        <span id="mirror-stat-mirrored" style="color:#1abc9c;">0 espejados</span>
                     </div>
-                    <div style="background:#2c2f3e; border-radius:6px; height:14px; overflow:hidden;">
+                    <div style="background:#2c2f3e; border-radius:6px; height:10px; overflow:hidden;">
                         <div id="mirror-progress-fill"
                              style="background:linear-gradient(90deg,#3498db,#9b59b6); height:100%; width:0%; transition:width 0.3s;"></div>
                     </div>
                 </div>
-
-                <div style="margin-top:14px; display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px;">
-                    <div class="stat-box">
-                        <div class="stat-number blue" id="mirror-stat-mirrored">0</div>
-                        <div class="stat-label">Espejados (esta corrida)</div>
-                    </div>
-                    <div class="stat-box">
-                        <div class="stat-number" style="color:#bbb" id="mirror-stat-total">0</div>
-                        <div class="stat-label">Target Odoo</div>
-                    </div>
-                    <div class="stat-box">
-                        <div class="stat-number" style="color:#1abc9c" id="mirror-stat-local">0</div>
-                        <div class="stat-label">Total en BD local</div>
-                    </div>
-                    <div class="stat-box">
-                        <div class="stat-number" style="color:#e67e22" id="mirror-stat-inferred">0</div>
-                        <div class="stat-label">Con categorías inferidas</div>
-                    </div>
-                    <div class="stat-box">
-                        <div class="stat-number" style="color:#8e44ad" id="mirror-stat-categ-cache">0</div>
-                        <div class="stat-label">Categorías Odoo cacheadas</div>
-                    </div>
-                </div>
-
-                <div id="mirror-errors" style="display:none; margin-top:12px;">
-                    <div class="section-label" style="color:#e94560;">Últimos errores</div>
-                    <ul id="mirror-errors-list" style="font-size:0.82rem; color:#e94560; padding-left:20px;"></ul>
+                <div id="mirror-errors" style="display:none; margin-top:10px;">
+                    <div class="section-label" style="color:#e94560;">Errores</div>
+                    <ul id="mirror-errors-list" style="font-size:0.8rem; color:#e94560; padding-left:20px;"></ul>
                 </div>
             </div>
 
-            <!-- ── Importar XLSX de distribuidores ── -->
+            <!-- ═══ JOB 2 — GOOGLE BOOKS FILL ═══ -->
             <div class="card">
-                <div class="card-title">📦 Catálogo de distribuidores (Excel → Postgres)</div>
-                <p style="color:#888; font-size:0.9rem;">
-                    Sube los XLSX de ANAYA, PLANETA, PODIPRINT, etc. Los libros se upsertan a
-                    <code>distributor_books</code> por ISBN. Si un libro existe ya, se actualiza
-                    con los campos del archivo nuevo.
+                <div class="card-title">
+                    📚 Enriquecimiento Google Books (rápido, async)
+                    <span class="status-badge" id="gbf-status-badge" style="font-size:0.7rem;">IDLE</span>
+                </div>
+                <p style="color:#888; font-size:0.88rem;">
+                    Llama Google Books API por cada ISBN del mirror sin <code>gbooks_fetched_at</code>.
+                    Rellena descripción, idioma, páginas, editorial, portada, categorías.
                 </p>
-                <div style="display:flex; gap:12px; margin-top:18px; flex-wrap:wrap; align-items:center;">
-                    <input type="file" id="dist-file-input" accept=".xlsx"
-                           style="color:#bbb; background:#2c2f3e; padding:6px; border-radius:6px; border:1px solid #444;">
-                    <input type="text" id="dist-fuente-input" placeholder="Fuente (auto)"
-                           style="color:#fff; background:#2c2f3e; padding:8px 12px; border-radius:6px; border:1px solid #444; width:140px;">
-                    <button class="btn btn-success" id="btn-dist-upload" onclick="distUpload()">
-                        ▶ Subir e importar
-                    </button>
-                    <button class="btn btn-primary" onclick="distRefreshStats()" style="background:#34495e;">
-                        🔁 Refrescar stats
+                <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:12px;">
+                    <button class="btn btn-success" id="btn-gbf-start" onclick="gbfStart()">▶ Iniciar</button>
+                    <button class="btn btn-danger" id="btn-gbf-stop" onclick="gbfStop()" disabled>⏹ Detener</button>
+                    <button class="btn btn-primary" onclick="gbfResetRecent()" style="background:#8e44ad;"
+                            title="Si Google rate-limitó libros y los marcó como no-match, esto los reactiva para reintento">
+                        🔁 Reactivar últimos (rate-limit)
                     </button>
                 </div>
-
-                <div id="dist-status-block" style="margin-top:20px; display:none;">
-                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-                        <strong style="color:#fff;">
-                            Estado:
-                            <span class="status-badge running" id="dist-status-badge">RUNNING</span>
-                        </strong>
-                        <span style="color:#bbb; font-size:0.9rem;" id="dist-progress-text">0 procesados</span>
+                <div style="margin-top:14px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; font-size:0.85rem; color:#bbb;">
+                        <span id="gbf-progress-text">— / —</span>
+                        <span><span id="gbf-stat-matched" style="color:#2ecc71;">0 match</span> · <span id="gbf-stat-nomatch" style="color:#888;">0 sin match</span></span>
+                    </div>
+                    <div style="background:#2c2f3e; border-radius:6px; height:10px; overflow:hidden;">
+                        <div id="gbf-progress-fill"
+                             style="background:linear-gradient(90deg,#0984e3,#74b9ff); height:100%; width:0%; transition:width 0.3s;"></div>
                     </div>
                 </div>
-
-                <div style="margin-top:14px; display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px;">
-                    <div class="stat-box">
-                        <div class="stat-number" style="color:#1abc9c" id="dist-stat-total">0</div>
-                        <div class="stat-label">Total en BD</div>
-                    </div>
-                    <div class="stat-box">
-                        <div class="stat-number" style="color:#9b59b6" id="dist-stat-overlap">0</div>
-                        <div class="stat-label">Ya están en Odoo</div>
-                    </div>
-                    <div class="stat-box">
-                        <div class="stat-number" style="color:#e67e22" id="dist-stat-only">0</div>
-                        <div class="stat-label">Solo en distribuidores</div>
-                    </div>
-                </div>
-
-                <div id="dist-sources" style="margin-top:14px; display:none;">
-                    <div class="section-label">Por distribuidor</div>
-                    <ul id="dist-sources-list" style="font-size:0.85rem; color:#bbb; padding-left:20px;"></ul>
+                <div id="gbf-errors" style="display:none; margin-top:10px;">
+                    <div class="section-label" style="color:#e94560;">Errores</div>
+                    <ul id="gbf-errors-list" style="font-size:0.8rem; color:#e94560; padding-left:20px;"></ul>
                 </div>
             </div>
 
-            <div class="card" id="odoo-status-card" style="display:none;">
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
-                    <div class="card-title" style="margin-bottom:0;">
-                        📊 Estado del job
-                        <span class="status-badge running" id="odoo-status-badge">RUNNING</span>
+            <!-- ═══ JOB 3 — CDL BULK VIA SITEMAP (fast path) ═══ -->
+            <div class="card">
+                <div class="card-title">
+                    🕷 Casa del Libro — fast path (sitemap)
+                    <span class="status-badge" id="cdl-status-badge" style="font-size:0.7rem;">IDLE</span>
+                </div>
+                <p style="color:#888; font-size:0.88rem;">
+                    Scrapea CDL solo para libros cuyo ISBN está en <code>cdl_isbn_index</code> (sitemap pre-cargado).
+                    Va por URL directa: rápido. Trae peso, alto, ancho, encuadernación, traductor, 5 categorías.
+                </p>
+                <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:12px;">
+                    <button class="btn btn-success" id="btn-cdl-start" onclick="cdlStart()">▶ Iniciar</button>
+                    <button class="btn btn-danger" id="btn-cdl-stop" onclick="cdlStop()" disabled>⏹ Detener</button>
+                    <button class="btn btn-primary" id="btn-build-isbn" onclick="buildIsbnIndex()" style="background:#9b59b6;">
+                        🛠 (Re)construir índice sitemap
+                    </button>
+                    <span style="font-size:0.85rem; color:#9b59b6;" id="isbn-index-count">— ISBNs indexados</span>
+                </div>
+                <div style="margin-top:14px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; font-size:0.85rem; color:#bbb;">
+                        <span id="cdl-progress-text">— / —</span>
+                        <span><span id="cdl-stat-matched" style="color:#2ecc71;">0 match</span> · <span id="cdl-stat-transient" style="color:#f5a623;">0 reintentos</span></span>
+                    </div>
+                    <div style="background:#2c2f3e; border-radius:6px; height:10px; overflow:hidden;">
+                        <div id="cdl-progress-fill"
+                             style="background:linear-gradient(90deg,#d35400,#e67e22); height:100%; width:0%; transition:width 0.3s;"></div>
                     </div>
                 </div>
+                <div id="cdl-errors" style="display:none; margin-top:10px;">
+                    <div class="section-label" style="color:#e94560;">Errores</div>
+                    <ul id="cdl-errors-list" style="font-size:0.8rem; color:#e94560; padding-left:20px;"></ul>
+                </div>
+                <div style="font-size:0.78rem; color:#888; margin-top:8px;" id="isbn-index-msg"></div>
+            </div>
 
-                <div class="progress-stats">
+            <!-- ═══ JOB 4 — CDL BULK VIA SEARCH (cobertura total) ═══ -->
+            <div class="card">
+                <div class="card-title">
+                    🔎 Casa del Libro — búsqueda por ISBN (cobertura total)
+                    <span class="status-badge" id="cds-status-badge" style="font-size:0.7rem;">IDLE</span>
+                </div>
+                <p style="color:#888; font-size:0.88rem;">
+                    Para CADA libro del mirror sin <code>cdl_fetched_at</code>, busca por ISBN en CDL aunque NO esté en el sitemap.
+                    Más lento pero cubre los libros que el fast-path no toca. Corre en paralelo con los otros jobs.
+                </p>
+                <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:12px;">
+                    <button class="btn btn-success" id="btn-cds-start" onclick="cdsStart()">▶ Iniciar</button>
+                    <button class="btn btn-danger" id="btn-cds-stop" onclick="cdsStop()" disabled>⏹ Detener</button>
+                </div>
+                <div style="margin-top:14px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; font-size:0.85rem; color:#bbb;">
+                        <span id="cds-progress-text">— / —</span>
+                        <span><span id="cds-stat-matched" style="color:#2ecc71;">0 match</span> · <span id="cds-stat-transient" style="color:#f5a623;">0 reintentos</span></span>
+                    </div>
+                    <div style="background:#2c2f3e; border-radius:6px; height:10px; overflow:hidden;">
+                        <div id="cds-progress-fill"
+                             style="background:linear-gradient(90deg,#16a085,#1abc9c); height:100%; width:0%; transition:width 0.3s;"></div>
+                    </div>
+                </div>
+                <div id="cds-errors" style="display:none; margin-top:10px;">
+                    <div class="section-label" style="color:#e94560;">Errores</div>
+                    <ul id="cds-errors-list" style="font-size:0.8rem; color:#e94560; padding-left:20px;"></ul>
+                </div>
+            </div>
+
+            <!-- ═══ CATEGORÍAS ═══ -->
+            <div class="card">
+                <div class="card-title">🏷 Categorías</div>
+                <p style="color:#888; font-size:0.88rem;">
+                    Inferir categorías cruzando con scrapes (CDL + distribuidores), crearlas en Odoo y asignarlas.
+                </p>
+                <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:12px;">
+                    <button class="btn btn-primary" onclick="mirrorSyncCategories()" style="background:#8e44ad;"
+                            title="Pulla los nombres de las public_categ_ids de Odoo (si las tiene)">
+                        🏷 1. Sync desde Odoo
+                    </button>
+                    <button class="btn btn-primary" onclick="mirrorInferCategories()" style="background:#e67e22;"
+                            title="Llena categorías cruzando ISBN con books (CDL) y distributor_books (XLSX)">
+                        🧩 2. Inferir desde scrapes
+                    </button>
+                    <button class="btn btn-primary" onclick="categoriesPush()" style="background:#27ae60;"
+                            title="Crea las categorías inferidas EN Odoo (product.category)">
+                        🚀 3. Crear en Odoo
+                    </button>
+                    <button class="btn btn-primary" onclick="categoriesAssign()" style="background:#2980b9;"
+                            title="Asigna categ_id a cada libro en Odoo">
+                        🔗 4. Asignar a libros
+                    </button>
+                </div>
+            </div>
+
+            <!-- ═══ ENRICHMENT LEGACY (cola enrichment_queue → push directo a Odoo) ═══ -->
+            <div class="card">
+                <div class="card-title">
+                    🔄 Push directo a Odoo (cola enrichment_queue)
+                    <span class="status-badge" id="odoo-status-badge" style="font-size:0.7rem;">IDLE</span>
+                </div>
+                <p style="color:#888; font-size:0.88rem;">
+                    Pipeline legacy: lee la cola, scrapea CDL, escribe HTML directamente al campo
+                    <code>description</code> de Odoo. Útil para activar productos uno por uno tras enriquecer.
+                </p>
+                <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:12px;">
+                    <button class="btn btn-success" id="btn-odoo-start" onclick="odooStart()">▶ Iniciar</button>
+                    <button class="btn btn-danger" id="btn-odoo-stop" onclick="odooStop()" disabled>⏹ Detener</button>
+                    <a href="/api/v1/odoo/notfound/export" class="btn btn-primary"
+                       style="text-decoration:none; display:inline-flex; align-items:center;">
+                        📥 Excel no encontrados
+                    </a>
+                </div>
+                <div class="progress-stats" style="margin-top:14px;">
                     <div class="stat-box">
                         <div class="stat-number blue" id="odoo-stat-pending">0</div>
                         <div class="stat-label">Pendientes en cola</div>
@@ -1195,7 +1220,7 @@
                     </div>
                     <div class="stat-box">
                         <div class="stat-number green" id="odoo-stat-written">0</div>
-                        <div class="stat-label">Escritos a Odoo</div>
+                        <div class="stat-label">Escritos</div>
                     </div>
                     <div class="stat-box">
                         <div class="stat-number red" id="odoo-stat-notfound">0</div>
@@ -1203,27 +1228,86 @@
                     </div>
                     <div class="stat-box">
                         <div class="stat-number" style="color:#1abc9c" id="odoo-stat-cache">0</div>
-                        <div class="stat-label">Cache hits (0 nav)</div>
+                        <div class="stat-label">Cache hits</div>
                     </div>
                     <div class="stat-box">
                         <div class="stat-number" style="color:#3498db" id="odoo-stat-direct">0</div>
-                        <div class="stat-label">Direct URL hits</div>
+                        <div class="stat-label">Direct URL</div>
                     </div>
                     <div class="stat-box">
                         <div class="stat-number" style="color:#bbb" id="odoo-stat-seen">0 / 0</div>
-                        <div class="stat-label">Vistos / Target Odoo</div>
+                        <div class="stat-label">Vistos / Target</div>
                     </div>
                 </div>
-
-                <div class="current-book" id="odoo-current">
+                <div class="current-book" id="odoo-current" style="margin-top:10px;">
                     <span class="dot"></span>
                     <span id="odoo-current-text">Esperando...</span>
                 </div>
-
                 <div id="odoo-errors" style="display:none;">
-                    <div class="section-label" style="color:#e94560; margin-top:12px;">Últimos errores</div>
-                    <ul id="odoo-errors-list" style="font-size:0.82rem; color:#e94560; padding-left:20px;"></ul>
+                    <div class="section-label" style="color:#e94560; margin-top:12px;">Errores</div>
+                    <ul id="odoo-errors-list" style="font-size:0.8rem; color:#e94560; padding-left:20px;"></ul>
                 </div>
+            </div>
+
+            <!-- ═══ CATÁLOGO DE DISTRIBUIDORES ═══ -->
+            <div class="card">
+                <div class="card-title">📦 Catálogo de distribuidores (XLSX → Postgres)</div>
+                <p style="color:#888; font-size:0.88rem;">
+                    Sube los XLSX de ANAYA, PLANETA, PODIPRINT, etc. Upsert por ISBN a
+                    <code>distributor_books</code>.
+                </p>
+                <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:12px;">
+                    <input type="file" id="dist-file-input" accept=".xlsx"
+                           style="color:#bbb; background:#2c2f3e; padding:6px; border-radius:6px; border:1px solid #444;">
+                    <input type="text" id="dist-fuente-input" placeholder="Fuente (auto)"
+                           style="color:#fff; background:#2c2f3e; padding:8px 12px; border-radius:6px; border:1px solid #444; width:140px;">
+                    <button class="btn btn-success" id="btn-dist-upload" onclick="distUpload()">▶ Subir e importar</button>
+                    <button class="btn btn-primary" onclick="distRefreshStats()" style="background:#34495e;">🔁 Stats</button>
+                </div>
+                <div id="dist-status-block" style="margin-top:14px; display:none;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                        <strong style="color:#fff;">
+                            Estado:
+                            <span class="status-badge running" id="dist-status-badge">RUNNING</span>
+                        </strong>
+                        <span style="color:#bbb; font-size:0.9rem;" id="dist-progress-text">0 procesados</span>
+                    </div>
+                </div>
+                <div style="margin-top:14px; display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px;">
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#1abc9c" id="dist-stat-total">0</div>
+                        <div class="stat-label">Total en BD</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#9b59b6" id="dist-stat-overlap">0</div>
+                        <div class="stat-label">Ya en Odoo</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#e67e22" id="dist-stat-only">0</div>
+                        <div class="stat-label">Solo distribuidores</div>
+                    </div>
+                </div>
+                <div id="dist-sources" style="margin-top:14px; display:none;">
+                    <div class="section-label">Por distribuidor</div>
+                    <ul id="dist-sources-list" style="font-size:0.85rem; color:#bbb; padding-left:20px;"></ul>
+                </div>
+            </div>
+
+            <!-- ═══ HERRAMIENTAS ═══ -->
+            <div class="card">
+                <div class="card-title">🛠 Herramientas</div>
+                <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:12px;">
+                    <button class="btn btn-primary" onclick="testTelegram()" style="background:#0088cc;">
+                        📨 Probar Telegram
+                    </button>
+                    <button class="btn btn-primary" onclick="setupWebhook()" style="background:#0066aa;">
+                        🔗 Setup webhook Telegram
+                    </button>
+                    <button class="btn btn-primary" onclick="checkProxies()" style="background:#34495e;">
+                        🌐 Status proxies
+                    </button>
+                </div>
+                <div id="proxies-result" style="margin-top:12px; font-size:0.85rem; color:#bbb; white-space:pre-wrap; font-family:monospace;"></div>
             </div>
         </div>
     </div>
@@ -1239,7 +1323,12 @@
             if (tab === 'library') loadLibrary(1);
             if (tab === 'bulk') loadCategories();
             if (tab === 'odoo') { odooPoll(); odooStartPolling(); isbnIndexPoll(); loadMirrorAndDistInitial(); }
-            else { odooStopPolling(); mirrorStopPolling(); distStopPolling(); }
+            else {
+                odooStopPolling(); mirrorStopPolling(); distStopPolling();
+                if (typeof gbf !== 'undefined') gbf.stopPolling();
+                if (typeof cdl !== 'undefined') cdl.stopPolling();
+                if (typeof cds !== 'undefined') cds.stopPolling();
+            }
         }
 
         function showLoading() {
@@ -1566,7 +1655,6 @@
                 const resp = await fetch(`/api/v1/odoo/mirror/start?only_pending=${onlyPending}&batch_size=1000`, { method: 'POST' });
                 const data = await resp.json();
                 if (data.status === 'started') {
-                    document.getElementById('mirror-status-block').style.display = 'block';
                     document.getElementById('btn-mirror-stop').disabled = false;
                     mirrorStartPolling();
                     mirrorPoll();
@@ -1599,40 +1687,42 @@
                 const resp = await fetch('/api/v1/odoo/mirror/status');
                 const job = await resp.json();
 
-                const local = job.mirror_count_local || 0;
-                document.getElementById('mirror-stat-local').textContent = local.toLocaleString();
+                document.getElementById('mirror-stat-local').textContent = (job.mirror_count_local || 0).toLocaleString();
                 document.getElementById('mirror-stat-inferred').textContent = (job.inferred_categorized || 0).toLocaleString();
                 document.getElementById('mirror-stat-categ-cache').textContent = (job.public_categories_cached || 0).toLocaleString();
 
-                if (job.status === 'idle') return;
+                const badge = document.getElementById('mirror-status-badge');
+                badge.textContent = (job.status || 'idle').toUpperCase();
+                badge.className = 'status-badge ' + (job.status || 'idle');
 
                 const target = job.total_target || 0;
-                const mirrored = job.mirrored || 0;
                 const offset = job.offset || 0;
+                const mirrored = job.mirrored || 0;
                 const pct = target > 0 ? (offset / target * 100) : 0;
 
-                document.getElementById('mirror-status-block').style.display = 'block';
-                document.getElementById('mirror-stat-mirrored').textContent = mirrored.toLocaleString();
-                document.getElementById('mirror-stat-total').textContent = target.toLocaleString();
                 document.getElementById('mirror-progress-text').textContent =
-                    `${offset.toLocaleString()} / ${target.toLocaleString()} (${pct.toFixed(1)}%)`;
+                    target > 0 ? `${offset.toLocaleString()} / ${target.toLocaleString()} (${pct.toFixed(1)}%)` : '— / —';
+                document.getElementById('mirror-stat-mirrored').textContent = `${mirrored.toLocaleString()} espejados`;
                 document.getElementById('mirror-progress-fill').style.width = pct.toFixed(2) + '%';
-
-                const badge = document.getElementById('mirror-status-badge');
-                badge.textContent = (job.status || 'unknown').toUpperCase();
-                badge.className = 'status-badge ' + (job.status || 'running');
 
                 if (job.errors && job.errors.length > 0) {
                     document.getElementById('mirror-errors').style.display = 'block';
                     const ul = document.getElementById('mirror-errors-list');
                     ul.innerHTML = '';
                     job.errors.forEach(e => { const li = document.createElement('li'); li.textContent = e; ul.appendChild(li); });
+                } else {
+                    document.getElementById('mirror-errors').style.display = 'none';
                 }
 
-                if (['completed', 'stopped', 'error'].includes(job.status)) {
-                    mirrorStopPolling();
+                if (job.status === 'running') {
+                    document.getElementById('btn-mirror-start').disabled = true;
+                    document.getElementById('btn-mirror-stop').disabled = false;
+                } else {
                     document.getElementById('btn-mirror-start').disabled = false;
                     document.getElementById('btn-mirror-stop').disabled = true;
+                    if (['completed', 'stopped', 'error'].includes(job.status)) {
+                        mirrorStopPolling();
+                    }
                 }
             } catch (e) {
                 console.error('Mirror poll error:', e);
@@ -1756,80 +1846,181 @@
             } catch (e) { alert('Error: ' + e.message); }
         }
 
-        async function gbooksFill() {
-            if (!confirm('Bulk fill desde Google Books?\n\n' +
-                         'Llena description + categorias + idioma + editorial + paginas para libros sin datos.\n' +
-                         'Si tienes GOOGLE_BOOKS_API_KEY, ~100k libros/dia. Si no, ~1000/dia.\n' +
-                         'Puede tardar varias horas/dias dependiendo del tamano.')) return;
-            try {
-                const resp = await fetch('/api/v1/odoo/mirror/gbooks-fill', { method: 'POST' });
-                const data = await resp.json();
-                if (data.status !== 'started') {
-                    alert(`❌ ${data.message || 'No se pudo iniciar'}`);
-                    return;
+        // ═══ JOB CONTROLLERS (start/stop/poll uniformes) ═══
+        // Generic factory que arma start/stop/poll consistentes por job
+        function makeJobController(opts) {
+            // opts = { name, startUrl, stopUrl, statusUrl, btnStart, btnStop,
+            //          badge, progressText, progressFill, matchedEl, secondaryEl,
+            //          secondaryKey, errorsBox, errorsList }
+            let timer = null;
+
+            async function start() {
+                document.getElementById(opts.btnStart).disabled = true;
+                try {
+                    const resp = await fetch(opts.startUrl, { method: 'POST' });
+                    const data = await resp.json();
+                    if (data.status !== 'started') {
+                        alert(`❌ ${opts.name}: ${data.message || 'No se pudo iniciar'}`);
+                        document.getElementById(opts.btnStart).disabled = false;
+                        return;
+                    }
+                    document.getElementById(opts.btnStop).disabled = false;
+                    startPolling();
+                    poll();
+                } catch (e) {
+                    alert(`Error: ${e.message}`);
+                    document.getElementById(opts.btnStart).disabled = false;
                 }
-                alert('▶ Bulk fill arrancado. Polleo cada 5s.');
-                const t = setInterval(async () => {
-                    try {
-                        const r = await fetch('/api/v1/odoo/mirror/gbooks-fill-status');
-                        const s = await r.json();
-                        if (s.status === 'completed' || s.status === 'error' || s.status === 'stopped') {
-                            clearInterval(t);
-                            if (s.status === 'completed') {
-                                alert(
-                                    `✅ Bulk fill OK:\n` +
-                                    `• ${(s.processed || 0).toLocaleString()} procesados (de ${(s.target || 0).toLocaleString()})\n` +
-                                    `• ${(s.matched || 0).toLocaleString()} con datos\n` +
-                                    `• ${(s.no_match || 0).toLocaleString()} sin match`
-                                );
-                                mirrorPoll();
-                            } else if (s.status === 'error') {
-                                alert(`❌ Bulk fill fallo:\n${(s.errors || []).join('\n')}`);
-                            }
-                        } else {
-                            console.log(`[GBFill] ${s.processed}/${s.target} match:${s.matched}`);
+            }
+
+            async function stop() {
+                try { await fetch(opts.stopUrl, { method: 'POST' }); } catch (e) {}
+            }
+
+            function startPolling() {
+                if (timer) return;
+                timer = setInterval(poll, 4000);
+            }
+
+            function stopPolling() {
+                if (timer) { clearInterval(timer); timer = null; }
+            }
+
+            async function poll() {
+                try {
+                    const resp = await fetch(opts.statusUrl);
+                    const s = await resp.json();
+
+                    const badge = document.getElementById(opts.badge);
+                    badge.textContent = (s.status || 'idle').toUpperCase();
+                    badge.className = 'status-badge ' + (s.status || 'idle');
+
+                    const target = s.target || 0;
+                    const processed = s.processed || 0;
+                    const pct = target > 0 ? (processed / target * 100) : 0;
+                    document.getElementById(opts.progressText).textContent =
+                        target > 0 ? `${processed.toLocaleString()} / ${target.toLocaleString()} (${pct.toFixed(1)}%)` : '— / —';
+                    document.getElementById(opts.progressFill).style.width = pct.toFixed(2) + '%';
+
+                    if (opts.matchedEl) document.getElementById(opts.matchedEl).textContent = `${(s.matched || 0).toLocaleString()} match`;
+                    if (opts.secondaryEl) {
+                        const v = s[opts.secondaryKey] || 0;
+                        const label = opts.secondaryKey === 'transient_skipped' ? 'reintentos' : 'sin match';
+                        document.getElementById(opts.secondaryEl).textContent = `${v.toLocaleString()} ${label}`;
+                    }
+
+                    if (s.errors && s.errors.length > 0) {
+                        document.getElementById(opts.errorsBox).style.display = 'block';
+                        const ul = document.getElementById(opts.errorsList);
+                        ul.innerHTML = '';
+                        s.errors.forEach(e => { const li = document.createElement('li'); li.textContent = e; ul.appendChild(li); });
+                    } else {
+                        document.getElementById(opts.errorsBox).style.display = 'none';
+                    }
+
+                    if (s.status === 'running') {
+                        document.getElementById(opts.btnStart).disabled = true;
+                        document.getElementById(opts.btnStop).disabled = false;
+                    } else {
+                        document.getElementById(opts.btnStart).disabled = false;
+                        document.getElementById(opts.btnStop).disabled = true;
+                        if (['completed', 'stopped', 'error', 'rate_limited'].includes(s.status)) {
+                            stopPolling();
                         }
-                    } catch (_) {}
-                }, 5000);
+                    }
+                } catch (e) { console.error(`${opts.name} poll error:`, e); }
+            }
+
+            return { start, stop, poll, startPolling, stopPolling };
+        }
+
+        const gbf = makeJobController({
+            name: 'Google Books',
+            startUrl: '/api/v1/odoo/mirror/gbooks-fill',
+            stopUrl: '/api/v1/odoo/mirror/gbooks-fill-stop',
+            statusUrl: '/api/v1/odoo/mirror/gbooks-fill-status',
+            btnStart: 'btn-gbf-start', btnStop: 'btn-gbf-stop',
+            badge: 'gbf-status-badge',
+            progressText: 'gbf-progress-text', progressFill: 'gbf-progress-fill',
+            matchedEl: 'gbf-stat-matched', secondaryEl: 'gbf-stat-nomatch', secondaryKey: 'no_match',
+            errorsBox: 'gbf-errors', errorsList: 'gbf-errors-list',
+        });
+        const cdl = makeJobController({
+            name: 'CDL sitemap',
+            startUrl: '/api/v1/odoo/mirror/cdl-fill',
+            stopUrl: '/api/v1/odoo/mirror/cdl-fill-stop',
+            statusUrl: '/api/v1/odoo/mirror/cdl-fill-status',
+            btnStart: 'btn-cdl-start', btnStop: 'btn-cdl-stop',
+            badge: 'cdl-status-badge',
+            progressText: 'cdl-progress-text', progressFill: 'cdl-progress-fill',
+            matchedEl: 'cdl-stat-matched', secondaryEl: 'cdl-stat-transient', secondaryKey: 'transient_skipped',
+            errorsBox: 'cdl-errors', errorsList: 'cdl-errors-list',
+        });
+        const cds = makeJobController({
+            name: 'CDL search',
+            startUrl: '/api/v1/odoo/mirror/cdl-search-fill',
+            stopUrl: '/api/v1/odoo/mirror/cdl-search-fill-stop',
+            statusUrl: '/api/v1/odoo/mirror/cdl-search-fill-status',
+            btnStart: 'btn-cds-start', btnStop: 'btn-cds-stop',
+            badge: 'cds-status-badge',
+            progressText: 'cds-progress-text', progressFill: 'cds-progress-fill',
+            matchedEl: 'cds-stat-matched', secondaryEl: 'cds-stat-transient', secondaryKey: 'transient_skipped',
+            errorsBox: 'cds-errors', errorsList: 'cds-errors-list',
+        });
+
+        async function gbfStart() { return gbf.start(); }
+        async function gbfStop() { return gbf.stop(); }
+        async function cdlStart() { return cdl.start(); }
+        async function cdlStop() { return cdl.stop(); }
+        async function cdsStart() { return cds.start(); }
+        async function cdsStop() { return cds.stop(); }
+
+        async function gbfResetRecent() {
+            const hours = prompt('¿Cuántas horas hacia atrás reactivar?\n(Marca como no-fetched los libros sin data real de los últimos N horas, para reintento tras rate-limit)', '24');
+            if (!hours) return;
+            try {
+                const resp = await fetch(`/api/v1/odoo/mirror/gbooks-reset-recent?hours_back=${hours}`, { method: 'POST' });
+                const data = await resp.json();
+                if (data.reset !== undefined) {
+                    alert(`✅ ${data.reset.toLocaleString()} libros reactivados (últimas ${data.hours_back}h)`);
+                } else {
+                    alert(`❌ ${data.message || JSON.stringify(data)}`);
+                }
             } catch (e) { alert('Error: ' + e.message); }
         }
 
-        async function cdlFill() {
-            if (!confirm('Bulk scrape CDL al mirror?\n\n' +
-                         'Usa proxies + Playwright para scrapear los libros que tienen ISBN en cdl_isbn_index\n' +
-                         '(539k cubiertos por el sitemap). Trae datos ricos: peso, alto, ancho, encuadernacion,\n' +
-                         'traductor, 5 categorias. Corre EN PARALELO con Google Books.\n\n' +
-                         'Velocidad: ~30-50 libros/min con 10 proxies. Puede tardar horas/dias.')) return;
+        async function refreshAllStats() {
+            mirrorPoll();
+            gbf.poll();
+            cdl.poll();
+            cds.poll();
+            distRefreshStats();
+            isbnIndexPoll();
             try {
-                const resp = await fetch('/api/v1/odoo/mirror/cdl-fill', { method: 'POST' });
-                const data = await resp.json();
-                if (data.status !== 'started') {
-                    alert(`❌ ${data.message || 'No se pudo iniciar'}`);
-                    return;
+                const r = await fetch('/api/v1/odoo/mirror/status');
+                const j = await r.json();
+                // Estos campos vienen del status endpoint si los agregamos al backend
+                if (j.gbooks_fetched_count !== undefined) {
+                    document.getElementById('mirror-stat-gbooks-done').textContent = (j.gbooks_fetched_count || 0).toLocaleString();
                 }
-                alert('▶ Bulk CDL arrancado en paralelo con Google Books. Polleo cada 5s.');
-                const t = setInterval(async () => {
-                    try {
-                        const r = await fetch('/api/v1/odoo/mirror/cdl-fill-status');
-                        const s = await r.json();
-                        if (s.status === 'completed' || s.status === 'error' || s.status === 'stopped') {
-                            clearInterval(t);
-                            if (s.status === 'completed') {
-                                alert(
-                                    `✅ Bulk CDL OK:\n` +
-                                    `• ${(s.processed || 0).toLocaleString()} procesados (de ${(s.target || 0).toLocaleString()})\n` +
-                                    `• ${(s.matched || 0).toLocaleString()} con datos\n` +
-                                    `• ${(s.no_match || 0).toLocaleString()} sin match`
-                                );
-                            } else if (s.status === 'error') {
-                                alert(`❌ Bulk CDL fallo:\n${(s.errors || []).join('\n')}`);
-                            }
-                        } else {
-                            console.log(`[CDLFill] ${s.processed}/${s.target} match:${s.matched}`);
-                        }
-                    } catch (_) {}
-                }, 5000);
-            } catch (e) { alert('Error: ' + e.message); }
+                if (j.cdl_fetched_count !== undefined) {
+                    document.getElementById('mirror-stat-cdl-done').textContent = (j.cdl_fetched_count || 0).toLocaleString();
+                }
+            } catch (e) {}
+        }
+
+        async function checkProxies() {
+            const out = document.getElementById('proxies-result');
+            out.textContent = 'Consultando...';
+            try {
+                const r = await fetch('/api/v1/proxies/status');
+                const j = await r.json();
+                out.textContent = `Worker: ${j.worker}\n` +
+                    `Proxies: ${j.proxy_pool_valid}/${j.proxy_pool_count} válidos\n` +
+                    (j.proxies || []).map(p => `  · ${p.server || p.raw} ${p.auth ? '(auth)' : ''}`).join('\n');
+            } catch (e) {
+                out.textContent = 'Error: ' + e.message;
+            }
         }
 
         // ═══ DISTRIBUIDORES (XLSX import) ═══
@@ -1927,18 +2118,37 @@
 
         // Carga inicial cuando se entra a la pestaña Odoo (auto-resume si el job ya esta corriendo)
         async function loadMirrorAndDistInitial() {
+            // Mirror
             try {
                 const resp = await fetch('/api/v1/odoo/mirror/status');
                 const job = await resp.json();
                 document.getElementById('mirror-stat-local').textContent = (job.mirror_count_local || 0).toLocaleString();
                 if (job.status === 'running') {
-                    document.getElementById('mirror-status-block').style.display = 'block';
-                    document.getElementById('btn-mirror-stop').disabled = false;
-                    document.getElementById('btn-mirror-start').disabled = true;
                     mirrorStartPolling();
                     mirrorPoll();
                 }
             } catch (e) {}
+
+            // GBF / CDL / CDS — arrancar polling si están corriendo
+            try {
+                const r = await fetch('/api/v1/odoo/mirror/gbooks-fill-status');
+                const s = await r.json();
+                gbf.poll();
+                if (s.status === 'running') gbf.startPolling();
+            } catch (e) {}
+            try {
+                const r = await fetch('/api/v1/odoo/mirror/cdl-fill-status');
+                const s = await r.json();
+                cdl.poll();
+                if (s.status === 'running') cdl.startPolling();
+            } catch (e) {}
+            try {
+                const r = await fetch('/api/v1/odoo/mirror/cdl-search-fill-status');
+                const s = await r.json();
+                cds.poll();
+                if (s.status === 'running') cds.startPolling();
+            } catch (e) {}
+
             distRefreshStats();
             try {
                 const resp = await fetch('/api/v1/distributors/status');
@@ -1949,6 +2159,8 @@
                     distPoll();
                 }
             } catch (e) {}
+
+            refreshAllStats();
         }
 
         // ═══ TELEGRAM TEST ═══

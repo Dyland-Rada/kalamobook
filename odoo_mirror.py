@@ -64,6 +64,8 @@ def get_mirror_status() -> dict:
     job["mirror_count_local"] = count_mirror_rows()
     job["public_categories_cached"] = count_public_categories()
     job["inferred_categorized"] = count_inferred_rows()
+    job["gbooks_fetched_count"] = _count_with("gbooks_fetched_at IS NOT NULL")
+    job["cdl_fetched_count"] = _count_with("cdl_fetched_at IS NOT NULL")
     if "errors" in job:
         job["errors"] = job["errors"][-5:]
     return job
@@ -75,6 +77,19 @@ def count_mirror_rows() -> int:
     cur = conn.cursor()
     try:
         db.execute_query(cur, "SELECT COUNT(*) FROM odoo_books_mirror")
+        return cur.fetchone()[0]
+    except Exception:
+        return 0
+    finally:
+        conn.close()
+
+
+def _count_with(where_clause: str) -> int:
+    """Helper para conteos con WHERE arbitrario sobre odoo_books_mirror."""
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        db.execute_query(cur, f"SELECT COUNT(*) FROM odoo_books_mirror WHERE {where_clause}")
         return cur.fetchone()[0]
     except Exception:
         return 0
@@ -1587,3 +1602,185 @@ def export_csv_streaming(only_with_categories: bool = False):
             buf.truncate()
     finally:
         conn.close()
+
+
+# ── CDL Search Fill (via busqueda directa por ISBN, sin cdl_isbn_index) ─
+# Diferencia clave con fill_from_cdl_mirror:
+#   - mirror: solo libros en cdl_isbn_index (sitemap, ~539k coverage)
+#   - search: TODOS los libros del mirror sin cdl_fetched_at, busca por ISBN
+#     en CDL via /?query=<isbn>. Mas lento (2 navs por libro) pero cobertura
+#     completa del mirror.
+cdl_search_fill_job: dict | None = None
+
+
+def get_cdl_search_fill_status() -> dict:
+    job = dict(cdl_search_fill_job) if cdl_search_fill_job else {"status": "idle"}
+    if "errors" in job:
+        job["errors"] = job["errors"][-10:]
+    return job
+
+
+def stop_cdl_search_fill():
+    global cdl_search_fill_job
+    if cdl_search_fill_job and cdl_search_fill_job.get("status") == "running":
+        cdl_search_fill_job["status"] = "stopped"
+        return True
+    return False
+
+
+def _cdl_search_needs_fill_count() -> int:
+    """Cuantos libros del mirror tienen ISBN y NO se han intentado scrape
+    via CDL todavia. Independiente de cdl_isbn_index."""
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        db.execute_query(cur, """
+            SELECT COUNT(*) FROM odoo_books_mirror
+            WHERE barcode IS NOT NULL
+              AND barcode <> ''
+              AND cdl_fetched_at IS NULL
+        """)
+        return cur.fetchone()[0]
+    except Exception:
+        return 0
+    finally:
+        conn.close()
+
+
+def _cdl_search_fetch_targets(limit: int = 200) -> list[tuple[int, str]]:
+    """Lista (odoo_id, isbn) de libros del mirror para buscar en CDL.
+    Prioriza los que NO estan en cdl_isbn_index (asi complementa al otro job)."""
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        db.execute_query(cur, """
+            SELECT m.odoo_id, m.barcode
+            FROM odoo_books_mirror m
+            LEFT JOIN cdl_isbn_index ci ON m.barcode = ci.isbn
+            WHERE m.barcode IS NOT NULL
+              AND m.barcode <> ''
+              AND m.cdl_fetched_at IS NULL
+              AND ci.isbn IS NULL
+            ORDER BY m.odoo_id
+            LIMIT ?
+        """, (limit,))
+        rows = [(r[0], r[1]) for r in cur.fetchall()]
+        if rows:
+            return rows
+        # Si no quedan libros fuera del sitemap, caer a los del sitemap
+        # (por si el otro job no esta corriendo)
+        db.execute_query(cur, """
+            SELECT odoo_id, barcode
+            FROM odoo_books_mirror
+            WHERE barcode IS NOT NULL
+              AND barcode <> ''
+              AND cdl_fetched_at IS NULL
+            ORDER BY odoo_id
+            LIMIT ?
+        """, (limit,))
+        return [(r[0], r[1]) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+async def fill_from_cdl_search(chunk_size: int = 200) -> dict:
+    """
+    Scrape CDL para CUALQUIER libro del mirror via busqueda directa por ISBN.
+    No requiere cdl_isbn_index. Cubre los libros que el otro job (sitemap)
+    no puede tocar. Mas lento por libro pero cobertura total.
+    """
+    from playwright.async_api import async_playwright
+    from scraper import launch_browser_pool, close_browser_pool, scrape_book, PROXY_POOL
+
+    global cdl_search_fill_job
+    cdl_search_fill_job = {
+        "status": "running",
+        "started_at": datetime.now().isoformat(),
+        "target": _cdl_search_needs_fill_count(),
+        "processed": 0,
+        "matched": 0,
+        "no_match": 0,
+        "transient_skipped": 0,
+        "errors": [],
+        "mode": "search",
+    }
+    job = cdl_search_fill_job
+    print(f"[CDLSearch] Target: {job['target']} libros del mirror sin cdl_fetched_at")
+
+    if job["target"] == 0:
+        job["status"] = "completed"
+        return job
+
+    n_proxies = max(1, len(PROXY_POOL))
+    pool_size = max(n_proxies * 2, 8)
+
+    try:
+        async with async_playwright() as p:
+            browsers, page_queue = await launch_browser_pool(p, pool_size)
+            print(f"[CDLSearch] Browser pool con {pool_size} paginas")
+
+            sem = asyncio.Semaphore(pool_size)
+            TRANSIENT_PATTERNS = (
+                "ERR_TUNNEL_CONNECTION_FAILED",
+                "ERR_PROXY_CONNECTION_FAILED",
+                "ERR_CONNECTION_RESET",
+                "ERR_CONNECTION_CLOSED",
+                "ERR_CONNECTION_REFUSED",
+                "ERR_TIMED_OUT",
+                "ERR_EMPTY_RESPONSE",
+                "Timeout",
+            )
+
+            async def _process_one(odoo_id, isbn):
+                if job["status"] != "running":
+                    return
+                async with sem:
+                    page = await page_queue.get()
+                    try:
+                        # direct_url=None -> usa el flujo de busqueda en CDL
+                        data = await scrape_book(page, query=isbn, direct_url=None)
+                        if data and data.get("title") and data.get("title") != "Unknown Title":
+                            _cdl_save_one(odoo_id, isbn, data)
+                            job["matched"] += 1
+                        else:
+                            _cdl_save_one(odoo_id, isbn, None)
+                            job["no_match"] += 1
+                    except Exception as e:
+                        err_str = str(e)
+                        err_short = f"{type(e).__name__}: {err_str[:80]}"
+                        job["errors"].append(f"isbn {isbn}: {err_short}")
+                        is_transient = any(p in err_str for p in TRANSIENT_PATTERNS)
+                        if not is_transient:
+                            _cdl_save_one(odoo_id, isbn, None)
+                            job["no_match"] += 1
+                        else:
+                            job["transient_skipped"] = job.get("transient_skipped", 0) + 1
+                    finally:
+                        await page_queue.put(page)
+                        job["processed"] += 1
+
+            while job["status"] == "running":
+                targets = _cdl_search_fetch_targets(limit=chunk_size)
+                if not targets:
+                    print("[CDLSearch] Sin mas targets — fin")
+                    break
+
+                tasks = [_process_one(oid, isbn) for oid, isbn in targets]
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+                pct = (job["processed"] / job["target"] * 100) if job["target"] else 0
+                print(f"[CDLSearch] {job['processed']}/{job['target']} "
+                      f"({pct:.1f}%) match:{job['matched']} no:{job['no_match']}")
+
+            await close_browser_pool(browsers)
+
+        if job["status"] == "running":
+            job["status"] = "completed"
+        print(f"[CDLSearch] DONE — processed:{job['processed']} matched:{job['matched']}")
+    except Exception as e:
+        job["status"] = "error"
+        err = f"{type(e).__name__}: {e!r}"
+        job["errors"].append(err[:200])
+        print(f"[CDLSearch] Fatal: {err}")
+
+    return job
