@@ -734,6 +734,87 @@ async def odoo_mirror_cdl_search_fill_status():
     return JSONResponse(content=odoo_mirror.get_cdl_search_fill_status())
 
 
+# ─── Admin: schema info + forzar migraciones sin redeploy ────────────
+
+@app.get("/api/v1/admin/schema-info", tags=["Admin"])
+async def admin_schema_info(table: str = Query("odoo_books_mirror")):
+    """
+    Lista las columnas reales de una tabla. Usa esto para confirmar que
+    el ALTER TABLE corrio (ej: que existan cdl_author, cdl_image_url, etc.)
+    """
+    import db as dbmod
+    conn = dbmod.get_connection()
+    cur = conn.cursor()
+    try:
+        if dbmod.IS_POSTGRES:
+            dbmod.execute_query(cur, """
+                SELECT column_name, data_type
+                FROM information_schema.columns
+                WHERE table_name = ?
+                ORDER BY ordinal_position
+            """, (table,))
+            cols = [{"name": r[0], "type": r[1]} for r in cur.fetchall()]
+        else:
+            cur.execute(f"PRAGMA table_info({table})")
+            cols = [{"name": r[1], "type": r[2]} for r in cur.fetchall()]
+        return JSONResponse(content={"table": table, "columns": cols, "count": len(cols)})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={
+            "error": f"{type(e).__name__}: {e}"
+        })
+    finally:
+        conn.close()
+
+
+@app.post("/api/v1/admin/run-migrations", tags=["Admin"])
+async def admin_run_migrations():
+    """
+    Re-ejecuta init_db() para aplicar todos los ALTER TABLE / CREATE TABLE
+    pendientes. Idempotente — si ya estan aplicados, no hace nada. Sin
+    redeploy. Devuelve la lista de columnas resultante de odoo_books_mirror.
+    """
+    from scraper import init_db
+    import db as dbmod
+    try:
+        init_db()
+    except Exception as e:
+        return JSONResponse(status_code=500, content={
+            "error": f"init_db() FAILED: {type(e).__name__}: {e}"
+        })
+
+    # Verificar que las columnas criticas existen
+    conn = dbmod.get_connection()
+    cur = conn.cursor()
+    try:
+        if dbmod.IS_POSTGRES:
+            dbmod.execute_query(cur, """
+                SELECT column_name FROM information_schema.columns
+                WHERE table_name = 'odoo_books_mirror'
+                ORDER BY ordinal_position
+            """)
+            cols = [r[0] for r in cur.fetchall()]
+        else:
+            cur.execute("PRAGMA table_info(odoo_books_mirror)")
+            cols = [r[1] for r in cur.fetchall()]
+        expected_cdl = [
+            "cdl_author", "cdl_editorial", "cdl_image_url",
+            "cdl_weight", "cdl_height", "cdl_width", "cdl_binding",
+            "cdl_translator", "cdl_illustrator", "cdl_collection",
+            "cdl_pages", "cdl_release_date", "cdl_url", "cdl_price",
+            "cdl_language",
+        ]
+        missing = [c for c in expected_cdl if c not in cols]
+        return JSONResponse(content={
+            "status": "ok",
+            "total_columns": len(cols),
+            "cdl_columns_missing": missing,
+            "cdl_columns_present": [c for c in expected_cdl if c in cols],
+            "columns": cols,
+        })
+    finally:
+        conn.close()
+
+
 @app.get("/api/v1/odoo/mirror/export.csv", tags=["Odoo"])
 async def odoo_mirror_export_csv(
     only_with_categories: bool = Query(

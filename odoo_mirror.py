@@ -1700,12 +1700,18 @@ def _cdl_search_needs_fill_count() -> int:
 
 
 def _cdl_search_fetch_targets(limit: int = 200) -> list[tuple[int, str]]:
-    """Lista (odoo_id, isbn) de libros del mirror sin categoria NI
-    descripcion. Prioriza los que NO estan en cdl_isbn_index para
-    complementar al job sitemap, y si no quedan, cae a los demas."""
+    """Lista (odoo_id, isbn) de libros del mirror sin categoria. Prioriza:
+      1. 978-84 (Espana) — alta probabilidad de match en CDL
+      2. 978-958 / 978-959 (Colombia) — CDL.com.co los tiene
+      3. Cualquier otro prefijo
+    Dentro de cada grupo, primero los que NO estan en cdl_isbn_index
+    (asi complementa al job sitemap).
+    """
     conn = db.get_connection()
     cur = conn.cursor()
     try:
+        # CASE para puntuacion de prioridad. SUBSTRING en SQL estandar
+        # (funciona igual en SQLite y Postgres).
         db.execute_query(cur, """
             SELECT m.odoo_id, m.barcode
             FROM odoo_books_mirror m
@@ -1713,20 +1719,16 @@ def _cdl_search_fetch_targets(limit: int = 200) -> list[tuple[int, str]]:
             WHERE m.barcode IS NOT NULL
               AND m.barcode <> ''
               AND (m.inferred_categories IS NULL OR m.inferred_categories = '')
-              AND (m.description IS NULL OR m.description = '')
               AND m.cdl_fetched_at IS NULL
-              AND ci.isbn IS NULL
-            ORDER BY m.odoo_id
-            LIMIT ?
-        """, (limit,))
-        rows = [(r[0], r[1]) for r in cur.fetchall()]
-        if rows:
-            return rows
-        db.execute_query(cur, f"""
-            SELECT odoo_id, barcode
-            FROM odoo_books_mirror
-            WHERE {_CDL_SEARCH_INCOMPLETE_WHERE}
-            ORDER BY odoo_id
+            ORDER BY
+              CASE
+                WHEN SUBSTR(m.barcode, 1, 5) = '97884' THEN 0
+                WHEN SUBSTR(m.barcode, 1, 6) = '978958'
+                  OR SUBSTR(m.barcode, 1, 6) = '978959' THEN 1
+                ELSE 2
+              END,
+              CASE WHEN ci.isbn IS NULL THEN 0 ELSE 1 END,
+              m.odoo_id
             LIMIT ?
         """, (limit,))
         return [(r[0], r[1]) for r in cur.fetchall()]
