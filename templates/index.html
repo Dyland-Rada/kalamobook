@@ -1297,16 +1297,25 @@
             <div class="card">
                 <div class="card-title">🛠 Herramientas</div>
                 <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:12px;">
+                    <button class="btn btn-primary" onclick="applyMigration()" style="background:#c0392b;"
+                            title="Aplica los ALTER TABLE pendientes (anade cdl_author, cdl_editorial, etc. al mirror). Sin redeploy.">
+                        🔧 Aplicar migración BD
+                    </button>
+                    <button class="btn btn-primary" onclick="checkSchema()" style="background:#7f8c8d;"
+                            title="Lista las columnas reales de odoo_books_mirror para confirmar que las cdl_* existen">
+                        🔍 Ver columnas BD
+                    </button>
+                    <button class="btn btn-primary" onclick="checkProxies()" style="background:#34495e;">
+                        🌐 Status proxies
+                    </button>
                     <button class="btn btn-primary" onclick="testTelegram()" style="background:#0088cc;">
                         📨 Probar Telegram
                     </button>
                     <button class="btn btn-primary" onclick="setupWebhook()" style="background:#0066aa;">
                         🔗 Setup webhook Telegram
                     </button>
-                    <button class="btn btn-primary" onclick="checkProxies()" style="background:#34495e;">
-                        🌐 Status proxies
-                    </button>
                 </div>
+                <div id="tools-result" style="margin-top:12px; font-size:0.85rem; color:#bbb; white-space:pre-wrap; font-family:monospace; max-height:300px; overflow:auto;"></div>
                 <div id="proxies-result" style="margin-top:12px; font-size:0.85rem; color:#bbb; white-space:pre-wrap; font-family:monospace;"></div>
             </div>
         </div>
@@ -2020,6 +2029,72 @@
                     (j.proxies || []).map(p => `  · ${p.server || p.raw} ${p.auth ? '(auth)' : ''}`).join('\n');
             } catch (e) {
                 out.textContent = 'Error: ' + e.message;
+            }
+        }
+
+        async function applyMigration() {
+            const out = document.getElementById('tools-result');
+            if (!confirm('Esto va a aplicar los ALTER TABLE pendientes en odoo_books_mirror.\n\n' +
+                         'Si las columnas cdl_author, cdl_editorial, etc. no existen aun, las crea.\n' +
+                         'Idempotente — si ya existen, no hace nada. Sin redeploy.\n\n¿Continuar?')) return;
+            out.textContent = '🔧 Aplicando migración...';
+            try {
+                const r = await fetch('/api/v1/admin/run-migrations', { method: 'POST' });
+                const j = await r.json();
+                if (j.error) {
+                    out.textContent = '❌ ERROR: ' + j.error;
+                    return;
+                }
+                const missing = j.cdl_columns_missing || [];
+                const present = j.cdl_columns_present || [];
+                let msg = `✅ Migración aplicada.\n\n`;
+                msg += `Total columnas en odoo_books_mirror: ${j.total_columns}\n`;
+                msg += `Columnas cdl_* presentes: ${present.length}/15\n`;
+                if (missing.length === 0) {
+                    msg += `\n🎉 TODAS las columnas cdl_* están listas. Ya puedes ▶ los jobs CDL.\n`;
+                    msg += `Después de 30s presiona "🔁 Refrescar" arriba para ver el contador subir.`;
+                } else {
+                    msg += `\n⚠️ Aún faltan: ${missing.join(', ')}\n`;
+                    msg += `Esto significa que el ALTER TABLE falló. Revisa los logs del contenedor.`;
+                }
+                out.textContent = msg;
+            } catch (e) {
+                out.textContent = '❌ Error de conexión: ' + e.message;
+            }
+        }
+
+        async function checkSchema() {
+            const out = document.getElementById('tools-result');
+            out.textContent = '🔍 Consultando columnas...';
+            try {
+                const r = await fetch('/api/v1/admin/schema-info?table=odoo_books_mirror');
+                const j = await r.json();
+                if (j.error) {
+                    out.textContent = '❌ ERROR: ' + j.error;
+                    return;
+                }
+                const expected = [
+                    'cdl_author', 'cdl_editorial', 'cdl_image_url',
+                    'cdl_weight', 'cdl_height', 'cdl_width', 'cdl_binding',
+                    'cdl_translator', 'cdl_illustrator', 'cdl_collection',
+                    'cdl_pages', 'cdl_release_date', 'cdl_url', 'cdl_price',
+                    'cdl_language',
+                ];
+                const colNames = (j.columns || []).map(c => c.name);
+                const missing = expected.filter(c => !colNames.includes(c));
+                let msg = `Tabla: ${j.table}\nTotal columnas: ${j.count}\n\n`;
+                msg += `Columnas cdl_* esperadas: 15\n`;
+                msg += `Presentes: ${expected.length - missing.length}\n`;
+                if (missing.length > 0) {
+                    msg += `\n❌ FALTAN: ${missing.join(', ')}\n\n`;
+                    msg += `→ Pulsa "🔧 Aplicar migración BD" para crearlas.`;
+                } else {
+                    msg += `\n✅ TODAS presentes. El UPDATE de _cdl_save_one debe funcionar.\n\n`;
+                    msg += `Lista completa:\n` + (j.columns || []).map(c => `  · ${c.name} (${c.type})`).join('\n');
+                }
+                out.textContent = msg;
+            } catch (e) {
+                out.textContent = '❌ Error: ' + e.message;
             }
         }
 
