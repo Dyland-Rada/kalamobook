@@ -316,7 +316,9 @@ def init_db():
             synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
-    # Para installs viejos: agregar las columnas si no existen
+    # Para installs viejos: agregar las columnas si no existen.
+    # IMPORTANTE: en Postgres, un ALTER fallido aborta la transaccion
+    # completa, asi que hay que commit/rollback por cada uno.
     for col in (
         "public_categ_ids TEXT",
         "public_categ_names TEXT",
@@ -328,11 +330,11 @@ def init_db():
         "gbooks_thumbnail TEXT",
         "gbooks_fetched_at TIMESTAMP",
     ):
-        col_name = col.split()[0]
         try:
             db.execute_query(cursor, f"ALTER TABLE odoo_books_mirror ADD COLUMN {col}")
+            conn.commit()
         except Exception:
-            pass  # ya existe
+            conn.rollback()  # libera la transaccion para que los siguientes ALTERs funcionen
     db.execute_query(cursor, "CREATE INDEX IF NOT EXISTS idx_odoo_mirror_barcode ON odoo_books_mirror(barcode)")
     db.execute_query(cursor, "CREATE INDEX IF NOT EXISTS idx_odoo_mirror_synced ON odoo_books_mirror(synced_at)")
 
