@@ -963,26 +963,61 @@ async def scrape_book(page, query, direct_url=None):
         ], "")
 
         # ── SYNOPSIS / DESCRIPTION ─────────────────────────────────────
-        # The synopsis is truncated — click 'Ver más' to expand it first
+        # Prioridad 1: JSON-LD description (fiable, completa, no requiere
+        # expandir Ver mas — CDL la sirve embebida en schema.org).
+        # Prioridad 2: og:description meta tag (corta pero util).
+        # Prioridad 3: DOM. Cuidado: en la version actual de CDL,
+        # div.resumen/[class*='resumen'] matchea la seccion de RESENAS
+        # (no la sinopsis), asi que devolveria "0 reseñas" si lo usamos.
+        description = ""
         try:
-            ver_mas = page.locator('label.like-a-link')
-            if await ver_mas.count() > 0:
-                await ver_mas.first.click(force=True)
-                await page.wait_for_timeout(800)
-                print("  Clicked 'Ver más' to expand synopsis")
+            description = await page.evaluate("""
+                () => {
+                    // JSON-LD
+                    for (const s of document.querySelectorAll('script[type="application/ld+json"]')) {
+                        try {
+                            let d = JSON.parse(s.textContent);
+                            const arr = Array.isArray(d) ? d : [d];
+                            for (const it of arr) {
+                                if (it.description) return it.description;
+                                if (it.workExample && it.workExample[0]
+                                    && it.workExample[0].description) {
+                                    return it.workExample[0].description;
+                                }
+                            }
+                        } catch(e) {}
+                    }
+                    // Open Graph
+                    const og = document.querySelector('meta[property="og:description"], meta[name="description"]');
+                    if (og && og.content && og.content.length > 30) {
+                        const c = og.content.trim();
+                        // Filtrar el meta-description generico "Libro X del autor Y al MEJOR PRECIO..."
+                        if (!/MEJOR PRECIO|segunda mano en Casa del Libro/i.test(c)) {
+                            return c;
+                        }
+                    }
+                    // Fallback DOM: buscar el primer parrafo bajo h2 que diga "Resumen" o similar
+                    const headings = document.querySelectorAll('h2, h3');
+                    for (const h of headings) {
+                        const t = (h.innerText || '').toLowerCase().trim();
+                        if (t.includes('resumen') || t.includes('sinopsis')) {
+                            let next = h.nextElementSibling;
+                            while (next) {
+                                const txt = (next.innerText || '').trim();
+                                if (txt.length > 80) return txt;
+                                next = next.nextElementSibling;
+                            }
+                        }
+                    }
+                    return '';
+                }
+            """) or ""
         except Exception as e:
-            print(f"  Could not click 'Ver más': {e}")
+            print(f"  Description extraction error: {e}")
+            description = ""
 
-        description = await extract_text(page, [
-            'div.resumen',               # Main synopsis div (sibling of h2.resumen)
-            'h2.resumen ~ div',          # Sibling div after the synopsis heading
-            '[class*="resumen"] p',
-            '[class*="resume"] p',
-            '[class*="resume"]',
-            '[class*="description"] p',
-            '[class*="description"]',
-            '[itemprop="description"]',
-        ], "No Description")
+        if not description or len(description) < 20:
+            description = "No Description"
         description = description[:1500]
         print(f"  Description: {description[:80]}...")
 
