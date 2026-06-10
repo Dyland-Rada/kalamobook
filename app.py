@@ -617,6 +617,54 @@ async def odoo_mirror_gbooks_fill_status():
     return JSONResponse(content=odoo_mirror.get_gbooks_fill_status())
 
 
+@app.post("/api/v1/odoo/mirror/cdl-fill", tags=["Odoo"])
+async def odoo_mirror_cdl_fill(chunk_size: int = Query(500, ge=100, le=2000)):
+    """
+    Bulk scrape Casa del Libro para libros del mirror que estan en
+    cdl_isbn_index. Usa proxies + Playwright (direct URL = fast).
+    Guarda a books table y rellena inferred_categories + description
+    en el mirror. Corre en PARALELO con gbooks-fill sin conflicto.
+    """
+    import threading
+    import sys
+    import odoo_mirror
+
+    if odoo_mirror.get_cdl_fill_status().get("status") == "running":
+        return JSONResponse(status_code=409, content={
+            "status": "error", "message": "CDL bulk fill ya esta corriendo."
+        })
+
+    def _run_in_thread():
+        if sys.platform == 'win32':
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
+        try:
+            new_loop.run_until_complete(
+                odoo_mirror.fill_from_cdl_mirror(chunk_size=chunk_size)
+            )
+        finally:
+            new_loop.close()
+
+    t = threading.Thread(target=_run_in_thread, daemon=True)
+    t.start()
+    return JSONResponse(content={"status": "started"})
+
+
+@app.post("/api/v1/odoo/mirror/cdl-fill-stop", tags=["Odoo"])
+async def odoo_mirror_cdl_fill_stop():
+    import odoo_mirror
+    if odoo_mirror.stop_cdl_fill():
+        return JSONResponse(content={"status": "stopping"})
+    return JSONResponse(status_code=400, content={"status": "error", "message": "No hay job corriendo."})
+
+
+@app.get("/api/v1/odoo/mirror/cdl-fill-status", tags=["Odoo"])
+async def odoo_mirror_cdl_fill_status():
+    import odoo_mirror
+    return JSONResponse(content=odoo_mirror.get_cdl_fill_status())
+
+
 @app.get("/api/v1/odoo/mirror/export.csv", tags=["Odoo"])
 async def odoo_mirror_export_csv(
     only_with_categories: bool = Query(

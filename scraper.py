@@ -313,6 +313,7 @@ def init_db():
             gbooks_pages INTEGER,
             gbooks_thumbnail TEXT,
             gbooks_fetched_at TIMESTAMP,
+            cdl_fetched_at TIMESTAMP,
             synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
@@ -329,6 +330,7 @@ def init_db():
         "gbooks_pages INTEGER",
         "gbooks_thumbnail TEXT",
         "gbooks_fetched_at TIMESTAMP",
+        "cdl_fetched_at TIMESTAMP",
     ):
         try:
             db.execute_query(cursor, f"ALTER TABLE odoo_books_mirror ADD COLUMN {col}")

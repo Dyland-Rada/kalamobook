@@ -1163,6 +1163,220 @@ async def fill_from_google_books(concurrency: int = 15,
     return job
 
 
+# ── Bulk fill desde CDL (Casa del Libro) — usa proxies + Playwright ──
+cdl_fill_job: dict | None = None
+
+
+def get_cdl_fill_status() -> dict:
+    job = dict(cdl_fill_job) if cdl_fill_job else {"status": "idle"}
+    if "errors" in job:
+        job["errors"] = job["errors"][-10:]
+    return job
+
+
+def stop_cdl_fill():
+    global cdl_fill_job
+    if cdl_fill_job and cdl_fill_job.get("status") == "running":
+        cdl_fill_job["status"] = "stopped"
+        return True
+    return False
+
+
+def _cdl_needs_fill_count() -> int:
+    """Cuantos libros tienen ISBN en cdl_isbn_index y aun no se intento scrape."""
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        db.execute_query(cur, """
+            SELECT COUNT(*) FROM odoo_books_mirror m
+            INNER JOIN cdl_isbn_index ci ON m.barcode = ci.isbn
+            WHERE m.barcode IS NOT NULL
+              AND m.barcode <> ''
+              AND m.cdl_fetched_at IS NULL
+        """)
+        return cur.fetchone()[0]
+    except Exception:
+        return 0
+    finally:
+        conn.close()
+
+
+def _cdl_fetch_targets(limit: int = 500) -> list[tuple[int, str, str]]:
+    """Lista (odoo_id, isbn, url) para libros sin cdl_fetched_at."""
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        db.execute_query(cur, """
+            SELECT m.odoo_id, m.barcode, ci.url
+            FROM odoo_books_mirror m
+            INNER JOIN cdl_isbn_index ci ON m.barcode = ci.isbn
+            WHERE m.barcode IS NOT NULL
+              AND m.barcode <> ''
+              AND m.cdl_fetched_at IS NULL
+            ORDER BY m.odoo_id
+            LIMIT ?
+        """, (limit,))
+        return [(r[0], r[1], r[2]) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def _cdl_save_one(odoo_id: int, isbn: str, data: dict | None):
+    """
+    Guarda lo scrapeado en books table (via save_to_db) Y actualiza el mirror
+    con categorias/description si estan vacios. Marca cdl_fetched_at siempre
+    (aunque no haya match) para no reintentar.
+    """
+    from scraper import save_to_db
+
+    # Si hay data, guardar a books table tambien
+    if data and data.get("title") and data.get("title") != "Unknown Title":
+        try:
+            data["search_query"] = isbn
+            save_to_db(data)
+        except Exception:
+            pass
+
+    # Construir categorias y description para el mirror
+    cats_str = None
+    if data:
+        cats = [data.get(f"categoria_{i}") for i in range(1, 6)]
+        cats = [c for c in cats if c and str(c).strip()]
+        if cats:
+            cats_str = " > ".join(cats)
+    desc = (data or {}).get("description") or None
+
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        if db.IS_POSTGRES:
+            db.execute_query(cur, """
+                UPDATE odoo_books_mirror
+                SET inferred_categories = COALESCE(NULLIF(inferred_categories, ''), ?),
+                    inferred_source = CASE
+                        WHEN inferred_categories IS NULL OR inferred_categories = ''
+                            THEN COALESCE(?, inferred_source)
+                        ELSE inferred_source
+                    END,
+                    description = COALESCE(NULLIF(description, ''), ?),
+                    cdl_fetched_at = CURRENT_TIMESTAMP
+                WHERE odoo_id = ?
+            """, (cats_str,
+                  'cdl_bulk' if cats_str else None,
+                  desc, odoo_id))
+        else:
+            db.execute_query(cur, """
+                UPDATE odoo_books_mirror
+                SET inferred_categories = COALESCE(NULLIF(inferred_categories, ''), ?),
+                    inferred_source = CASE
+                        WHEN inferred_categories IS NULL OR inferred_categories = ''
+                            THEN COALESCE(?, inferred_source)
+                        ELSE inferred_source
+                    END,
+                    description = COALESCE(NULLIF(description, ''), ?),
+                    cdl_fetched_at = CURRENT_TIMESTAMP
+                WHERE odoo_id = ?
+            """, (cats_str, 'cdl_bulk' if cats_str else None, desc, odoo_id))
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+    finally:
+        conn.close()
+
+
+async def fill_from_cdl_mirror(chunk_size: int = 500) -> dict:
+    """
+    Scrape CDL para libros del mirror que estan en cdl_isbn_index (tienen
+    direct URL, fast path). Guarda a books table + actualiza mirror con
+    categorias y description. Usa launch_browser_pool (PROXY_POOL).
+
+    Diferencia con el enricher:
+      - No empuja a Odoo (mas rapido, solo enriquece local)
+      - Trabaja sobre el mirror entero, no solo description_sale=False
+      - Marca cdl_fetched_at para no retrabajar
+    """
+    from playwright.async_api import async_playwright
+    from scraper import launch_browser_pool, close_browser_pool, scrape_book, PROXY_POOL
+
+    global cdl_fill_job
+    cdl_fill_job = {
+        "status": "running",
+        "started_at": datetime.now().isoformat(),
+        "target": _cdl_needs_fill_count(),
+        "processed": 0,
+        "matched": 0,
+        "no_match": 0,
+        "errors": [],
+    }
+    job = cdl_fill_job
+    print(f"[CDLFill] Target: {job['target']} libros en cdl_isbn_index sin procesar")
+
+    if job["target"] == 0:
+        job["status"] = "completed"
+        return job
+
+    n_proxies = max(1, len(PROXY_POOL))
+    pool_size = max(n_proxies * 2, 12)  # 2 paginas por proxy minimo, max 24
+
+    try:
+        async with async_playwright() as p:
+            browsers, page_queue = await launch_browser_pool(p, pool_size)
+            print(f"[CDLFill] Browser pool con {pool_size} paginas")
+
+            sem = asyncio.Semaphore(pool_size)
+
+            async def _process_one(odoo_id, isbn, url):
+                if job["status"] != "running":
+                    return
+                async with sem:
+                    page = await page_queue.get()
+                    try:
+                        data = await scrape_book(page, query=isbn, direct_url=url)
+                        if data and data.get("title") and data.get("title") != "Unknown Title":
+                            _cdl_save_one(odoo_id, isbn, data)
+                            job["matched"] += 1
+                        else:
+                            _cdl_save_one(odoo_id, isbn, None)  # marca fetched aunque no hay match
+                            job["no_match"] += 1
+                    except Exception as e:
+                        err = f"{type(e).__name__}: {str(e)[:80]}"
+                        job["errors"].append(f"isbn {isbn}: {err}")
+                        _cdl_save_one(odoo_id, isbn, None)
+                        job["no_match"] += 1
+                    finally:
+                        await page_queue.put(page)
+                        job["processed"] += 1
+
+            while job["status"] == "running":
+                targets = _cdl_fetch_targets(limit=chunk_size)
+                if not targets:
+                    print("[CDLFill] Sin mas targets — fin")
+                    break
+
+                tasks = [_process_one(oid, isbn, url) for oid, isbn, url in targets]
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+                pct = (job["processed"] / job["target"] * 100) if job["target"] else 0
+                print(f"[CDLFill] {job['processed']}/{job['target']} "
+                      f"({pct:.1f}%) match:{job['matched']} no:{job['no_match']}")
+
+            await close_browser_pool(browsers)
+
+        if job["status"] == "running":
+            job["status"] = "completed"
+        print(f"[CDLFill] DONE — processed:{job['processed']} matched:{job['matched']}")
+    except Exception as e:
+        job["status"] = "error"
+        err = f"{type(e).__name__}: {e!r}"
+        job["errors"].append(err[:200])
+        print(f"[CDLFill] Fatal: {err}")
+
+    return job
+
+
 # ── CSV streaming export ───────────────────────────────────────────────
 def _truncate(v, n):
     if v is None:

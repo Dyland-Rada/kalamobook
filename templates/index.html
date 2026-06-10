@@ -1071,6 +1071,10 @@
                             title="Bulk fill: pulla Google Books API para cada libro sin datos. Async, super rapido.">
                         📚 Rellenar con Google Books
                     </button>
+                    <button class="btn btn-primary" onclick="cdlFill()" style="background:#d35400;"
+                            title="Bulk scrape Casa del Libro via proxies (libros en cdl_isbn_index). Datos ricos: peso, alto, ancho, encuadernacion, traductor. Corre en PARALELO con GoogleBooks.">
+                        🕷 Bulk scrape CDL al mirror
+                    </button>
                 </div>
 
                 <div id="mirror-status-block" style="margin-top:20px; display:none;">
@@ -1784,6 +1788,44 @@
                             }
                         } else {
                             console.log(`[GBFill] ${s.processed}/${s.target} match:${s.matched}`);
+                        }
+                    } catch (_) {}
+                }, 5000);
+            } catch (e) { alert('Error: ' + e.message); }
+        }
+
+        async function cdlFill() {
+            if (!confirm('Bulk scrape CDL al mirror?\n\n' +
+                         'Usa proxies + Playwright para scrapear los libros que tienen ISBN en cdl_isbn_index\n' +
+                         '(539k cubiertos por el sitemap). Trae datos ricos: peso, alto, ancho, encuadernacion,\n' +
+                         'traductor, 5 categorias. Corre EN PARALELO con Google Books.\n\n' +
+                         'Velocidad: ~30-50 libros/min con 10 proxies. Puede tardar horas/dias.')) return;
+            try {
+                const resp = await fetch('/api/v1/odoo/mirror/cdl-fill', { method: 'POST' });
+                const data = await resp.json();
+                if (data.status !== 'started') {
+                    alert(`❌ ${data.message || 'No se pudo iniciar'}`);
+                    return;
+                }
+                alert('▶ Bulk CDL arrancado en paralelo con Google Books. Polleo cada 5s.');
+                const t = setInterval(async () => {
+                    try {
+                        const r = await fetch('/api/v1/odoo/mirror/cdl-fill-status');
+                        const s = await r.json();
+                        if (s.status === 'completed' || s.status === 'error' || s.status === 'stopped') {
+                            clearInterval(t);
+                            if (s.status === 'completed') {
+                                alert(
+                                    `✅ Bulk CDL OK:\n` +
+                                    `• ${(s.processed || 0).toLocaleString()} procesados (de ${(s.target || 0).toLocaleString()})\n` +
+                                    `• ${(s.matched || 0).toLocaleString()} con datos\n` +
+                                    `• ${(s.no_match || 0).toLocaleString()} sin match`
+                                );
+                            } else if (s.status === 'error') {
+                                alert(`❌ Bulk CDL fallo:\n${(s.errors || []).join('\n')}`);
+                            }
+                        } else {
+                            console.log(`[CDLFill] ${s.processed}/${s.target} match:${s.matched}`);
                         }
                     } catch (_) {}
                 }, 5000);
