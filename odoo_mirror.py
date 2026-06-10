@@ -1309,6 +1309,7 @@ async def fill_from_cdl_mirror(chunk_size: int = 500) -> dict:
         "processed": 0,
         "matched": 0,
         "no_match": 0,
+        "transient_skipped": 0,
         "errors": [],
     }
     job = cdl_fill_job
@@ -1327,6 +1328,17 @@ async def fill_from_cdl_mirror(chunk_size: int = 500) -> dict:
             print(f"[CDLFill] Browser pool con {pool_size} paginas")
 
             sem = asyncio.Semaphore(pool_size)
+            # Errores que indican "proxy/red rota" — no marcar fetched, reintentar
+            TRANSIENT_PATTERNS = (
+                "ERR_TUNNEL_CONNECTION_FAILED",
+                "ERR_PROXY_CONNECTION_FAILED",
+                "ERR_CONNECTION_RESET",
+                "ERR_CONNECTION_CLOSED",
+                "ERR_CONNECTION_REFUSED",
+                "ERR_TIMED_OUT",
+                "ERR_EMPTY_RESPONSE",
+                "Timeout",
+            )
 
             async def _process_one(odoo_id, isbn, url):
                 if job["status"] != "running":
@@ -1339,13 +1351,21 @@ async def fill_from_cdl_mirror(chunk_size: int = 500) -> dict:
                             _cdl_save_one(odoo_id, isbn, data)
                             job["matched"] += 1
                         else:
-                            _cdl_save_one(odoo_id, isbn, None)  # marca fetched aunque no hay match
+                            # Sin datos pero CDL respondio — marcar fetched, no reintentar
+                            _cdl_save_one(odoo_id, isbn, None)
                             job["no_match"] += 1
                     except Exception as e:
-                        err = f"{type(e).__name__}: {str(e)[:80]}"
-                        job["errors"].append(f"isbn {isbn}: {err}")
-                        _cdl_save_one(odoo_id, isbn, None)
-                        job["no_match"] += 1
+                        err_str = str(e)
+                        err_short = f"{type(e).__name__}: {err_str[:80]}"
+                        job["errors"].append(f"isbn {isbn}: {err_short}")
+                        # Distinguir error transitorio (proxy/red) de no-match real:
+                        # transitorio = NO marcar fetched -> se reintenta en proximo chunk
+                        is_transient = any(p in err_str for p in TRANSIENT_PATTERNS)
+                        if not is_transient:
+                            _cdl_save_one(odoo_id, isbn, None)
+                            job["no_match"] += 1
+                        else:
+                            job["transient_skipped"] = job.get("transient_skipped", 0) + 1
                     finally:
                         await page_queue.put(page)
                         job["processed"] += 1
