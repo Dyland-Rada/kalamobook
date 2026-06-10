@@ -1188,44 +1188,71 @@ def export_csv_streaming(only_with_categories: bool = False):
 
     conn = db.get_connection()
     cur = conn.cursor()
-    db.execute_query(cur, f"""
-        SELECT
-            m.odoo_id,
-            m.barcode,
-            COALESCE(NULLIF(m.name, ''), b.title, d.title) AS titulo,
-            COALESCE(NULLIF(b.author, ''), NULLIF(d.author, '')) AS autor,
-            COALESCE(NULLIF(b.editorial, ''), NULLIF(d.editorial, ''),
-                     NULLIF(m.gbooks_publisher, '')) AS editorial,
-            COALESCE(m.list_price, b.price, d.price) AS precio,
-            COALESCE(NULLIF(b.language, ''), NULLIF(d.language, ''),
-                     NULLIF(m.gbooks_language, '')) AS idioma,
-            COALESCE(m.inferred_categories, '') AS categorias,
-            COALESCE(m.inferred_source, '') AS fuente_categoria,
-            COALESCE(NULLIF(b.description, ''), NULLIF(d.description, ''),
-                     NULLIF(m.description, '')) AS descripcion,
-            COALESCE(NULLIF(b.pages, ''), NULLIF(d.pages, ''),
-                     m.gbooks_pages) AS paginas,
-            COALESCE(NULLIF(b.binding, ''), NULLIF(d.binding, '')) AS encuadernacion,
-            COALESCE(NULLIF(b.translator, ''), NULLIF(d.translator, '')) AS traductor,
-            COALESCE(NULLIF(b.illustrator, ''), NULLIF(d.illustrator, '')) AS ilustrador,
-            COALESCE(NULLIF(b.weight, ''), NULLIF(d.weight, '')) AS peso,
-            COALESCE(NULLIF(b.height, ''), NULLIF(d.height, '')) AS alto,
-            COALESCE(NULLIF(b.width, ''), NULLIF(d.width, '')) AS ancho,
-            COALESCE(NULLIF(b.image_url, ''), NULLIF(d.image_url, ''),
-                     NULLIF(m.gbooks_thumbnail, '')) AS imagen,
-            COALESCE(NULLIF(b.release_date, ''), NULLIF(d.release_date, '')) AS fecha_publicacion,
-            COALESCE(NULLIF(b.collection, ''), NULLIF(d.collection, '')) AS coleccion,
-            COALESCE(NULLIF(b.url, ''), NULLIF(d.url, '')) AS url_cdl,
-            d.fuente AS distribuidor,
-            m.categ_id AS odoo_categ_id,
-            m.categ_name AS odoo_categ_name,
-            m.synced_at
-        FROM odoo_books_mirror m
-        LEFT JOIN books b ON m.barcode = b.isbn
-        LEFT JOIN distributor_books d ON m.barcode = d.isbn
-        {where_clause}
-        ORDER BY m.odoo_id
-    """)
+    # IMPORTANTE: COALESCE en Postgres exige que TODOS los argumentos sean
+    # del mismo tipo. m.list_price y d.price son NUMERIC, b.price es TEXT,
+    # m.gbooks_pages es INTEGER. Sin CAST a TEXT el query lanza
+    # "UNION types numeric and text cannot be matched" antes del primer
+    # yield -> CSV de 0 bytes y sin error visible.
+    try:
+        db.execute_query(cur, f"""
+            SELECT
+                m.odoo_id,
+                m.barcode,
+                COALESCE(NULLIF(m.name, ''), b.title, d.title) AS titulo,
+                COALESCE(NULLIF(b.author, ''), NULLIF(d.author, '')) AS autor,
+                COALESCE(NULLIF(b.editorial, ''), NULLIF(d.editorial, ''),
+                         NULLIF(m.gbooks_publisher, '')) AS editorial,
+                COALESCE(CAST(m.list_price AS TEXT),
+                         NULLIF(b.price, ''),
+                         CAST(d.price AS TEXT)) AS precio,
+                COALESCE(NULLIF(b.language, ''), NULLIF(d.language, ''),
+                         NULLIF(m.gbooks_language, '')) AS idioma,
+                COALESCE(m.inferred_categories, '') AS categorias,
+                COALESCE(m.inferred_source, '') AS fuente_categoria,
+                COALESCE(NULLIF(b.description, ''), NULLIF(d.description, ''),
+                         NULLIF(m.description, '')) AS descripcion,
+                COALESCE(NULLIF(b.pages, ''), NULLIF(d.pages, ''),
+                         CAST(m.gbooks_pages AS TEXT)) AS paginas,
+                COALESCE(NULLIF(b.binding, ''), NULLIF(d.binding, '')) AS encuadernacion,
+                COALESCE(NULLIF(b.translator, ''), NULLIF(d.translator, '')) AS traductor,
+                COALESCE(NULLIF(b.illustrator, ''), NULLIF(d.illustrator, '')) AS ilustrador,
+                COALESCE(NULLIF(b.weight, ''), NULLIF(d.weight, '')) AS peso,
+                COALESCE(NULLIF(b.height, ''), NULLIF(d.height, '')) AS alto,
+                COALESCE(NULLIF(b.width, ''), NULLIF(d.width, '')) AS ancho,
+                COALESCE(NULLIF(b.image_url, ''), NULLIF(d.image_url, ''),
+                         NULLIF(m.gbooks_thumbnail, '')) AS imagen,
+                COALESCE(NULLIF(b.release_date, ''), NULLIF(d.release_date, '')) AS fecha_publicacion,
+                COALESCE(NULLIF(b.collection, ''), NULLIF(d.collection, '')) AS coleccion,
+                COALESCE(NULLIF(b.url, ''), NULLIF(d.url, '')) AS url_cdl,
+                d.fuente AS distribuidor,
+                m.categ_id AS odoo_categ_id,
+                m.categ_name AS odoo_categ_name,
+                m.synced_at
+            FROM odoo_books_mirror m
+            LEFT JOIN books b ON m.barcode = b.isbn
+            LEFT JOIN distributor_books d ON m.barcode = d.isbn
+            {where_clause}
+            ORDER BY m.odoo_id
+        """)
+    except Exception as e:
+        # Log y rollback para no dejar la conexion en estado abortado
+        err = f"{type(e).__name__}: {e!r}"
+        print(f"[Export] Query FALLO: {err}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        conn.close()
+        # Emitir CSV minimo con headers y una fila de error para que el
+        # navegador descargue algo en vez de 0 bytes silenciosos
+        import csv as _csv
+        import io as _io
+        _buf = _io.StringIO()
+        _w = _csv.writer(_buf)
+        _w.writerow(["ERROR"])
+        _w.writerow([err])
+        yield _buf.getvalue()
+        return
 
     headers = [
         "odoo_id", "isbn", "titulo", "autor", "editorial", "precio",
