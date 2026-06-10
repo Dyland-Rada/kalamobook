@@ -1723,11 +1723,13 @@ def _cdl_search_needs_fill_count() -> int:
 def _cdl_search_fetch_targets(limit: int = 200) -> list[tuple[int, str]]:
     """Lista (odoo_id, isbn) de libros del mirror sin categoria (en este shard).
     Prioriza:
-      1. 978-84 (Espana) — alta probabilidad de match en CDL
-      2. 978-958 / 978-959 (Colombia) — CDL.com.co los tiene
-      3. Cualquier otro prefijo
-    Dentro de cada grupo, primero los que NO estan en cdl_isbn_index
-    (asi complementa al job sitemap).
+      1. Libros que SI estan en cdl_isbn_index — CDL los vende. Maxima
+         probabilidad de match. (Si el sitemap fast-path tambien los esta
+         procesando hay duplicacion temporal benigna: el primero que llega
+         marca cdl_fetched_at y el otro lo salta en el siguiente chunk.)
+      2. Dentro de eso, prefijo 978-84 (Espana) > 978-958/9 (Colombia) > resto
+      3. Al final, libros no-en-sitemap (mayoritariamente descatalogados;
+         probable 0-5% match pero vale la pena por los pocos que rescata)
     """
     conn = db.get_connection()
     cur = conn.cursor()
@@ -1742,13 +1744,13 @@ def _cdl_search_fetch_targets(limit: int = 200) -> list[tuple[int, str]]:
               AND m.cdl_fetched_at IS NULL
               AND {_shard_clause('m.odoo_id')}
             ORDER BY
+              CASE WHEN ci.isbn IS NOT NULL THEN 0 ELSE 1 END,
               CASE
                 WHEN SUBSTR(m.barcode, 1, 5) = '97884' THEN 0
                 WHEN SUBSTR(m.barcode, 1, 6) = '978958'
                   OR SUBSTR(m.barcode, 1, 6) = '978959' THEN 1
                 ELSE 2
               END,
-              CASE WHEN ci.isbn IS NULL THEN 0 ELSE 1 END,
               m.odoo_id
             LIMIT ?
         """, (limit,))
