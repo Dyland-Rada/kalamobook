@@ -2024,7 +2024,12 @@
             try {
                 const r = await fetch('/api/v1/proxies/status');
                 const j = await r.json();
-                out.textContent = `Worker: ${j.worker}\n` +
+                const shardLine = (j.shard_count > 1)
+                    ? `🔀 Shard: ${j.shard_index}/${j.shard_count} → procesa odoo_id donde (id % ${j.shard_count} = ${j.shard_index})\n`
+                    : `🔀 Shard: SOLO (1 worker, sin sharding)\n`;
+                out.textContent =
+                    `Worker name: ${j.worker}\n` +
+                    shardLine +
                     `Proxies: ${j.proxy_pool_valid}/${j.proxy_pool_count} válidos\n` +
                     (j.proxies || []).map(p => `  · ${p.server || p.raw} ${p.auth ? '(auth)' : ''}`).join('\n');
             } catch (e) {

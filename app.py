@@ -1017,9 +1017,10 @@ async def proxies_status():
     """
     Lista los proxies cargados desde la env var PROXY_POOL al arrancar.
     Si esta vacio, el server saldra con su IP directa hacia CDL.
-    Usar para confirmar tras un redeploy que las env vars se leyeron OK.
+    Incluye shard info — util para multi-worker (Server A + Server B).
     """
     from scraper import PROXY_POOL, PROXY_URL, parse_proxy
+    import odoo_mirror
     parsed = []
     for spec in PROXY_POOL:
         p = parse_proxy(spec)
@@ -1029,6 +1030,9 @@ async def proxies_status():
             parsed.append({"server": None, "raw": spec[:30], "error": "invalid format"})
     return JSONResponse(content={
         "worker": os.environ.get("WORKER_NAME", "default"),
+        "shard_index": odoo_mirror.WORKER_SHARD_INDEX,
+        "shard_count": odoo_mirror.WORKER_SHARD_COUNT,
+        "shard_clause": odoo_mirror._shard_clause(),
         "proxy_pool_count": len(PROXY_POOL),
         "proxy_pool_valid": sum(1 for p in parsed if p.get("server")),
         "proxies": parsed,

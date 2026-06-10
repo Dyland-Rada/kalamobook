@@ -30,6 +30,23 @@ MIRROR_FIELDS_CORE = [
 # Se prueban al arranque del job y si Odoo dice "Invalid field" se quitan.
 MIRROR_FIELDS_OPTIONAL = ["public_categ_ids"]
 
+# ── Sharding para multi-worker (Server A + Server B sobre la misma BD) ──
+# Cada worker procesa solo libros con `odoo_id % SHARD_COUNT = SHARD_INDEX`.
+# Sin coordinacion ni locks — las particiones son disjuntas por matematica.
+# Default 0/1 = un solo worker procesa todo (compat backward).
+#   Server B: WORKER_SHARD_INDEX=0  WORKER_SHARD_COUNT=2
+#   Server A: WORKER_SHARD_INDEX=1  WORKER_SHARD_COUNT=2
+WORKER_SHARD_INDEX = int(os.environ.get("WORKER_SHARD_INDEX", "0"))
+WORKER_SHARD_COUNT = max(1, int(os.environ.get("WORKER_SHARD_COUNT", "1")))
+
+
+def _shard_clause(col: str = "odoo_id") -> str:
+    """SQL fragment para filtrar este worker. Si COUNT=1, retorna '1=1'
+    (no-op) para no romper EXPLAIN ni el plan de queries."""
+    if WORKER_SHARD_COUNT <= 1:
+        return "1=1"
+    return f"({col} % {WORKER_SHARD_COUNT}) = {WORKER_SHARD_INDEX}"
+
 mirror_job: dict | None = None
 
 
@@ -979,15 +996,16 @@ def stop_gbooks_fill():
 
 
 def _gbooks_needs_fill_count() -> int:
-    """Cuantos libros necesitan datos de Google Books (no fetched aun)."""
+    """Cuantos libros necesitan datos de Google Books (en este shard)."""
     conn = db.get_connection()
     cur = conn.cursor()
     try:
-        db.execute_query(cur, """
+        db.execute_query(cur, f"""
             SELECT COUNT(*) FROM odoo_books_mirror
             WHERE barcode IS NOT NULL
               AND barcode <> ''
               AND gbooks_fetched_at IS NULL
+              AND {_shard_clause()}
         """)
         return cur.fetchone()[0]
     except Exception:
@@ -997,15 +1015,16 @@ def _gbooks_needs_fill_count() -> int:
 
 
 def _gbooks_fetch_targets(limit: int = 1000) -> list[tuple[int, str]]:
-    """Lista (odoo_id, barcode) para libros sin gbooks_fetched_at."""
+    """Lista (odoo_id, barcode) para libros sin gbooks_fetched_at en este shard."""
     conn = db.get_connection()
     cur = conn.cursor()
     try:
-        db.execute_query(cur, """
+        db.execute_query(cur, f"""
             SELECT odoo_id, barcode FROM odoo_books_mirror
             WHERE barcode IS NOT NULL
               AND barcode <> ''
               AND gbooks_fetched_at IS NULL
+              AND {_shard_clause()}
             ORDER BY odoo_id
             LIMIT ?
         """, (limit,))
@@ -1264,17 +1283,18 @@ def stop_cdl_fill():
 
 
 def _cdl_needs_fill_count() -> int:
-    """Cuantos libros del sitemap aun no tienen categoria inferida."""
+    """Cuantos libros del sitemap aun no tienen categoria inferida (en este shard)."""
     conn = db.get_connection()
     cur = conn.cursor()
     try:
-        db.execute_query(cur, """
+        db.execute_query(cur, f"""
             SELECT COUNT(*) FROM odoo_books_mirror m
             INNER JOIN cdl_isbn_index ci ON m.barcode = ci.isbn
             WHERE m.barcode IS NOT NULL
               AND m.barcode <> ''
               AND (m.inferred_categories IS NULL OR m.inferred_categories = '')
               AND m.cdl_fetched_at IS NULL
+              AND {_shard_clause('m.odoo_id')}
         """)
         return cur.fetchone()[0]
     except Exception:
@@ -1284,11 +1304,11 @@ def _cdl_needs_fill_count() -> int:
 
 
 def _cdl_fetch_targets(limit: int = 500) -> list[tuple[int, str, str]]:
-    """Lista (odoo_id, isbn, url) para libros del sitemap sin categoria."""
+    """Lista (odoo_id, isbn, url) para libros del sitemap sin categoria (en este shard)."""
     conn = db.get_connection()
     cur = conn.cursor()
     try:
-        db.execute_query(cur, """
+        db.execute_query(cur, f"""
             SELECT m.odoo_id, m.barcode, ci.url
             FROM odoo_books_mirror m
             INNER JOIN cdl_isbn_index ci ON m.barcode = ci.isbn
@@ -1296,6 +1316,7 @@ def _cdl_fetch_targets(limit: int = 500) -> list[tuple[int, str, str]]:
               AND m.barcode <> ''
               AND (m.inferred_categories IS NULL OR m.inferred_categories = '')
               AND m.cdl_fetched_at IS NULL
+              AND {_shard_clause('m.odoo_id')}
             ORDER BY m.odoo_id
             LIMIT ?
         """, (limit,))
@@ -1683,14 +1704,14 @@ _CDL_SEARCH_INCOMPLETE_WHERE = """
 
 
 def _cdl_search_needs_fill_count() -> int:
-    """Cuantos libros del mirror estan INCOMPLETOS (sin categoria ni
-    descripcion) y aun no se intento scrape via CDL."""
+    """Cuantos libros del mirror estan incompletos (sin categoria) en este shard."""
     conn = db.get_connection()
     cur = conn.cursor()
     try:
         db.execute_query(cur, f"""
             SELECT COUNT(*) FROM odoo_books_mirror
             WHERE {_CDL_SEARCH_INCOMPLETE_WHERE}
+              AND {_shard_clause()}
         """)
         return cur.fetchone()[0]
     except Exception:
@@ -1700,7 +1721,8 @@ def _cdl_search_needs_fill_count() -> int:
 
 
 def _cdl_search_fetch_targets(limit: int = 200) -> list[tuple[int, str]]:
-    """Lista (odoo_id, isbn) de libros del mirror sin categoria. Prioriza:
+    """Lista (odoo_id, isbn) de libros del mirror sin categoria (en este shard).
+    Prioriza:
       1. 978-84 (Espana) — alta probabilidad de match en CDL
       2. 978-958 / 978-959 (Colombia) — CDL.com.co los tiene
       3. Cualquier otro prefijo
@@ -1710,9 +1732,7 @@ def _cdl_search_fetch_targets(limit: int = 200) -> list[tuple[int, str]]:
     conn = db.get_connection()
     cur = conn.cursor()
     try:
-        # CASE para puntuacion de prioridad. SUBSTRING en SQL estandar
-        # (funciona igual en SQLite y Postgres).
-        db.execute_query(cur, """
+        db.execute_query(cur, f"""
             SELECT m.odoo_id, m.barcode
             FROM odoo_books_mirror m
             LEFT JOIN cdl_isbn_index ci ON m.barcode = ci.isbn
@@ -1720,6 +1740,7 @@ def _cdl_search_fetch_targets(limit: int = 200) -> list[tuple[int, str]]:
               AND m.barcode <> ''
               AND (m.inferred_categories IS NULL OR m.inferred_categories = '')
               AND m.cdl_fetched_at IS NULL
+              AND {_shard_clause('m.odoo_id')}
             ORDER BY
               CASE
                 WHEN SUBSTR(m.barcode, 1, 5) = '97884' THEN 0
