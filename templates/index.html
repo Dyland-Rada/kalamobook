@@ -1042,8 +1042,14 @@
                         ⏹ Detener
                     </button>
                     <a href="/api/v1/odoo/mirror/export.csv" class="btn btn-primary"
-                       style="text-decoration:none; display:inline-flex; align-items:center; background:#16a085;">
-                        📤 Exportar CSV
+                       style="text-decoration:none; display:inline-flex; align-items:center; background:#16a085;"
+                       title="Exporta TODO el catalogo (incluye libros sin datos)">
+                        📤 Excel completo
+                    </a>
+                    <a href="/api/v1/odoo/mirror/export.csv?only_with_categories=true" class="btn btn-primary"
+                       style="text-decoration:none; display:inline-flex; align-items:center; background:#27ae60;"
+                       title="Solo libros que ya tienen categoria inferida">
+                        🏷 Excel solo con categorías
                     </a>
                     <button class="btn btn-primary" onclick="mirrorSyncCategories()" style="background:#8e44ad;"
                             title="Pulla los nombres de las public_categ_ids de Odoo (solo si Odoo tiene categorias)">

@@ -1164,36 +1164,78 @@ async def fill_from_google_books(concurrency: int = 15,
 
 
 # ── CSV streaming export ───────────────────────────────────────────────
-def export_csv_streaming():
+def _truncate(v, n):
+    if v is None:
+        return ""
+    s = str(v)
+    return s[:n] + ("..." if len(s) > n else "")
+
+
+def export_csv_streaming(only_with_categories: bool = False):
     """
-    Generator que yields chunks de CSV. Usar con StreamingResponse de FastAPI.
-    Streamea sin cargar la tabla entera a memoria.
+    Export COMPLETO: join odoo_books_mirror con books (scrapeo CDL) y
+    distributor_books (XLSX) para sacar el dato mas rico posible por
+    libro. Coalesce: mirror > books > distribuidores > GoogleBooks.
+    Streamea para no cargar a memoria.
     """
     import csv
     import io
 
+    where_clause = ""
+    if only_with_categories:
+        where_clause = ("WHERE m.inferred_categories IS NOT NULL "
+                        "AND m.inferred_categories <> ''")
+
     conn = db.get_connection()
     cur = conn.cursor()
-    db.execute_query(cur, """
-        SELECT odoo_id, barcode, name, list_price,
-               inferred_categories, inferred_source,
-               gbooks_language, gbooks_publisher,
-               gbooks_pages, gbooks_thumbnail,
-               description, description_sale, synced_at
-        FROM odoo_books_mirror
-        ORDER BY odoo_id
+    db.execute_query(cur, f"""
+        SELECT
+            m.odoo_id,
+            m.barcode,
+            COALESCE(NULLIF(m.name, ''), b.title, d.title) AS titulo,
+            COALESCE(NULLIF(b.author, ''), NULLIF(d.author, '')) AS autor,
+            COALESCE(NULLIF(b.editorial, ''), NULLIF(d.editorial, ''),
+                     NULLIF(m.gbooks_publisher, '')) AS editorial,
+            COALESCE(m.list_price, b.price, d.price) AS precio,
+            COALESCE(NULLIF(b.language, ''), NULLIF(d.language, ''),
+                     NULLIF(m.gbooks_language, '')) AS idioma,
+            COALESCE(m.inferred_categories, '') AS categorias,
+            COALESCE(m.inferred_source, '') AS fuente_categoria,
+            COALESCE(NULLIF(b.description, ''), NULLIF(d.description, ''),
+                     NULLIF(m.description, '')) AS descripcion,
+            COALESCE(NULLIF(b.pages, ''), NULLIF(d.pages, ''),
+                     m.gbooks_pages) AS paginas,
+            COALESCE(NULLIF(b.binding, ''), NULLIF(d.binding, '')) AS encuadernacion,
+            COALESCE(NULLIF(b.translator, ''), NULLIF(d.translator, '')) AS traductor,
+            COALESCE(NULLIF(b.illustrator, ''), NULLIF(d.illustrator, '')) AS ilustrador,
+            COALESCE(NULLIF(b.weight, ''), NULLIF(d.weight, '')) AS peso,
+            COALESCE(NULLIF(b.height, ''), NULLIF(d.height, '')) AS alto,
+            COALESCE(NULLIF(b.width, ''), NULLIF(d.width, '')) AS ancho,
+            COALESCE(NULLIF(b.image_url, ''), NULLIF(d.image_url, ''),
+                     NULLIF(m.gbooks_thumbnail, '')) AS imagen,
+            COALESCE(NULLIF(b.release_date, ''), NULLIF(d.release_date, '')) AS fecha_publicacion,
+            COALESCE(NULLIF(b.collection, ''), NULLIF(d.collection, '')) AS coleccion,
+            COALESCE(NULLIF(b.url, ''), NULLIF(d.url, '')) AS url_cdl,
+            d.fuente AS distribuidor,
+            m.categ_id AS odoo_categ_id,
+            m.categ_name AS odoo_categ_name,
+            m.synced_at
+        FROM odoo_books_mirror m
+        LEFT JOIN books b ON m.barcode = b.isbn
+        LEFT JOIN distributor_books d ON m.barcode = d.isbn
+        {where_clause}
+        ORDER BY m.odoo_id
     """)
 
-    headers = ["odoo_id", "barcode", "name", "list_price",
-               "categorias", "fuente_categoria",
-               "idioma", "editorial", "paginas", "imagen",
-               "descripcion", "descripcion_corta", "synced_at"]
-
-    def _truncate(v, n):
-        if v is None:
-            return ""
-        s = str(v)
-        return s[:n] + ("..." if len(s) > n else "")
+    headers = [
+        "odoo_id", "isbn", "titulo", "autor", "editorial", "precio",
+        "idioma", "categorias", "fuente_categoria",
+        "descripcion", "paginas", "encuadernacion",
+        "traductor", "ilustrador",
+        "peso", "alto", "ancho", "imagen",
+        "fecha_publicacion", "coleccion", "url_cdl",
+        "distribuidor", "odoo_categ_id", "odoo_categ_name", "sincronizado",
+    ]
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(headers)
@@ -1201,17 +1243,17 @@ def export_csv_streaming():
     buf.seek(0)
     buf.truncate()
 
+    # Indice de la columna "descripcion" en headers (0-indexed)
+    desc_idx = headers.index("descripcion")
     try:
         while True:
             rows = cur.fetchmany(1000)
             if not rows:
                 break
             for r in rows:
-                # Truncar description y description_sale para que Excel no
-                # rompa por celdas > 32k caracteres
                 row_list = list(r)
-                row_list[10] = _truncate(row_list[10], 2000)  # description
-                row_list[11] = _truncate(row_list[11], 500)   # description_sale
+                # Truncar descripcion para evitar celdas > 32k char (limite Excel)
+                row_list[desc_idx] = _truncate(row_list[desc_idx], 2000)
                 w.writerow(row_list)
             yield buf.getvalue()
             buf.seek(0)

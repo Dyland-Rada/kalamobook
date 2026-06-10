@@ -618,17 +618,26 @@ async def odoo_mirror_gbooks_fill_status():
 
 
 @app.get("/api/v1/odoo/mirror/export.csv", tags=["Odoo"])
-async def odoo_mirror_export_csv():
+async def odoo_mirror_export_csv(
+    only_with_categories: bool = Query(
+        False,
+        description="Si True, solo libros con categoria. Default: todos.",
+    ),
+):
     """
-    Descarga la tabla espejo como CSV. Streamea sin cargar todo a memoria.
+    Descarga TODO el catalogo como CSV. JOIN automatico con books (CDL),
+    distributor_books (XLSX) y datos de Google Books para sacar los
+    campos mas ricos por libro (autor, peso, altura, traductor, etc.).
+    Streamea sin cargar todo a memoria.
     """
     import odoo_mirror
     from fastapi.responses import StreamingResponse
+    fname = "libros_completo.csv" if not only_with_categories else "libros_con_categorias.csv"
     headers = {
-        "Content-Disposition": 'attachment; filename="odoo_books_mirror.csv"'
+        "Content-Disposition": f'attachment; filename="{fname}"'
     }
     return StreamingResponse(
-        odoo_mirror.export_csv_streaming(),
+        odoo_mirror.export_csv_streaming(only_with_categories=only_with_categories),
         media_type="text/csv",
         headers=headers,
     )
