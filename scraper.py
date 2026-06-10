@@ -673,23 +673,46 @@ async def scrape_book(page, query, direct_url=None):
             book_url = direct_url
             print(f"Using direct URL: {book_url}")
         else:
-            # Navigate DIRECTLY to the search results page — bypasses all cookie/popup overlays
+            # IMPORTANTE: ir directo a .com.co (CDL Colombia) en vez de .com.
+            # El redirect .com -> .com.co consume tiempo y antes del fix con
+            # wait_for_timeout(1500) muchos libros no aparecian porque la
+            # SPA no habia terminado de cargar los resultados.
             import urllib.parse
-            search_url = f"{BASE_URL}/?query={urllib.parse.quote(query)}"
+            search_url = f"https://www.casadellibro.com.co/?query={urllib.parse.quote(query)}"
             print(f"Navigating to search URL: {search_url}")
             try:
                 await page.goto(search_url, timeout=60000, wait_until='domcontentloaded')
-                await page.wait_for_timeout(1500)  # let JS results load
             except Exception as e:
                 print(f"Error navigating to search URL: {e}")
                 return None
 
-            # Find matching product link
+            # Si el query es ISBN, esperar a que aparezca el link especifico
+            # (evita falsos negativos por timing). Si no aparece en 6s, asumir
+            # que el libro realmente no esta. Mucho mas confiable que timeout fijo.
+            clean_query = query.replace('-', '').replace(' ', '')
+            if clean_query.isdigit():
+                try:
+                    await page.wait_for_selector(
+                        f'a[href*="{clean_query}"]', timeout=6000,
+                    )
+                    print(f"  Link con ISBN aparecio en DOM")
+                except Exception:
+                    # No aparecio — esperar a networkidle por si hay search results no-href-ISBN
+                    try:
+                        await page.wait_for_load_state('networkidle', timeout=4000)
+                    except Exception:
+                        pass
+            else:
+                # Query de texto: esperar load completo
+                try:
+                    await page.wait_for_load_state('networkidle', timeout=6000)
+                except Exception:
+                    await page.wait_for_timeout(2000)
+
             print("Looking for matching link...")
             target_link = None
 
             # 1. ISBN match in href
-            clean_query = query.replace('-', '').replace(' ', '')
             if clean_query.isdigit():
                 try:
                     isbn_links = page.locator(f'a[href*="{clean_query}"]')
