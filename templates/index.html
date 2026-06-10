@@ -1297,6 +1297,10 @@
             <div class="card">
                 <div class="card-title">🛠 Herramientas</div>
                 <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:12px;">
+                    <button class="btn btn-primary" onclick="diagnose()" style="background:#16a085;"
+                            title="Muestra el shard activo y por qué cada job tiene Target=0 o el numero que sea">
+                        🩺 Diagnóstico completo
+                    </button>
                     <button class="btn btn-primary" onclick="applyMigration()" style="background:#c0392b;"
                             title="Aplica los ALTER TABLE pendientes (anade cdl_author, cdl_editorial, etc. al mirror). Sin redeploy.">
                         🔧 Aplicar migración BD
@@ -2065,6 +2069,52 @@
                 out.textContent = msg;
             } catch (e) {
                 out.textContent = '❌ Error de conexión: ' + e.message;
+            }
+        }
+
+        async function diagnose() {
+            const out = document.getElementById('tools-result');
+            out.textContent = '🩺 Diagnosticando...';
+            try {
+                const r = await fetch('/api/v1/admin/diagnose');
+                const j = await r.json();
+                const s = j.shard;
+                const c = j.counts || {};
+                const fmt = (n) => n === null ? '❌ ERROR' : n.toLocaleString();
+                let msg = `🔀 SHARD\n`;
+                msg += `  index: ${s.index}\n  count: ${s.count}\n  SQL: ${s.clause}\n\n`;
+                msg += `📊 CONTEOS (este shard)\n`;
+                msg += `  Total mirror (todos):        ${fmt(c.total_mirror)}\n`;
+                msg += `  Total mirror (este shard):   ${fmt(c.total_mirror_shard)}\n`;
+                msg += `  Con barcode:                 ${fmt(c.with_barcode_shard)}\n`;
+                msg += `  Sin categoría:               ${fmt(c.without_categ_shard)}\n`;
+                msg += `  Sin cdl_fetched_at:          ${fmt(c.not_cdl_fetched_shard)}\n`;
+                msg += `\n🎯 TARGETS por job\n`;
+                msg += `  CDL sitemap target:          ${fmt(c.cdl_sitemap_target_shard)}\n`;
+                msg += `  CDL search target:           ${fmt(c.cdl_search_target_shard)}\n`;
+                msg += `  Google Books target:         ${fmt(c.gbooks_target_shard)}\n`;
+                msg += `  ISBN index (sitemap total):  ${fmt(c.isbn_index_total)}\n`;
+                if (j.errors && j.errors.length > 0) {
+                    msg += `\n❌ ERRORES SQL\n`;
+                    j.errors.forEach(e => msg += `  · ${e}\n`);
+                }
+                // Diagnóstico humano
+                msg += `\n💡 INTERPRETACIÓN\n`;
+                if (c.total_mirror_shard === 0) {
+                    msg += `  ⚠️ Mirror vacío en este shard. ¿Las env vars WORKER_SHARD_* están bien?\n`;
+                } else if (c.cdl_sitemap_target_shard === 0 && c.cdl_search_target_shard === 0) {
+                    msg += `  ⚠️ Ningún job tiene libros pendientes.\n`;
+                    if (c.not_cdl_fetched_shard === 0) {
+                        msg += `  → Todos los libros del shard ya están cdl_fetched. Nada que hacer.\n`;
+                    } else if (c.without_categ_shard === 0) {
+                        msg += `  → Todos los libros del shard ya tienen categoría. Excelente.\n`;
+                    }
+                } else {
+                    msg += `  ✅ Hay libros pendientes. Si los jobs siguen sin moverse, mira logs.\n`;
+                }
+                out.textContent = msg;
+            } catch (e) {
+                out.textContent = '❌ Error: ' + e.message;
             }
         }
 

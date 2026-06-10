@@ -766,6 +766,74 @@ async def admin_schema_info(table: str = Query("odoo_books_mirror")):
         conn.close()
 
 
+@app.get("/api/v1/admin/diagnose", tags=["Admin"])
+async def admin_diagnose():
+    """
+    Diagnostico completo: shard config + counts reales por filtro.
+    Util cuando "Target: 0" — te dice exactamente por que no encuentra libros.
+    """
+    import db as dbmod
+    import odoo_mirror as om
+    conn = dbmod.get_connection()
+    cur = conn.cursor()
+    out = {
+        "shard": {
+            "index": om.WORKER_SHARD_INDEX,
+            "count": om.WORKER_SHARD_COUNT,
+            "clause": om._shard_clause(),
+        },
+        "counts": {},
+        "errors": [],
+    }
+    queries = [
+        ("total_mirror", "SELECT COUNT(*) FROM odoo_books_mirror"),
+        ("total_mirror_shard",
+            f"SELECT COUNT(*) FROM odoo_books_mirror WHERE {om._shard_clause()}"),
+        ("with_barcode_shard",
+            f"SELECT COUNT(*) FROM odoo_books_mirror WHERE barcode IS NOT NULL AND barcode <> '' AND {om._shard_clause()}"),
+        ("without_categ_shard",
+            f"SELECT COUNT(*) FROM odoo_books_mirror "
+            f"WHERE barcode IS NOT NULL AND barcode <> '' "
+            f"AND (inferred_categories IS NULL OR inferred_categories = '') "
+            f"AND {om._shard_clause()}"),
+        ("not_cdl_fetched_shard",
+            f"SELECT COUNT(*) FROM odoo_books_mirror "
+            f"WHERE barcode IS NOT NULL AND barcode <> '' "
+            f"AND cdl_fetched_at IS NULL "
+            f"AND {om._shard_clause()}"),
+        ("cdl_search_target_shard",
+            f"SELECT COUNT(*) FROM odoo_books_mirror "
+            f"WHERE barcode IS NOT NULL AND barcode <> '' "
+            f"AND (inferred_categories IS NULL OR inferred_categories = '') "
+            f"AND cdl_fetched_at IS NULL "
+            f"AND {om._shard_clause()}"),
+        ("cdl_sitemap_target_shard",
+            f"SELECT COUNT(*) FROM odoo_books_mirror m "
+            f"INNER JOIN cdl_isbn_index ci ON m.barcode = ci.isbn "
+            f"WHERE m.barcode IS NOT NULL AND m.barcode <> '' "
+            f"AND (m.inferred_categories IS NULL OR m.inferred_categories = '') "
+            f"AND m.cdl_fetched_at IS NULL "
+            f"AND {om._shard_clause('m.odoo_id')}"),
+        ("gbooks_target_shard",
+            f"SELECT COUNT(*) FROM odoo_books_mirror "
+            f"WHERE barcode IS NOT NULL AND barcode <> '' "
+            f"AND gbooks_fetched_at IS NULL "
+            f"AND {om._shard_clause()}"),
+        ("isbn_index_total", "SELECT COUNT(*) FROM cdl_isbn_index"),
+    ]
+    for key, q in queries:
+        try:
+            dbmod.execute_query(cur, q)
+            out["counts"][key] = cur.fetchone()[0]
+        except Exception as e:
+            out["counts"][key] = None
+            out["errors"].append(f"{key}: {type(e).__name__}: {str(e)[:200]}")
+            try: conn.rollback()
+            except Exception: pass
+    conn.close()
+    return JSONResponse(content=out)
+
+
 @app.post("/api/v1/admin/run-migrations", tags=["Admin"])
 async def admin_run_migrations():
     """

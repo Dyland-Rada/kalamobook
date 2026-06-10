@@ -1297,7 +1297,10 @@ def _cdl_needs_fill_count() -> int:
               AND {_shard_clause('m.odoo_id')}
         """)
         return cur.fetchone()[0]
-    except Exception:
+    except Exception as e:
+        print(f"[CDLFill] _cdl_needs_fill_count FAILED: {type(e).__name__}: {e}")
+        try: conn.rollback()
+        except Exception: pass
         return 0
     finally:
         conn.close()
@@ -1714,7 +1717,10 @@ def _cdl_search_needs_fill_count() -> int:
               AND {_shard_clause()}
         """)
         return cur.fetchone()[0]
-    except Exception:
+    except Exception as e:
+        print(f"[CDLSearch] _cdl_search_needs_fill_count FAILED: {type(e).__name__}: {e}")
+        try: conn.rollback()
+        except Exception: pass
         return 0
     finally:
         conn.close()
