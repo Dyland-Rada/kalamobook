@@ -1120,10 +1120,22 @@ async def fill_from_google_books(concurrency: int = 15,
         async with sem:
             try:
                 data = await google_books.fetch_by_isbn(session, isbn, timeout_s=10.0)
+            except google_books.GoogleBooksRateLimitError as e:
+                # Cuota Google agotada/rate limit - NO marcar fetched
+                # asi el libro queda disponible para reintento mas tarde
+                err = f"RATE LIMIT: {str(e)[:200]}"
+                job["errors"].append(err)
+                job["rate_limit_hits"] = job.get("rate_limit_hits", 0) + 1
+                # Stop el job globalmente para no quemar mas libros
+                if job["rate_limit_hits"] >= 3:
+                    job["status"] = "rate_limited"
+                    print(f"[GBFill] STOPPED — rate limit detectado (>=3 hits). "
+                          f"Cuota Google agotada. Espera al reset (~24h) o pide aumento.")
+                return
             except Exception as e:
                 err = f"{type(e).__name__}: {str(e)[:80]}"
                 job["errors"].append(f"isbn {isbn}: {err}")
-                # Aun asi marcamos fetched_at con None para no reintentarlo
+                # Error generico - marcamos fetched para no reintentarlo
                 _gbooks_save(odoo_id, None)
                 job["processed"] += 1
                 job["no_match"] += 1
@@ -1161,6 +1173,60 @@ async def fill_from_google_books(concurrency: int = 15,
         print(f"[GBFill] Fatal: {err}")
 
     return job
+
+
+def reset_recent_gbooks_fetched(hours_back: int = 24) -> int:
+    """
+    Resetea gbooks_fetched_at = NULL para libros marcados como fetched
+    en las ultimas N horas que NO tienen data de Google Books real.
+    Esos son los "falsos no-match" producidos cuando Google estaba en
+    rate limit pero igual marcabamos como procesado.
+
+    Util tras un rate limit: corres esto y los libros estan listos para
+    reintentar despues de que se renueve la cuota.
+    """
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        if db.IS_POSTGRES:
+            cur.execute(
+                f"""
+                UPDATE odoo_books_mirror
+                SET gbooks_fetched_at = NULL
+                WHERE gbooks_fetched_at IS NOT NULL
+                  AND gbooks_fetched_at >= NOW() - INTERVAL '{int(hours_back)} hours'
+                  AND (gbooks_publisher IS NULL OR gbooks_publisher = '')
+                  AND (gbooks_language IS NULL OR gbooks_language = '')
+                  AND gbooks_pages IS NULL
+                  AND (gbooks_thumbnail IS NULL OR gbooks_thumbnail = '')
+                """
+            )
+        else:
+            cur.execute(
+                f"""
+                UPDATE odoo_books_mirror
+                SET gbooks_fetched_at = NULL
+                WHERE gbooks_fetched_at IS NOT NULL
+                  AND datetime(gbooks_fetched_at) >= datetime('now', '-{int(hours_back)} hours')
+                  AND (gbooks_publisher IS NULL OR gbooks_publisher = '')
+                  AND (gbooks_language IS NULL OR gbooks_language = '')
+                  AND gbooks_pages IS NULL
+                  AND (gbooks_thumbnail IS NULL OR gbooks_thumbnail = '')
+                """
+            )
+        n = cur.rowcount or 0
+        conn.commit()
+        print(f"[Reset] Reseteados {n} libros con gbooks_fetched_at falso (ultimas {hours_back}h)")
+        return n
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        print(f"[Reset] Error: {type(e).__name__}: {e!r}")
+        return 0
+    finally:
+        conn.close()
 
 
 # ── Bulk fill desde CDL (Casa del Libro) — usa proxies + Playwright ──

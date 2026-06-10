@@ -14,6 +14,13 @@ import aiohttp
 GOOGLE_BOOKS_API_KEY = os.environ.get("GOOGLE_BOOKS_API_KEY", "")
 BASE_URL = "https://www.googleapis.com/books/v1/volumes"
 
+
+class GoogleBooksRateLimitError(Exception):
+    """Cuando Google devuelve 429 (rate limit) o 403 (quota exceeded).
+    Sirve para que el caller distinga este error transitorio de un
+    'no match' real (200 con items vacios) y NO marque el libro como
+    procesado, asi se reintenta cuando se renueve la cuota."""
+
 # Mapeo ISO 639-1 → nombre humano para que el HTML rendereado sea legible
 _LANG_MAP = {
     "es": "Castellano",
@@ -61,9 +68,22 @@ async def fetch_by_isbn(
             BASE_URL, params=params,
             timeout=aiohttp.ClientTimeout(total=timeout_s),
         ) as resp:
+            # 429 = too many requests, 403 = quota exceeded
+            # Importante: el caller debe NO marcar gbooks_fetched_at en este caso
+            if resp.status in (429, 403):
+                body = ""
+                try:
+                    body = (await resp.text())[:300]
+                except Exception:
+                    pass
+                raise GoogleBooksRateLimitError(
+                    f"status={resp.status} body={body}"
+                )
             if resp.status != 200:
                 return None
             data = await resp.json()
+    except GoogleBooksRateLimitError:
+        raise
     except Exception:
         return None
 

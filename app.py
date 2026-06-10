@@ -617,6 +617,27 @@ async def odoo_mirror_gbooks_fill_status():
     return JSONResponse(content=odoo_mirror.get_gbooks_fill_status())
 
 
+@app.post("/api/v1/odoo/mirror/gbooks-reset-recent", tags=["Odoo"])
+async def odoo_mirror_gbooks_reset_recent(
+    hours_back: int = Query(24, ge=1, le=720,
+                            description="Cuantas horas hacia atras buscar fetched_at sin data real"),
+):
+    """
+    Resetea gbooks_fetched_at = NULL para libros marcados como fetched en
+    las ultimas N horas que NO recibieron data real de Google Books.
+    Util tras un episodio de rate limit donde se marcaron miles de
+    libros como 'no match' falsamente.
+    """
+    import odoo_mirror
+    try:
+        n = odoo_mirror.reset_recent_gbooks_fetched(hours_back=hours_back)
+        return JSONResponse(content={"reset": n, "hours_back": hours_back})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={
+            "status": "error", "message": f"{type(e).__name__}: {e}"
+        })
+
+
 @app.post("/api/v1/odoo/mirror/cdl-fill", tags=["Odoo"])
 async def odoo_mirror_cdl_fill(chunk_size: int = Query(500, ge=100, le=2000)):
     """
