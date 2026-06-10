@@ -331,6 +331,23 @@ def init_db():
         "gbooks_thumbnail TEXT",
         "gbooks_fetched_at TIMESTAMP",
         "cdl_fetched_at TIMESTAMP",
+        # Campos ricos del scrape CDL, espejados directamente al mirror
+        # para no depender del JOIN con books en cada export.
+        "cdl_author TEXT",
+        "cdl_editorial TEXT",
+        "cdl_image_url TEXT",
+        "cdl_weight TEXT",
+        "cdl_height TEXT",
+        "cdl_width TEXT",
+        "cdl_binding TEXT",
+        "cdl_translator TEXT",
+        "cdl_illustrator TEXT",
+        "cdl_collection TEXT",
+        "cdl_pages TEXT",
+        "cdl_release_date TEXT",
+        "cdl_url TEXT",
+        "cdl_price TEXT",
+        "cdl_language TEXT",
     ):
         try:
             db.execute_query(cursor, f"ALTER TABLE odoo_books_mirror ADD COLUMN {col}")

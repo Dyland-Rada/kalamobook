@@ -1264,7 +1264,7 @@ def stop_cdl_fill():
 
 
 def _cdl_needs_fill_count() -> int:
-    """Cuantos libros tienen ISBN en cdl_isbn_index y aun no se intento scrape."""
+    """Cuantos libros del sitemap aun no tienen categoria inferida."""
     conn = db.get_connection()
     cur = conn.cursor()
     try:
@@ -1273,6 +1273,7 @@ def _cdl_needs_fill_count() -> int:
             INNER JOIN cdl_isbn_index ci ON m.barcode = ci.isbn
             WHERE m.barcode IS NOT NULL
               AND m.barcode <> ''
+              AND (m.inferred_categories IS NULL OR m.inferred_categories = '')
               AND m.cdl_fetched_at IS NULL
         """)
         return cur.fetchone()[0]
@@ -1283,7 +1284,7 @@ def _cdl_needs_fill_count() -> int:
 
 
 def _cdl_fetch_targets(limit: int = 500) -> list[tuple[int, str, str]]:
-    """Lista (odoo_id, isbn, url) para libros sin cdl_fetched_at."""
+    """Lista (odoo_id, isbn, url) para libros del sitemap sin categoria."""
     conn = db.get_connection()
     cur = conn.cursor()
     try:
@@ -1293,6 +1294,7 @@ def _cdl_fetch_targets(limit: int = 500) -> list[tuple[int, str, str]]:
             INNER JOIN cdl_isbn_index ci ON m.barcode = ci.isbn
             WHERE m.barcode IS NOT NULL
               AND m.barcode <> ''
+              AND (m.inferred_categories IS NULL OR m.inferred_categories = '')
               AND m.cdl_fetched_at IS NULL
             ORDER BY m.odoo_id
             LIMIT ?
@@ -1304,13 +1306,12 @@ def _cdl_fetch_targets(limit: int = 500) -> list[tuple[int, str, str]]:
 
 def _cdl_save_one(odoo_id: int, isbn: str, data: dict | None):
     """
-    Guarda lo scrapeado en books table (via save_to_db) Y actualiza el mirror
-    con categorias/description si estan vacios. Marca cdl_fetched_at siempre
-    (aunque no haya match) para no reintentar.
+    Guarda lo scrapeado en books table Y espejea TODOS los campos al mirror.
+    Cada UPDATE usa COALESCE(NULLIF(col,''), nuevo) para no pisar lo que
+    ya estaba. Marca cdl_fetched_at siempre (aunque no haya match).
     """
     from scraper import save_to_db
 
-    # Si hay data, guardar a books table tambien
     if data and data.get("title") and data.get("title") != "Unknown Title":
         try:
             data["search_query"] = isbn
@@ -1318,52 +1319,84 @@ def _cdl_save_one(odoo_id: int, isbn: str, data: dict | None):
         except Exception:
             pass
 
-    # Construir categorias y description para el mirror
+    # Helpers: convertir vacios/Unknown a None para que COALESCE los ignore
+    def _v(key):
+        v = (data or {}).get(key)
+        if v is None:
+            return None
+        s = str(v).strip()
+        if s == "" or s.lower() in ("unknown", "unknown title", "unknown author",
+                                     "unknown price", "no description"):
+            return None
+        return s
+
+    # Categorias del scrape -> string jerarquico
     cats_str = None
     if data:
         cats = [data.get(f"categoria_{i}") for i in range(1, 6)]
-        cats = [c for c in cats if c and str(c).strip()]
+        cats = [str(c).strip() for c in cats if c and str(c).strip()]
         if cats:
             cats_str = " > ".join(cats)
-    desc = (data or {}).get("description") or None
+
+    sql = """
+        UPDATE odoo_books_mirror
+        SET inferred_categories = COALESCE(NULLIF(inferred_categories, ''), ?),
+            inferred_source = CASE
+                WHEN (inferred_categories IS NULL OR inferred_categories = '')
+                     AND ? IS NOT NULL THEN 'cdl_bulk'
+                ELSE inferred_source
+            END,
+            description       = COALESCE(NULLIF(description, ''),       ?),
+            cdl_author        = COALESCE(NULLIF(cdl_author, ''),        ?),
+            cdl_editorial     = COALESCE(NULLIF(cdl_editorial, ''),     ?),
+            cdl_image_url     = COALESCE(NULLIF(cdl_image_url, ''),     ?),
+            cdl_weight        = COALESCE(NULLIF(cdl_weight, ''),        ?),
+            cdl_height        = COALESCE(NULLIF(cdl_height, ''),        ?),
+            cdl_width         = COALESCE(NULLIF(cdl_width, ''),         ?),
+            cdl_binding       = COALESCE(NULLIF(cdl_binding, ''),       ?),
+            cdl_translator    = COALESCE(NULLIF(cdl_translator, ''),    ?),
+            cdl_illustrator   = COALESCE(NULLIF(cdl_illustrator, ''),   ?),
+            cdl_collection    = COALESCE(NULLIF(cdl_collection, ''),    ?),
+            cdl_pages         = COALESCE(NULLIF(cdl_pages, ''),         ?),
+            cdl_release_date  = COALESCE(NULLIF(cdl_release_date, ''),  ?),
+            cdl_url           = COALESCE(NULLIF(cdl_url, ''),           ?),
+            cdl_price         = COALESCE(NULLIF(cdl_price, ''),         ?),
+            cdl_language      = COALESCE(NULLIF(cdl_language, ''),      ?),
+            cdl_fetched_at    = CURRENT_TIMESTAMP
+        WHERE odoo_id = ?
+    """
+    params = (
+        cats_str, cats_str,
+        _v("description"),
+        _v("author"),
+        _v("editorial"),
+        _v("image_url"),
+        _v("weight"),
+        _v("height"),
+        _v("width"),
+        _v("binding"),
+        _v("translator"),
+        _v("illustrator"),
+        _v("collection"),
+        _v("pages"),
+        _v("release_date"),
+        _v("url"),
+        _v("price"),
+        _v("language"),
+        odoo_id,
+    )
 
     conn = db.get_connection()
     cur = conn.cursor()
     try:
-        if db.IS_POSTGRES:
-            db.execute_query(cur, """
-                UPDATE odoo_books_mirror
-                SET inferred_categories = COALESCE(NULLIF(inferred_categories, ''), ?),
-                    inferred_source = CASE
-                        WHEN inferred_categories IS NULL OR inferred_categories = ''
-                            THEN COALESCE(?, inferred_source)
-                        ELSE inferred_source
-                    END,
-                    description = COALESCE(NULLIF(description, ''), ?),
-                    cdl_fetched_at = CURRENT_TIMESTAMP
-                WHERE odoo_id = ?
-            """, (cats_str,
-                  'cdl_bulk' if cats_str else None,
-                  desc, odoo_id))
-        else:
-            db.execute_query(cur, """
-                UPDATE odoo_books_mirror
-                SET inferred_categories = COALESCE(NULLIF(inferred_categories, ''), ?),
-                    inferred_source = CASE
-                        WHEN inferred_categories IS NULL OR inferred_categories = ''
-                            THEN COALESCE(?, inferred_source)
-                        ELSE inferred_source
-                    END,
-                    description = COALESCE(NULLIF(description, ''), ?),
-                    cdl_fetched_at = CURRENT_TIMESTAMP
-                WHERE odoo_id = ?
-            """, (cats_str, 'cdl_bulk' if cats_str else None, desc, odoo_id))
+        db.execute_query(cur, sql, params)
         conn.commit()
-    except Exception:
+    except Exception as e:
         try:
             conn.rollback()
         except Exception:
             pass
+        print(f"[CDLSave] FAILED odoo_id={odoo_id} isbn={isbn}: {e}")
     finally:
         conn.close()
 
@@ -1514,31 +1547,40 @@ def export_csv_streaming(only_with_categories: bool = False):
                 m.odoo_id,
                 m.barcode,
                 COALESCE(NULLIF(m.name, ''), b.title, d.title) AS titulo,
-                COALESCE(NULLIF(b.author, ''), NULLIF(d.author, '')) AS autor,
-                COALESCE(NULLIF(b.editorial, ''), NULLIF(d.editorial, ''),
-                         NULLIF(m.gbooks_publisher, '')) AS editorial,
-                COALESCE(CAST(m.list_price AS TEXT),
-                         NULLIF(b.price, ''),
-                         CAST(d.price AS TEXT)) AS precio,
-                COALESCE(NULLIF(b.language, ''), NULLIF(d.language, ''),
-                         NULLIF(m.gbooks_language, '')) AS idioma,
+                COALESCE(NULLIF(m.cdl_author, ''), NULLIF(b.author, ''),
+                         NULLIF(d.author, '')) AS autor,
+                COALESCE(NULLIF(m.cdl_editorial, ''), NULLIF(b.editorial, ''),
+                         NULLIF(d.editorial, ''), NULLIF(m.gbooks_publisher, '')) AS editorial,
+                COALESCE(NULLIF(m.cdl_price, ''), CAST(m.list_price AS TEXT),
+                         NULLIF(b.price, ''), CAST(d.price AS TEXT)) AS precio,
+                COALESCE(NULLIF(m.cdl_language, ''), NULLIF(b.language, ''),
+                         NULLIF(d.language, ''), NULLIF(m.gbooks_language, '')) AS idioma,
                 COALESCE(m.inferred_categories, '') AS categorias,
                 COALESCE(m.inferred_source, '') AS fuente_categoria,
-                COALESCE(NULLIF(b.description, ''), NULLIF(d.description, ''),
-                         NULLIF(m.description, '')) AS descripcion,
-                COALESCE(NULLIF(b.pages, ''), NULLIF(d.pages, ''),
-                         CAST(m.gbooks_pages AS TEXT)) AS paginas,
-                COALESCE(NULLIF(b.binding, ''), NULLIF(d.binding, '')) AS encuadernacion,
-                COALESCE(NULLIF(b.translator, ''), NULLIF(d.translator, '')) AS traductor,
-                COALESCE(NULLIF(b.illustrator, ''), NULLIF(d.illustrator, '')) AS ilustrador,
-                COALESCE(NULLIF(b.weight, ''), NULLIF(d.weight, '')) AS peso,
-                COALESCE(NULLIF(b.height, ''), NULLIF(d.height, '')) AS alto,
-                COALESCE(NULLIF(b.width, ''), NULLIF(d.width, '')) AS ancho,
-                COALESCE(NULLIF(b.image_url, ''), NULLIF(d.image_url, ''),
-                         NULLIF(m.gbooks_thumbnail, '')) AS imagen,
-                COALESCE(NULLIF(b.release_date, ''), NULLIF(d.release_date, '')) AS fecha_publicacion,
-                COALESCE(NULLIF(b.collection, ''), NULLIF(d.collection, '')) AS coleccion,
-                COALESCE(NULLIF(b.url, ''), NULLIF(d.url, '')) AS url_cdl,
+                COALESCE(NULLIF(m.description, ''), NULLIF(b.description, ''),
+                         NULLIF(d.description, '')) AS descripcion,
+                COALESCE(NULLIF(m.cdl_pages, ''), NULLIF(b.pages, ''),
+                         NULLIF(d.pages, ''), CAST(m.gbooks_pages AS TEXT)) AS paginas,
+                COALESCE(NULLIF(m.cdl_binding, ''), NULLIF(b.binding, ''),
+                         NULLIF(d.binding, '')) AS encuadernacion,
+                COALESCE(NULLIF(m.cdl_translator, ''), NULLIF(b.translator, ''),
+                         NULLIF(d.translator, '')) AS traductor,
+                COALESCE(NULLIF(m.cdl_illustrator, ''), NULLIF(b.illustrator, ''),
+                         NULLIF(d.illustrator, '')) AS ilustrador,
+                COALESCE(NULLIF(m.cdl_weight, ''), NULLIF(b.weight, ''),
+                         NULLIF(d.weight, '')) AS peso,
+                COALESCE(NULLIF(m.cdl_height, ''), NULLIF(b.height, ''),
+                         NULLIF(d.height, '')) AS alto,
+                COALESCE(NULLIF(m.cdl_width, ''), NULLIF(b.width, ''),
+                         NULLIF(d.width, '')) AS ancho,
+                COALESCE(NULLIF(m.cdl_image_url, ''), NULLIF(b.image_url, ''),
+                         NULLIF(d.image_url, ''), NULLIF(m.gbooks_thumbnail, '')) AS imagen,
+                COALESCE(NULLIF(m.cdl_release_date, ''), NULLIF(b.release_date, ''),
+                         NULLIF(d.release_date, '')) AS fecha_publicacion,
+                COALESCE(NULLIF(m.cdl_collection, ''), NULLIF(b.collection, ''),
+                         NULLIF(d.collection, '')) AS coleccion,
+                COALESCE(NULLIF(m.cdl_url, ''), NULLIF(b.url, ''),
+                         NULLIF(d.url, '')) AS url_cdl,
                 d.fuente AS distribuidor,
                 m.categ_id AS odoo_categ_id,
                 m.categ_name AS odoo_categ_name,
@@ -1628,17 +1670,27 @@ def stop_cdl_search_fill():
     return False
 
 
+# Condicion canonica: libro incompleto = sin categoria.
+# (la descripcion no basta — sin categoria el libro no es usable para el
+# catalogo, asi que aunque tenga descripcion lo re-scrapamos.)
+# Lo usan tanto el contador como el fetcher para que la barra coincida.
+_CDL_SEARCH_INCOMPLETE_WHERE = """
+    barcode IS NOT NULL
+    AND barcode <> ''
+    AND (inferred_categories IS NULL OR inferred_categories = '')
+    AND cdl_fetched_at IS NULL
+"""
+
+
 def _cdl_search_needs_fill_count() -> int:
-    """Cuantos libros del mirror tienen ISBN y NO se han intentado scrape
-    via CDL todavia. Independiente de cdl_isbn_index."""
+    """Cuantos libros del mirror estan INCOMPLETOS (sin categoria ni
+    descripcion) y aun no se intento scrape via CDL."""
     conn = db.get_connection()
     cur = conn.cursor()
     try:
-        db.execute_query(cur, """
+        db.execute_query(cur, f"""
             SELECT COUNT(*) FROM odoo_books_mirror
-            WHERE barcode IS NOT NULL
-              AND barcode <> ''
-              AND cdl_fetched_at IS NULL
+            WHERE {_CDL_SEARCH_INCOMPLETE_WHERE}
         """)
         return cur.fetchone()[0]
     except Exception:
@@ -1648,8 +1700,9 @@ def _cdl_search_needs_fill_count() -> int:
 
 
 def _cdl_search_fetch_targets(limit: int = 200) -> list[tuple[int, str]]:
-    """Lista (odoo_id, isbn) de libros del mirror para buscar en CDL.
-    Prioriza los que NO estan en cdl_isbn_index (asi complementa al otro job)."""
+    """Lista (odoo_id, isbn) de libros del mirror sin categoria NI
+    descripcion. Prioriza los que NO estan en cdl_isbn_index para
+    complementar al job sitemap, y si no quedan, cae a los demas."""
     conn = db.get_connection()
     cur = conn.cursor()
     try:
@@ -1659,6 +1712,8 @@ def _cdl_search_fetch_targets(limit: int = 200) -> list[tuple[int, str]]:
             LEFT JOIN cdl_isbn_index ci ON m.barcode = ci.isbn
             WHERE m.barcode IS NOT NULL
               AND m.barcode <> ''
+              AND (m.inferred_categories IS NULL OR m.inferred_categories = '')
+              AND (m.description IS NULL OR m.description = '')
               AND m.cdl_fetched_at IS NULL
               AND ci.isbn IS NULL
             ORDER BY m.odoo_id
@@ -1667,14 +1722,10 @@ def _cdl_search_fetch_targets(limit: int = 200) -> list[tuple[int, str]]:
         rows = [(r[0], r[1]) for r in cur.fetchall()]
         if rows:
             return rows
-        # Si no quedan libros fuera del sitemap, caer a los del sitemap
-        # (por si el otro job no esta corriendo)
-        db.execute_query(cur, """
+        db.execute_query(cur, f"""
             SELECT odoo_id, barcode
             FROM odoo_books_mirror
-            WHERE barcode IS NOT NULL
-              AND barcode <> ''
-              AND cdl_fetched_at IS NULL
+            WHERE {_CDL_SEARCH_INCOMPLETE_WHERE}
             ORDER BY odoo_id
             LIMIT ?
         """, (limit,))
