@@ -41,10 +41,13 @@ WORKER_SHARD_COUNT = max(1, int(os.environ.get("WORKER_SHARD_COUNT", "1")))
 
 
 def _shard_clause(col: str = "odoo_id") -> str:
-    """SQL fragment para filtrar este worker. Si COUNT=1, retorna '1=1'
-    (no-op) para no romper EXPLAIN ni el plan de queries."""
+    """SQL fragment para filtrar este worker. Si COUNT=1, retorna '1=1'.
+    Usa MOD() en Postgres porque '%' literal colisiona con el placeholder
+    de psycopg2 (%s) y revienta cualquier execute con params."""
     if WORKER_SHARD_COUNT <= 1:
         return "1=1"
+    if db.IS_POSTGRES:
+        return f"MOD({col}, {WORKER_SHARD_COUNT}) = {WORKER_SHARD_INDEX}"
     return f"({col} % {WORKER_SHARD_COUNT}) = {WORKER_SHARD_INDEX}"
 
 mirror_job: dict | None = None
