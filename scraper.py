@@ -48,23 +48,32 @@ def parse_proxy(s: str) -> dict | None:
 async def launch_browser_pool(playwright, total_pages: int):
     """
     Lanza N browsers (uno por proxy en PROXY_POOL) y distribuye total_pages
-    paginas entre ellos. Cada pagina queda preconfigurada con _setup_page.
+    paginas entre ellos. Cada pagina queda preconfigurada con _setup_page
+    y marcada con `_proxy_spec` (string o None si IP directa) para que el
+    caller pueda reportar exitos/fallos al health tracker.
+
+    Solo usa proxies VIVAS segun proxy_health. Si todas estan muertas o el
+    pool esta vacio, fallback a browsers sin proxy (IP directa del server).
 
     Retorna (browsers, page_queue). El caller debe cerrar los browsers al final
     con close_browser_pool().
-
-    Si PROXY_POOL esta vacio, se usa el comportamiento clasico: 1 browser con
-    PROXY_URL (opcional) y total_pages paginas.
     """
     import asyncio as _asyncio
+    import proxy_health
     page_queue: _asyncio.Queue = _asyncio.Queue()
     browsers = []
 
-    if PROXY_POOL:
-        n_proxies = len(PROXY_POOL)
+    # Filtra proxies muertas (ya marcadas por scrapes anteriores)
+    alive_pool = proxy_health.get_alive_proxies(PROXY_POOL) if PROXY_POOL else []
+    if PROXY_POOL and not alive_pool:
+        print(f"[Proxy] TODAS las {len(PROXY_POOL)} proxies estan marcadas muertas. "
+              f"Fallback a IP directa.")
+
+    if alive_pool:
+        n_proxies = len(alive_pool)
         per_browser = max(1, total_pages // n_proxies)
         remainder = max(0, total_pages - per_browser * n_proxies)
-        for i, proxy_spec in enumerate(PROXY_POOL):
+        for i, proxy_spec in enumerate(alive_pool):
             count = per_browser + (1 if i < remainder else 0)
             proxy = parse_proxy(proxy_spec)
             if not proxy:
@@ -75,26 +84,32 @@ async def launch_browser_pool(playwright, total_pages: int):
                 br = await playwright.chromium.launch(**opts)
             except Exception as e:
                 print(f"[Proxy] Error lanzando browser con {proxy['server']}: {e}")
+                # Si no podemos ni lanzar el browser con esa proxy, marca muerta
+                proxy_health.mark_failed(proxy_spec, f"launch: {e}")
                 continue
             browsers.append(br)
             for _ in range(count):
                 pg = await br.new_page()
                 await _setup_page(pg)
+                pg._proxy_spec = proxy_spec  # tag para que _process_one reporte health
                 await page_queue.put(pg)
             print(f"[Proxy] Browser via {proxy['server']} con {count} paginas")
-        if not browsers:
-            raise RuntimeError("Ningun proxy del PROXY_POOL pudo arrancar")
-    else:
-        # Sin pool — comportamiento original
+
+    # Si no quedo NINGUN browser vivo (pool vacio, todas muertas, o fallaron lanzando),
+    # cae al modo IP directa: 1 browser sin proxy con todas las paginas
+    if not browsers:
         opts = {'headless': True, 'args': CHROMIUM_ARGS}
-        if PROXY_URL:
+        if not PROXY_POOL and PROXY_URL:
+            # Legacy: PROXY_URL singular (sin pool)
             opts['proxy'] = parse_proxy(PROXY_URL) or {'server': PROXY_URL}
         br = await playwright.chromium.launch(**opts)
         browsers.append(br)
         for _ in range(total_pages):
             pg = await br.new_page()
             await _setup_page(pg)
+            pg._proxy_spec = None  # IP directa
             await page_queue.put(pg)
+        print(f"[Proxy] Browser fallback IP directa con {total_pages} paginas")
 
     return browsers, page_queue
 

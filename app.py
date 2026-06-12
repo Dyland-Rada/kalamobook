@@ -1108,6 +1108,30 @@ async def proxies_status():
     })
 
 
+@app.get("/api/v1/proxies/health", tags=["Diagnostico"])
+async def proxies_health():
+    """
+    Estado del tracker de health por proxy. Muestra fallos consecutivos,
+    totales, si esta marcada muerta, y desde cuando.
+    Los browsers nuevos saltan automaticamente las proxies muertas y los
+    jobs caen a IP directa si TODAS mueren.
+    """
+    import proxy_health as ph
+    return JSONResponse(content={
+        "dead_threshold": ph.DEAD_THRESHOLD,
+        "proxies": ph.snapshot(),
+    })
+
+
+@app.post("/api/v1/proxies/health/reset", tags=["Diagnostico"])
+async def proxies_health_reset():
+    """Resetea TODAS las proxies a vivas. Util tras un episodio de bloqueo
+    temporal de CDL (cuando Webshare las habilita de nuevo)."""
+    import proxy_health as ph
+    ph.reset_all()
+    return JSONResponse(content={"status": "reset_ok"})
+
+
 @app.post("/api/v1/proxies/healthcheck", tags=["Diagnostico"])
 async def proxies_healthcheck():
     """

@@ -1312,6 +1312,14 @@
                     <button class="btn btn-primary" onclick="checkProxies()" style="background:#34495e;">
                         🌐 Status proxies
                     </button>
+                    <button class="btn btn-primary" onclick="proxyHealth()" style="background:#16a085;"
+                            title="Estado de cada proxy: muertas, vivas, fallos consecutivos. Las muertas se saltean solas.">
+                        🏥 Health proxies
+                    </button>
+                    <button class="btn btn-primary" onclick="proxyHealthReset()" style="background:#9b59b6;"
+                            title="Marca TODAS las proxies como vivas otra vez. Util si Webshare las resucitó.">
+                        ♻ Reactivar proxies
+                    </button>
                     <button class="btn btn-primary" onclick="testTelegram()" style="background:#0088cc;">
                         📨 Probar Telegram
                     </button>
@@ -2020,6 +2028,55 @@
                     document.getElementById('mirror-stat-cdl-done').textContent = (j.cdl_fetched_count || 0).toLocaleString();
                 }
             } catch (e) {}
+        }
+
+        async function proxyHealth() {
+            const out = document.getElementById('tools-result');
+            out.textContent = '🏥 Consultando health...';
+            try {
+                const r = await fetch('/api/v1/proxies/health');
+                const j = await r.json();
+                const proxies = j.proxies || {};
+                const keys = Object.keys(proxies);
+                let msg = `Threshold para marcar muerta: ${j.dead_threshold} fallos consecutivos\n\n`;
+                if (keys.length === 0) {
+                    msg += `(Aún no hay datos. Las stats aparecen cuando los jobs intentan usar proxies.)`;
+                } else {
+                    let aliveCount = 0, deadCount = 0;
+                    keys.forEach(spec => {
+                        const s = proxies[spec];
+                        if (s.dead) deadCount++; else aliveCount++;
+                    });
+                    msg += `Vivas: ${aliveCount}  ·  Muertas: ${deadCount}\n\n`;
+                    keys.forEach(spec => {
+                        const s = proxies[spec];
+                        const status = s.dead ? '💀 MUERTA' : '✅ viva';
+                        msg += `${status}  ${s.spec_masked || spec}\n`;
+                        msg += `   fallos consecutivos: ${s.consecutive_failures}\n`;
+                        msg += `   total ok: ${s.total_successes}  fail: ${s.total_failures}\n`;
+                        if (s.dead && s.dead_since) {
+                            const ago = Math.round((Date.now()/1000 - s.dead_since) / 60);
+                            msg += `   muerta hace: ${ago} min\n`;
+                        }
+                        msg += `\n`;
+                    });
+                }
+                out.textContent = msg;
+            } catch (e) {
+                out.textContent = '❌ Error: ' + e.message;
+            }
+        }
+
+        async function proxyHealthReset() {
+            if (!confirm('Marcar TODAS las proxies como vivas otra vez?')) return;
+            try {
+                const r = await fetch('/api/v1/proxies/health/reset', { method: 'POST' });
+                const j = await r.json();
+                alert('✅ ' + (j.status || 'reset'));
+                proxyHealth();
+            } catch (e) {
+                alert('❌ Error: ' + e.message);
+            }
         }
 
         async function checkProxies() {

@@ -1481,34 +1481,44 @@ async def fill_from_cdl_mirror(chunk_size: int = 500) -> dict:
                 "Timeout",
             )
 
+            import proxy_health
             async def _process_one(odoo_id, isbn, url):
                 if job["status"] != "running":
                     return
                 async with sem:
                     page = await page_queue.get()
+                    proxy_spec = getattr(page, '_proxy_spec', None)
                     try:
                         data = await scrape_book(page, query=isbn, direct_url=url)
                         if data and data.get("title") and data.get("title") != "Unknown Title":
                             _cdl_save_one(odoo_id, isbn, data)
                             job["matched"] += 1
+                            proxy_health.mark_success(proxy_spec)
                         else:
                             # Sin datos pero CDL respondio — marcar fetched, no reintentar
                             _cdl_save_one(odoo_id, isbn, None)
                             job["no_match"] += 1
+                            proxy_health.mark_success(proxy_spec)  # respondio OK
                     except Exception as e:
                         err_str = str(e)
                         err_short = f"{type(e).__name__}: {err_str[:80]}"
                         job["errors"].append(f"isbn {isbn}: {err_short}")
-                        # Distinguir error transitorio (proxy/red) de no-match real:
-                        # transitorio = NO marcar fetched -> se reintenta en proximo chunk
                         is_transient = any(p in err_str for p in TRANSIENT_PATTERNS)
-                        if not is_transient:
+                        if is_transient:
+                            # Proxy/red rota: NO marcar fetched, contar como reintento,
+                            # y reportar fallo al health tracker
+                            job["transient_skipped"] = job.get("transient_skipped", 0) + 1
+                            proxy_health.mark_failed(proxy_spec, err_short)
+                        else:
                             _cdl_save_one(odoo_id, isbn, None)
                             job["no_match"] += 1
-                        else:
-                            job["transient_skipped"] = job.get("transient_skipped", 0) + 1
+                            # No-match real, no es culpa del proxy
                     finally:
-                        await page_queue.put(page)
+                        # Solo devolver la page si su proxy sigue viva. Si murio
+                        # mientras procesabamos, dejamos que el pool encoja —
+                        # el proximo lanzamiento podra refrescar
+                        if proxy_health.is_alive(proxy_spec):
+                            await page_queue.put(page)
                         job["processed"] += 1
 
             while job["status"] == "running":
@@ -1816,32 +1826,37 @@ async def fill_from_cdl_search(chunk_size: int = 200) -> dict:
                 "Timeout",
             )
 
+            import proxy_health
             async def _process_one(odoo_id, isbn):
                 if job["status"] != "running":
                     return
                 async with sem:
                     page = await page_queue.get()
+                    proxy_spec = getattr(page, '_proxy_spec', None)
                     try:
-                        # direct_url=None -> usa el flujo de busqueda en CDL
                         data = await scrape_book(page, query=isbn, direct_url=None)
                         if data and data.get("title") and data.get("title") != "Unknown Title":
                             _cdl_save_one(odoo_id, isbn, data)
                             job["matched"] += 1
+                            proxy_health.mark_success(proxy_spec)
                         else:
                             _cdl_save_one(odoo_id, isbn, None)
                             job["no_match"] += 1
+                            proxy_health.mark_success(proxy_spec)
                     except Exception as e:
                         err_str = str(e)
                         err_short = f"{type(e).__name__}: {err_str[:80]}"
                         job["errors"].append(f"isbn {isbn}: {err_short}")
                         is_transient = any(p in err_str for p in TRANSIENT_PATTERNS)
-                        if not is_transient:
+                        if is_transient:
+                            job["transient_skipped"] = job.get("transient_skipped", 0) + 1
+                            proxy_health.mark_failed(proxy_spec, err_short)
+                        else:
                             _cdl_save_one(odoo_id, isbn, None)
                             job["no_match"] += 1
-                        else:
-                            job["transient_skipped"] = job.get("transient_skipped", 0) + 1
                     finally:
-                        await page_queue.put(page)
+                        if proxy_health.is_alive(proxy_spec):
+                            await page_queue.put(page)
                         job["processed"] += 1
 
             while job["status"] == "running":
