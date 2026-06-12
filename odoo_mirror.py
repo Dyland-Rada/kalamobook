@@ -1523,6 +1523,16 @@ async def fill_from_cdl_mirror(chunk_size: int = 500) -> dict:
                     print("[CDLFill] Sin mas targets — fin")
                     break
 
+                # Si el queue se vacio (todas las proxies murieron y las pages
+                # no se devolvieron al queue), relanzar el pool. launch_browser_pool
+                # filtra automaticamente las muertas y cae a IP directa si no
+                # quedan vivas. Asi el job NO se cuelga.
+                if page_queue.qsize() == 0:
+                    print(f"[CDLFill] Pool vacio — relanzando "
+                          f"(probablemente todas las proxies estan dead)")
+                    await close_browser_pool(browsers)
+                    browsers, page_queue = await launch_browser_pool(p, pool_size)
+
                 tasks = [_process_one(oid, isbn, url) for oid, isbn, url in targets]
                 await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -1860,6 +1870,15 @@ async def fill_from_cdl_search(chunk_size: int = 200) -> dict:
                 if not targets:
                     print("[CDLSearch] Sin mas targets — fin")
                     break
+
+                # Auto-recovery: si todas las pages se fueron con sus proxies
+                # muertas, el queue esta vacio. Relanzar el pool — caera a IP
+                # directa porque no hay proxies vivas. Sin esto el job se cuelga.
+                if page_queue.qsize() == 0:
+                    print(f"[CDLSearch] Pool vacio — relanzando "
+                          f"(probablemente todas las proxies estan dead)")
+                    await close_browser_pool(browsers)
+                    browsers, page_queue = await launch_browser_pool(p, pool_size)
 
                 tasks = [_process_one(oid, isbn) for oid, isbn in targets]
                 await asyncio.gather(*tasks, return_exceptions=True)
