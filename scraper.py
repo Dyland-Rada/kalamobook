@@ -698,8 +698,13 @@ async def scrape_book(page, query, direct_url=None):
             try:
                 await page.goto(search_url, timeout=60000, wait_until='domcontentloaded')
             except Exception as e:
+                # IMPORTANTE: re-lanzar para que el caller pueda distinguir
+                # 'CDL respondio pero el libro no esta' de 'la conexion fallo'.
+                # Antes hacia 'return None' silencioso y el _process_one lo
+                # contaba como no_match -> marcaba el proxy como exitoso
+                # aunque realmente estuviera roto.
                 print(f"Error navigating to search URL: {e}")
-                return None
+                raise
 
             # Si el query es ISBN, esperar a que aparezca el link especifico
             # (evita falsos negativos por timing). Si no aparece en 6s, asumir

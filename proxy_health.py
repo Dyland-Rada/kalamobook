@@ -23,28 +23,34 @@ from threading import Lock
 _state: dict[str, dict] = {}
 _lock = Lock()
 
-# Threshold: tras N fallos consecutivos sin un success de por medio,
-# la proxy se marca muerta. Suficientemente alto para no matar por
-# 1-2 timeouts ocasionales, suficientemente bajo para reaccionar
-# antes de quemar miles de libros.
+# Threshold de fallos transitorios (timeout/tunnel/conn_reset) consecutivos.
 DEAD_THRESHOLD = 5
+
+# Threshold de "no_match consecutivos" — detecta soft-block donde CDL
+# responde 200 OK pero sin productos. Tras N libros seguidos sin match
+# por una misma proxy, la marca muerta. Mas alto que DEAD_THRESHOLD
+# porque algunos libros legitimamente no estan en CDL.
+SOFT_BLOCK_THRESHOLD = 20
 
 
 def _ensure(spec: str):
     if spec not in _state:
         _state[spec] = {
             "consecutive_failures": 0,
+            "consecutive_no_match": 0,
             "total_failures": 0,
             "total_successes": 0,
+            "total_no_match": 0,
             "dead": False,
+            "dead_reason": None,
             "dead_since": None,
             "last_event_at": None,
         }
 
 
 def mark_failed(spec: str | None, reason: str = ""):
-    """Reporta un fallo de scrape con esta proxy. Si pasa el threshold,
-    se marca muerta."""
+    """Reporta un fallo transitorio (timeout/tunnel/connection). Si pasa
+    el threshold, se marca muerta."""
     if not spec:
         return  # IP directa, nada que trackear
     with _lock:
@@ -55,26 +61,47 @@ def mark_failed(spec: str | None, reason: str = ""):
         s["last_event_at"] = time.time()
         if not s["dead"] and s["consecutive_failures"] >= DEAD_THRESHOLD:
             s["dead"] = True
+            s["dead_reason"] = "timeouts"
             s["dead_since"] = time.time()
-            print(f"[ProxyHealth] DEAD {spec[:40]} tras {DEAD_THRESHOLD} "
-                  f"fallos consecutivos: {reason[:80]}")
+            print(f"[ProxyHealth] DEAD (timeouts) {spec[:40]} tras "
+                  f"{DEAD_THRESHOLD} fallos consecutivos: {reason[:80]}")
+
+
+def mark_no_match(spec: str | None):
+    """Reporta que CDL respondio OK pero no encontro el libro. Si pasa
+    soft-block threshold, marca muerta (probable soft-block)."""
+    if not spec:
+        return
+    with _lock:
+        _ensure(spec)
+        s = _state[spec]
+        s["consecutive_no_match"] += 1
+        s["total_no_match"] += 1
+        s["last_event_at"] = time.time()
+        if not s["dead"] and s["consecutive_no_match"] >= SOFT_BLOCK_THRESHOLD:
+            s["dead"] = True
+            s["dead_reason"] = "soft_block"
+            s["dead_since"] = time.time()
+            print(f"[ProxyHealth] DEAD (soft-block) {spec[:40]} tras "
+                  f"{SOFT_BLOCK_THRESHOLD} no_match consecutivos — "
+                  f"CDL probablemente bloquea esta IP devolviendo paginas vacias")
 
 
 def mark_success(spec: str | None):
-    """Reporta un scrape exitoso con esta proxy. Resetea consecutivos."""
+    """Reporta un scrape con match real. Resetea AMBOS contadores."""
     if not spec:
         return
     with _lock:
         _ensure(spec)
         s = _state[spec]
         s["consecutive_failures"] = 0
+        s["consecutive_no_match"] = 0
         s["total_successes"] += 1
         s["last_event_at"] = time.time()
-        # Si estaba muerta y de algun modo nos llego un success, resucitar
-        # (el caller debio haber filtrado, pero por las dudas)
         if s["dead"]:
             s["dead"] = False
             s["dead_since"] = None
+            s["dead_reason"] = None
             print(f"[ProxyHealth] RESURRECTED {spec[:40]} tras success")
 
 

@@ -1495,28 +1495,24 @@ async def fill_from_cdl_mirror(chunk_size: int = 500) -> dict:
                             job["matched"] += 1
                             proxy_health.mark_success(proxy_spec)
                         else:
-                            # Sin datos pero CDL respondio — marcar fetched, no reintentar
+                            # CDL respondio pero sin libro. Si esto pasa muchas veces
+                            # seguidas en una proxy, es soft-block (mark_no_match
+                            # acumula y marca dead tras SOFT_BLOCK_THRESHOLD).
                             _cdl_save_one(odoo_id, isbn, None)
                             job["no_match"] += 1
-                            proxy_health.mark_success(proxy_spec)  # respondio OK
+                            proxy_health.mark_no_match(proxy_spec)
                     except Exception as e:
                         err_str = str(e)
                         err_short = f"{type(e).__name__}: {err_str[:80]}"
                         job["errors"].append(f"isbn {isbn}: {err_short}")
                         is_transient = any(p in err_str for p in TRANSIENT_PATTERNS)
                         if is_transient:
-                            # Proxy/red rota: NO marcar fetched, contar como reintento,
-                            # y reportar fallo al health tracker
                             job["transient_skipped"] = job.get("transient_skipped", 0) + 1
                             proxy_health.mark_failed(proxy_spec, err_short)
                         else:
                             _cdl_save_one(odoo_id, isbn, None)
                             job["no_match"] += 1
-                            # No-match real, no es culpa del proxy
                     finally:
-                        # Solo devolver la page si su proxy sigue viva. Si murio
-                        # mientras procesabamos, dejamos que el pool encoja —
-                        # el proximo lanzamiento podra refrescar
                         if proxy_health.is_alive(proxy_spec):
                             await page_queue.put(page)
                         job["processed"] += 1
@@ -1842,7 +1838,7 @@ async def fill_from_cdl_search(chunk_size: int = 200) -> dict:
                         else:
                             _cdl_save_one(odoo_id, isbn, None)
                             job["no_match"] += 1
-                            proxy_health.mark_success(proxy_spec)
+                            proxy_health.mark_no_match(proxy_spec)
                     except Exception as e:
                         err_str = str(e)
                         err_short = f"{type(e).__name__}: {err_str[:80]}"
