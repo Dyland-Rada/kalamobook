@@ -1663,14 +1663,22 @@ def export_csv_streaming(only_with_categories: bool = False):
         "fecha_publicacion", "coleccion", "url_cdl",
         "distribuidor", "odoo_categ_id", "odoo_categ_name", "sincronizado",
     ]
+    # Excel-friendly:
+    #  - BOM UTF-8 al inicio (﻿) -> Excel detecta encoding, evita Ã©
+    #  - delimiter ';' -> Excel locale ES auto-detecta columnas; con ',' las
+    #    apila todas en la columna A porque ',' es separador decimal en ES
+    #  - QUOTE_ALL -> cualquier ; , " o salto de linea dentro de un campo
+    #    queda escapado y no rompe la fila
+    #  - lineterminator '\r\n' -> formato Windows que Excel prefiere
     buf = io.StringIO()
-    w = csv.writer(buf)
+    w = csv.writer(buf, delimiter=';', quoting=csv.QUOTE_ALL,
+                   lineterminator='\r\n')
     w.writerow(headers)
-    yield buf.getvalue()
-    buf.seek(0)
-    buf.truncate()
+    first = buf.getvalue()
+    buf.seek(0); buf.truncate()
+    # BOM UTF-8 antes de la primera linea
+    yield '﻿' + first
 
-    # Indice de la columna "descripcion" en headers (0-indexed)
     desc_idx = headers.index("descripcion")
     try:
         while True:
@@ -1681,6 +1689,11 @@ def export_csv_streaming(only_with_categories: bool = False):
                 row_list = list(r)
                 # Truncar descripcion para evitar celdas > 32k char (limite Excel)
                 row_list[desc_idx] = _truncate(row_list[desc_idx], 2000)
+                # Limpiar saltos de linea raros DENTRO de las celdas (mantiene
+                # los normales \n que csv.QUOTE_ALL escapa solo)
+                for i, v in enumerate(row_list):
+                    if isinstance(v, str) and '\x00' in v:
+                        row_list[i] = v.replace('\x00', '')
                 w.writerow(row_list)
             yield buf.getvalue()
             buf.seek(0)

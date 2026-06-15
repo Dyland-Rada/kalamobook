@@ -902,9 +902,11 @@ async def odoo_mirror_export_csv(
     headers = {
         "Content-Disposition": f'attachment; filename="{fname}"'
     }
+    # text/csv con charset utf-8 + BOM en el body -> Excel ES abre como UTF-8
+    # con ';' como separador, sin tildes rotas (Ã©)
     return StreamingResponse(
         odoo_mirror.export_csv_streaming(only_with_categories=only_with_categories),
-        media_type="text/csv",
+        media_type="text/csv; charset=utf-8",
         headers=headers,
     )
 
