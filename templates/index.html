@@ -1301,6 +1301,10 @@
                             title="Muestra el shard activo y por qué cada job tiene Target=0 o el numero que sea">
                         🩺 Diagnóstico completo
                     </button>
+                    <button class="btn btn-primary" onclick="throughput()" style="background:#1abc9c;"
+                            title="Velocidad REAL basada en timestamps de la BD (no counters en memoria)">
+                        ⏱ Velocidad real
+                    </button>
                     <button class="btn btn-primary" onclick="applyMigration()" style="background:#c0392b;"
                             title="Aplica los ALTER TABLE pendientes (anade cdl_author, cdl_editorial, etc. al mirror). Sin redeploy.">
                         🔧 Aplicar migración BD
@@ -2126,6 +2130,46 @@
                 out.textContent = msg;
             } catch (e) {
                 out.textContent = '❌ Error de conexión: ' + e.message;
+            }
+        }
+
+        async function throughput() {
+            const out = document.getElementById('tools-result');
+            out.textContent = '⏱ Midiendo velocidad real...';
+            try {
+                const r = await fetch('/api/v1/admin/throughput');
+                const j = await r.json();
+                const w = j.windows || {};
+                let msg = `VELOCIDAD REAL (cdl_fetched_at / gbooks_fetched_at en BD)\n`;
+                msg += `(NO mira counters en memoria que se resetean con redeploy)\n\n`;
+                msg += `Ventana          CDL libros  CDL/min    GB libros   GB/min\n`;
+                msg += `─────────────────────────────────────────────────────────────\n`;
+                const labels = {
+                    '15min':  'Últimos 15min ',
+                    '60min':  'Última hora   ',
+                    '240min': 'Últimas 4h    ',
+                    '1440min':'Últimas 24h   ',
+                };
+                ['15min', '60min', '240min', '1440min'].forEach(k => {
+                    const r = w[k] || {};
+                    const cdlT = (r.cdl_fetched || 0).toLocaleString().padStart(10);
+                    const cdlR = String(r.cdl_per_min || 0).padStart(7);
+                    const gbT = (r.gbooks_fetched || 0).toLocaleString().padStart(10);
+                    const gbR = String(r.gbooks_per_min || 0).padStart(7);
+                    msg += `${labels[k]} ${cdlT}  ${cdlR}   ${gbT}  ${gbR}\n`;
+                });
+                const cdlPerMin = w['60min']?.cdl_per_min || 0;
+                msg += `\n`;
+                if (cdlPerMin > 0) {
+                    const minutesFor1M = 1000000 / cdlPerMin;
+                    const days = (minutesFor1M / 60 / 24).toFixed(1);
+                    msg += `Al ritmo de la última hora (${cdlPerMin}/min), 1M libros = ${days} días.\n`;
+                } else {
+                    msg += `⚠️ 0 libros procesados en la última hora — algo está bloqueado.\n`;
+                }
+                out.textContent = msg;
+            } catch (e) {
+                out.textContent = '❌ Error: ' + e.message;
             }
         }
 

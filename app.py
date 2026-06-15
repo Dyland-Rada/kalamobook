@@ -766,6 +766,51 @@ async def admin_schema_info(table: str = Query("odoo_books_mirror")):
         conn.close()
 
 
+@app.get("/api/v1/admin/throughput", tags=["Admin"])
+async def admin_throughput():
+    """
+    Medidor HONESTO de velocidad basado en cdl_fetched_at / gbooks_fetched_at
+    persistido en la BD. A diferencia de los counters del job (que se
+    resetean con cada redeploy), esto cuenta filas reales con timestamp
+    en los ultimos N minutos. Si lleva dias sin cambiar, hay un problema.
+    """
+    import db as dbmod
+    out = {"windows": {}}
+    conn = dbmod.get_connection()
+    cur = conn.cursor()
+    for minutes in (15, 60, 240, 1440):  # 15min, 1h, 4h, 24h
+        ranges = {}
+        try:
+            dbmod.execute_query(cur,
+                f"SELECT COUNT(*) FROM odoo_books_mirror "
+                f"WHERE cdl_fetched_at >= NOW() - INTERVAL '{minutes} minutes'")
+            ranges["cdl_fetched"] = cur.fetchone()[0]
+        except Exception:
+            try: conn.rollback()
+            except Exception: pass
+            ranges["cdl_fetched"] = None
+        try:
+            dbmod.execute_query(cur,
+                f"SELECT COUNT(*) FROM odoo_books_mirror "
+                f"WHERE gbooks_fetched_at >= NOW() - INTERVAL '{minutes} minutes'")
+            ranges["gbooks_fetched"] = cur.fetchone()[0]
+        except Exception:
+            try: conn.rollback()
+            except Exception: pass
+            ranges["gbooks_fetched"] = None
+        if ranges["cdl_fetched"]:
+            ranges["cdl_per_min"] = round(ranges["cdl_fetched"] / minutes, 2)
+        else:
+            ranges["cdl_per_min"] = 0
+        if ranges["gbooks_fetched"]:
+            ranges["gbooks_per_min"] = round(ranges["gbooks_fetched"] / minutes, 2)
+        else:
+            ranges["gbooks_per_min"] = 0
+        out["windows"][f"{minutes}min"] = ranges
+    conn.close()
+    return JSONResponse(content=out)
+
+
 @app.get("/api/v1/admin/diagnose", tags=["Admin"])
 async def admin_diagnose():
     """
