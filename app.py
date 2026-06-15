@@ -866,21 +866,28 @@ async def admin_diagnose():
             f"AND {om._shard_clause()}"),
         ("isbn_index_total", "SELECT COUNT(*) FROM cdl_isbn_index"),
         # ── Stats de precios desde Odoo (list_price) ──
+        # CAST a FLOAT obligatorio: psycopg2 devuelve Decimal y JSONResponse
+        # no sabe serializarlo -> 500 'Internal Server Error'.
         ("price_from_odoo_any",
             "SELECT COUNT(*) FROM odoo_books_mirror WHERE list_price IS NOT NULL"),
         ("price_from_odoo_nonzero",
             "SELECT COUNT(*) FROM odoo_books_mirror WHERE list_price > 0"),
         ("price_avg_odoo",
-            "SELECT ROUND(AVG(list_price)::numeric, 2) FROM odoo_books_mirror WHERE list_price > 0"),
+            "SELECT CAST(ROUND(AVG(list_price)::numeric, 2) AS FLOAT) FROM odoo_books_mirror WHERE list_price > 0"),
         ("price_min_odoo",
-            "SELECT MIN(list_price) FROM odoo_books_mirror WHERE list_price > 0"),
+            "SELECT CAST(MIN(list_price) AS FLOAT) FROM odoo_books_mirror WHERE list_price > 0"),
         ("price_max_odoo",
-            "SELECT MAX(list_price) FROM odoo_books_mirror WHERE list_price > 0"),
+            "SELECT CAST(MAX(list_price) AS FLOAT) FROM odoo_books_mirror WHERE list_price > 0"),
     ]
+    from decimal import Decimal
     for key, q in queries:
         try:
             dbmod.execute_query(cur, q)
-            out["counts"][key] = cur.fetchone()[0]
+            v = cur.fetchone()[0]
+            # Decimal -> float para que JSONResponse pueda serializar
+            if isinstance(v, Decimal):
+                v = float(v)
+            out["counts"][key] = v
         except Exception as e:
             out["counts"][key] = None
             out["errors"].append(f"{key}: {type(e).__name__}: {str(e)[:200]}")
