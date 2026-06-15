@@ -2151,6 +2151,12 @@
                 msg += `  CDL search target:           ${fmt(c.cdl_search_target_shard)}\n`;
                 msg += `  Google Books target:         ${fmt(c.gbooks_target_shard)}\n`;
                 msg += `  ISBN index (sitemap total):  ${fmt(c.isbn_index_total)}\n`;
+                msg += `\n💶 PRECIOS desde Odoo (list_price, todos los shards)\n`;
+                msg += `  Con precio (no NULL):        ${fmt(c.price_from_odoo_any)}\n`;
+                msg += `  Con precio > 0:              ${fmt(c.price_from_odoo_nonzero)}\n`;
+                msg += `  Precio promedio:             ${fmt(c.price_avg_odoo)}\n`;
+                msg += `  Mínimo:                      ${fmt(c.price_min_odoo)}\n`;
+                msg += `  Máximo:                      ${fmt(c.price_max_odoo)}\n`;
                 if (j.errors && j.errors.length > 0) {
                     msg += `\n❌ ERRORES SQL\n`;
                     j.errors.forEach(e => msg += `  · ${e}\n`);

@@ -820,6 +820,17 @@ async def admin_diagnose():
             f"AND gbooks_fetched_at IS NULL "
             f"AND {om._shard_clause()}"),
         ("isbn_index_total", "SELECT COUNT(*) FROM cdl_isbn_index"),
+        # ── Stats de precios desde Odoo (list_price) ──
+        ("price_from_odoo_any",
+            "SELECT COUNT(*) FROM odoo_books_mirror WHERE list_price IS NOT NULL"),
+        ("price_from_odoo_nonzero",
+            "SELECT COUNT(*) FROM odoo_books_mirror WHERE list_price > 0"),
+        ("price_avg_odoo",
+            "SELECT ROUND(AVG(list_price)::numeric, 2) FROM odoo_books_mirror WHERE list_price > 0"),
+        ("price_min_odoo",
+            "SELECT MIN(list_price) FROM odoo_books_mirror WHERE list_price > 0"),
+        ("price_max_odoo",
+            "SELECT MAX(list_price) FROM odoo_books_mirror WHERE list_price > 0"),
     ]
     for key, q in queries:
         try:
