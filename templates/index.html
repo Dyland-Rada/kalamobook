@@ -1305,6 +1305,10 @@
                             title="Velocidad REAL basada en timestamps de la BD (no counters en memoria)">
                         ⏱ Velocidad real
                     </button>
+                    <button class="btn btn-primary" onclick="odooModules()" style="background:#2980b9;"
+                            title="Verifica que módulos están instalados en tu Odoo (para decidir categ_id vs public_categ_ids)">
+                        📦 Módulos Odoo
+                    </button>
                     <button class="btn btn-primary" onclick="applyMigration()" style="background:#c0392b;"
                             title="Aplica los ALTER TABLE pendientes (anade cdl_author, cdl_editorial, etc. al mirror). Sin redeploy.">
                         🔧 Aplicar migración BD
@@ -2130,6 +2134,27 @@
                 out.textContent = msg;
             } catch (e) {
                 out.textContent = '❌ Error de conexión: ' + e.message;
+            }
+        }
+
+        async function odooModules() {
+            const out = document.getElementById('tools-result');
+            out.textContent = '📦 Consultando módulos de Odoo...';
+            try {
+                const r = await fetch('/api/v1/admin/odoo-modules');
+                const j = await r.json();
+                if (j.error) { out.textContent = '❌ ' + j.error; return; }
+                let msg = 'MÓDULOS ODOO\n\n';
+                const m = j.modules || {};
+                Object.keys(m).sort().forEach(name => {
+                    const state = m[name];
+                    const icon = state === 'installed' ? '✅' : (state === 'uninstalled' ? '⚪' : '⚠️');
+                    msg += `  ${icon} ${name}: ${state}\n`;
+                });
+                msg += `\n💡 ${j.interpretation}`;
+                out.textContent = msg;
+            } catch (e) {
+                out.textContent = '❌ Error: ' + e.message;
             }
         }
 

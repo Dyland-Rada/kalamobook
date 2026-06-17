@@ -766,6 +766,39 @@ async def admin_schema_info(table: str = Query("odoo_books_mirror")):
         conn.close()
 
 
+@app.get("/api/v1/admin/odoo-modules", tags=["Admin"])
+async def admin_odoo_modules():
+    """
+    Comprueba si modulos clave estan instalados en Odoo. Necesario para
+    decidir si push de categorias va a `categ_id` (interna, siempre existe)
+    o a `public_categ_ids` (e-commerce, requiere website_sale).
+    """
+    from odoo_client import OdooClient
+    interesting = ["website_sale", "website", "stock", "sale", "purchase",
+                   "product", "account"]
+    try:
+        async with OdooClient() as odoo:
+            rows = await odoo.search_read(
+                "ir.module.module",
+                [["name", "in", interesting]],
+                ["name", "state"],
+            )
+        installed = {r["name"]: r["state"] for r in rows}
+        return JSONResponse(content={
+            "modules": installed,
+            "website_sale_installed": installed.get("website_sale") == "installed",
+            "interpretation": (
+                "website_sale instalado -> usar public_categ_ids para Shopify"
+                if installed.get("website_sale") == "installed"
+                else "website_sale NO instalado -> solo categ_id por ahora"
+            ),
+        })
+    except Exception as e:
+        return JSONResponse(status_code=500, content={
+            "error": f"{type(e).__name__}: {e}"
+        })
+
+
 @app.get("/api/v1/admin/throughput", tags=["Admin"])
 async def admin_throughput():
     """
