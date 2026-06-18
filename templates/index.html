@@ -732,6 +732,7 @@
             <button class="tab-btn" onclick="switchTab('library')" id="tab-library">📚 Biblioteca <span
                     id="lib-count-badge"></span></button>
             <button class="tab-btn" onclick="switchTab('odoo')" id="tab-odoo">🔄 Odoo Sync</button>
+            <button class="tab-btn" onclick="switchTab('catalog')" id="tab-catalog">📖 Catálogo Odoo</button>
         </div>
 
         <!-- ═══ TAB 1: INDIVIDUAL SEARCH ═══ -->
@@ -1347,6 +1348,104 @@
                 <div id="proxies-result" style="margin-top:12px; font-size:0.85rem; color:#bbb; white-space:pre-wrap; font-family:monospace;"></div>
             </div>
         </div>
+
+        <!-- ═══ TAB 5: CATÁLOGO ODOO (browser de odoo_books_mirror) ═══ -->
+        <div class="tab-content" id="content-catalog">
+            <div class="card">
+                <div class="card-title">📖 Catálogo Odoo — explorar el mirror</div>
+                <p style="color:#888; font-size:0.88rem;">
+                    Lista paginada de los libros en <code>odoo_books_mirror</code>. Filtra
+                    para ver qué tiene categoría, descripción, proveedor o imagen.
+                </p>
+                <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:10px; margin-top:12px;">
+                    <div class="form-group">
+                        <label class="form-label">Buscar</label>
+                        <input class="input-field" id="cat-search" placeholder="ISBN, título, autor" />
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Categoría</label>
+                        <select class="input-field" id="cat-has-category">
+                            <option value="any">Cualquiera</option>
+                            <option value="yes">Con categoría</option>
+                            <option value="no">Sin categoría</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Descripción</label>
+                        <select class="input-field" id="cat-has-description">
+                            <option value="any">Cualquiera</option>
+                            <option value="yes">Con descripción</option>
+                            <option value="no">Sin descripción</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Proveedor Odoo</label>
+                        <select class="input-field" id="cat-has-supplier">
+                            <option value="any">Cualquiera</option>
+                            <option value="yes">Con proveedor</option>
+                            <option value="no">Sin proveedor</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Imagen</label>
+                        <select class="input-field" id="cat-has-image">
+                            <option value="any">Cualquiera</option>
+                            <option value="yes">Con imagen</option>
+                            <option value="no">Sin imagen</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Proveedor específico</label>
+                        <input class="input-field" id="cat-supplier" list="cat-suppliers-list" placeholder="PLANETA, UDL..." />
+                        <datalist id="cat-suppliers-list"></datalist>
+                    </div>
+                </div>
+                <div style="display:flex; gap:10px; margin-top:14px; align-items:center;">
+                    <button class="btn btn-primary" onclick="catalogSearch(1)">🔍 Buscar</button>
+                    <button class="btn btn-primary" onclick="catalogReset()" style="background:#34495e;">↺ Limpiar</button>
+                    <span id="cat-total" style="color:#888; font-size:0.9rem; margin-left:auto;"></span>
+                </div>
+            </div>
+
+            <div class="card" style="padding:0; overflow:hidden;">
+                <div class="library-table-wrap" id="cat-table-wrap" style="max-height:600px;">
+                    <table class="library-table" id="cat-table">
+                        <thead>
+                            <tr>
+                                <th></th>
+                                <th>ISBN</th>
+                                <th>Título</th>
+                                <th>Autor</th>
+                                <th>Editorial</th>
+                                <th>Categorías</th>
+                                <th>Desc</th>
+                                <th>Proveedor</th>
+                                <th>CDL</th>
+                                <th>GB</th>
+                            </tr>
+                        </thead>
+                        <tbody id="cat-tbody">
+                            <tr><td colspan="10" style="text-align:center; color:#666; padding:40px;">Pulsa Buscar</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="pagination" id="cat-pagination" style="padding:12px;"></div>
+            </div>
+
+            <!-- Modal de detalle -->
+            <div id="cat-modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.85); z-index:1000; overflow:auto;">
+                <div style="max-width:1100px; margin:30px auto; background:#1a1a2e; border-radius:16px; padding:28px;">
+                    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:18px;">
+                        <h2 style="color:#fff;" id="cat-modal-title">Detalle del libro</h2>
+                        <button onclick="document.getElementById('cat-modal').style.display='none'"
+                                style="background:#e94560; color:#fff; border:none; padding:6px 14px; border-radius:8px; cursor:pointer; font-size:1rem;">
+                            Cerrar
+                        </button>
+                    </div>
+                    <div id="cat-modal-body" style="color:#ddd; font-size:0.88rem;">cargando...</div>
+                </div>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -1359,12 +1458,14 @@
 
             if (tab === 'library') loadLibrary(1);
             if (tab === 'bulk') loadCategories();
-            if (tab === 'odoo') { odooPoll(); odooStartPolling(); isbnIndexPoll(); loadMirrorAndDistInitial(); }
-            else {
+            if (tab === 'odoo') { odooPoll(); odooStartPolling(); isbnIndexPoll(); loadMirrorAndDistInitial(); startResumenAutoRefresh(); }
+            if (tab === 'catalog') { catalogSearch(1); loadSuppliersDatalist(); }
+            if (tab !== 'odoo') {
                 odooStopPolling(); mirrorStopPolling(); distStopPolling();
                 if (typeof gbf !== 'undefined') gbf.stopPolling();
                 if (typeof cdl !== 'undefined') cdl.stopPolling();
                 if (typeof cds !== 'undefined') cds.stopPolling();
+                stopResumenAutoRefresh();
             }
         }
 
@@ -2555,6 +2656,249 @@
                     document.getElementById('btn-build-isbn').disabled = false;
                 }
             } catch (e) { console.error('isbnIndexPoll:', e); }
+        }
+
+        // ═══ CATÁLOGO ODOO (browser del mirror) ═══
+        async function catalogSearch(page) {
+            page = page || 1;
+            const params = new URLSearchParams({
+                page,
+                per_page: 50,
+                search: document.getElementById('cat-search').value.trim(),
+                has_category: document.getElementById('cat-has-category').value,
+                has_description: document.getElementById('cat-has-description').value,
+                has_supplier: document.getElementById('cat-has-supplier').value,
+                has_image: document.getElementById('cat-has-image').value,
+                supplier: document.getElementById('cat-supplier').value.trim(),
+            });
+            document.getElementById('cat-tbody').innerHTML =
+                '<tr><td colspan="10" style="text-align:center; color:#666; padding:30px;">Cargando...</td></tr>';
+            try {
+                const r = await fetch('/api/v1/odoo/mirror/browse?' + params);
+                const j = await r.json();
+                if (j.error) {
+                    document.getElementById('cat-tbody').innerHTML =
+                        `<tr><td colspan="10" style="text-align:center; color:#e94560;">${j.error}</td></tr>`;
+                    return;
+                }
+                document.getElementById('cat-total').textContent =
+                    `${(j.total || 0).toLocaleString()} libros encontrados (página ${j.page}/${j.pages || 1})`;
+                renderCatalogRows(j.rows || []);
+                renderCatalogPagination(j.page, j.pages || 1);
+            } catch (e) {
+                document.getElementById('cat-tbody').innerHTML =
+                    `<tr><td colspan="10" style="text-align:center; color:#e94560;">Error: ${e.message}</td></tr>`;
+            }
+        }
+
+        function renderCatalogRows(rows) {
+            if (!rows.length) {
+                document.getElementById('cat-tbody').innerHTML =
+                    '<tr><td colspan="10" style="text-align:center; color:#888; padding:30px;">Sin resultados</td></tr>';
+                return;
+            }
+            const tbody = document.getElementById('cat-tbody');
+            tbody.innerHTML = '';
+            rows.forEach(r => {
+                const tr = document.createElement('tr');
+                tr.style.cursor = 'pointer';
+                tr.onclick = () => catalogOpenDetail(r.odoo_id);
+                const img = r.imagen
+                    ? `<img class="table-thumb" src="${r.imagen}" loading="lazy" />`
+                    : '<span style="color:#666;">—</span>';
+                const cats = r.categorias
+                    ? `<span style="color:#1abc9c; font-size:0.78rem;">${(r.categorias || '').slice(0, 40)}</span>`
+                    : '<span style="color:#666;">—</span>';
+                const desc = r.tiene_desc
+                    ? '<span style="color:#27ae60;">✓</span>'
+                    : '<span style="color:#666;">—</span>';
+                const prov = r.proveedor
+                    ? `<span style="color:#d35400; font-size:0.78rem;">${(r.proveedor || '').slice(0, 30)}</span>`
+                    : '<span style="color:#666;">—</span>';
+                const cdl = r.cdl_fetched_at ? '<span style="color:#3498db;">✓</span>' : '—';
+                const gb = r.gbooks_fetched_at ? '<span style="color:#9b59b6;">✓</span>' : '—';
+                tr.innerHTML = `
+                    <td>${img}</td>
+                    <td><span style="font-family:monospace; font-size:0.8rem;">${r.barcode || ''}</span></td>
+                    <td>${(r.titulo || '').slice(0, 55)}</td>
+                    <td>${(r.autor || '').slice(0, 30)}</td>
+                    <td>${(r.editorial || '').slice(0, 25)}</td>
+                    <td>${cats}</td>
+                    <td style="text-align:center;">${desc}</td>
+                    <td>${prov}</td>
+                    <td style="text-align:center;">${cdl}</td>
+                    <td style="text-align:center;">${gb}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function renderCatalogPagination(page, pages) {
+            const wrap = document.getElementById('cat-pagination');
+            wrap.innerHTML = '';
+            const mkBtn = (label, p, disabled) => {
+                const b = document.createElement('button');
+                b.textContent = label;
+                b.disabled = !!disabled;
+                b.onclick = () => catalogSearch(p);
+                return b;
+            };
+            wrap.appendChild(mkBtn('« Anterior', page - 1, page <= 1));
+            const info = document.createElement('span');
+            info.className = 'page-info';
+            info.textContent = `${page} / ${pages}`;
+            wrap.appendChild(info);
+            wrap.appendChild(mkBtn('Siguiente »', page + 1, page >= pages));
+        }
+
+        function catalogReset() {
+            document.getElementById('cat-search').value = '';
+            document.getElementById('cat-has-category').value = 'any';
+            document.getElementById('cat-has-description').value = 'any';
+            document.getElementById('cat-has-supplier').value = 'any';
+            document.getElementById('cat-has-image').value = 'any';
+            document.getElementById('cat-supplier').value = '';
+            catalogSearch(1);
+        }
+
+        async function loadSuppliersDatalist() {
+            try {
+                const r = await fetch('/api/v1/odoo/mirror/suppliers-list');
+                const j = await r.json();
+                const dl = document.getElementById('cat-suppliers-list');
+                dl.innerHTML = '';
+                (j.suppliers || []).forEach(s => {
+                    const o = document.createElement('option');
+                    o.value = s.supplier;
+                    o.label = `${s.supplier} (${s.count})`;
+                    dl.appendChild(o);
+                });
+            } catch (e) { console.error('suppliers list:', e); }
+        }
+
+        async function catalogOpenDetail(odooId) {
+            const modal = document.getElementById('cat-modal');
+            const body = document.getElementById('cat-modal-body');
+            document.getElementById('cat-modal-title').textContent = `Libro #${odooId}`;
+            body.innerHTML = 'Cargando...';
+            modal.style.display = 'block';
+            try {
+                const r = await fetch(`/api/v1/odoo/mirror/book/${odooId}`);
+                const d = await r.json();
+                if (d.error) { body.innerHTML = `<p style="color:#e94560;">${d.error}</p>`; return; }
+                body.innerHTML = renderBookDetail(d);
+            } catch (e) {
+                body.innerHTML = `<p style="color:#e94560;">Error: ${e.message}</p>`;
+            }
+        }
+
+        function renderBookDetail(d) {
+            const sec = (title, items) => {
+                const filled = items.filter(([_k, v]) => v !== null && v !== undefined && v !== '');
+                if (!filled.length) return '';
+                return `
+                    <div style="margin-bottom:18px;">
+                        <h3 style="color:#e94560; font-size:0.95rem; margin-bottom:8px; text-transform:uppercase; letter-spacing:0.5px;">${title}</h3>
+                        <table style="width:100%; font-size:0.85rem;">
+                            ${filled.map(([k, v]) => `
+                                <tr>
+                                    <td style="color:#888; padding:4px 12px 4px 0; width:200px; vertical-align:top;">${k}</td>
+                                    <td style="color:#ddd; padding:4px 0;">${escapeHtml(String(v).slice(0, 600))}</td>
+                                </tr>
+                            `).join('')}
+                        </table>
+                    </div>
+                `;
+            };
+            const img = d.cdl_image_url || d.gbooks_thumbnail || d.books_image || '';
+            return `
+                <div style="display:flex; gap:24px; align-items:flex-start;">
+                    ${img ? `<img src="${img}" style="width:160px; border-radius:8px;"/>` : ''}
+                    <div style="flex:1;">
+                        <h2 style="color:#fff; margin-bottom:6px;">${d.name || '(sin título)'}</h2>
+                        <p style="color:#888; font-family:monospace;">ISBN: ${d.barcode || '—'}  ·  odoo_id: ${d.odoo_id}</p>
+                        ${d.cdl_author ? `<p style="color:#e94560; font-weight:600;">${d.cdl_author}</p>` : ''}
+                        ${d.inferred_categories ? `<p style="color:#1abc9c;">${d.inferred_categories}</p>` : ''}
+                        ${d.supplier_names ? `<p style="color:#d35400;">🏪 ${d.supplier_names}</p>` : ''}
+                    </div>
+                </div>
+                <hr style="border:none; border-top:1px solid #333; margin:20px 0;"/>
+                ${sec('Mirror (Odoo)', [
+                    ['name', d.name], ['list_price', d.list_price],
+                    ['categ_id', d.categ_id], ['categ_name', d.categ_name],
+                    ['public_categ_ids', d.public_categ_ids],
+                    ['public_categ_names', d.public_categ_names],
+                    ['description (HTML)', d.description ? d.description.slice(0, 300) + '...' : null],
+                    ['description_sale', d.description_sale],
+                    ['synced_at', d.synced_at],
+                ])}
+                ${sec('Casa del Libro (CDL)', [
+                    ['cdl_author', d.cdl_author], ['cdl_editorial', d.cdl_editorial],
+                    ['cdl_price', d.cdl_price], ['cdl_language', d.cdl_language],
+                    ['cdl_pages', d.cdl_pages], ['cdl_binding', d.cdl_binding],
+                    ['cdl_weight', d.cdl_weight], ['cdl_height', d.cdl_height], ['cdl_width', d.cdl_width],
+                    ['cdl_translator', d.cdl_translator], ['cdl_illustrator', d.cdl_illustrator],
+                    ['cdl_collection', d.cdl_collection], ['cdl_release_date', d.cdl_release_date],
+                    ['cdl_url', d.cdl_url], ['cdl_image_url', d.cdl_image_url],
+                    ['cdl_fetched_at', d.cdl_fetched_at],
+                ])}
+                ${sec('Google Books', [
+                    ['gbooks_publisher', d.gbooks_publisher],
+                    ['gbooks_language', d.gbooks_language], ['gbooks_pages', d.gbooks_pages],
+                    ['gbooks_thumbnail', d.gbooks_thumbnail],
+                    ['gbooks_fetched_at', d.gbooks_fetched_at],
+                ])}
+                ${sec('Categorías inferidas', [
+                    ['inferred_categories', d.inferred_categories],
+                    ['inferred_source', d.inferred_source],
+                ])}
+                ${sec('Proveedores Odoo', [
+                    ['supplier_names', d.supplier_names],
+                    ['supplier_partner_ids', d.supplier_partner_ids],
+                    ['supplier_count', d.supplier_count],
+                    ['suppliers_synced_at', d.suppliers_synced_at],
+                ])}
+                ${sec('Tabla books (scrape CDL histórico)', [
+                    ['books_author', d.books_author], ['books_editorial', d.books_editorial],
+                    ['books_weight', d.books_weight], ['books_height', d.books_height],
+                    ['books_width', d.books_width],
+                    ['books_translator', d.books_translator], ['books_illustrator', d.books_illustrator],
+                    ['books_collection', d.books_collection],
+                    ['books_url', d.books_url], ['books_image', d.books_image],
+                ])}
+                ${sec('Distribuidor (XLSX)', [
+                    ['dist_fuente', d.dist_fuente], ['dist_author', d.dist_author],
+                    ['dist_editorial', d.dist_editorial], ['dist_price', d.dist_price],
+                ])}
+            `;
+        }
+
+        function escapeHtml(s) {
+            return String(s).replace(/[&<>"']/g, ch => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+            }[ch]));
+        }
+
+        // Permite buscar pulsando Enter en el input
+        document.addEventListener('DOMContentLoaded', () => {
+            const s = document.getElementById('cat-search');
+            if (s) s.addEventListener('keypress', e => { if (e.key === 'Enter') catalogSearch(1); });
+            const sp = document.getElementById('cat-supplier');
+            if (sp) sp.addEventListener('keypress', e => { if (e.key === 'Enter') catalogSearch(1); });
+        });
+
+        // ═══ AUTO-REFRESH del resumen en tab Odoo Sync ═══
+        let resumenAutoTimer = null;
+        function startResumenAutoRefresh() {
+            stopResumenAutoRefresh();
+            resumenAutoTimer = setInterval(() => {
+                if (document.getElementById('content-odoo')?.classList.contains('active')) {
+                    refreshAllStats();
+                }
+            }, 30000);
+        }
+        function stopResumenAutoRefresh() {
+            if (resumenAutoTimer) { clearInterval(resumenAutoTimer); resumenAutoTimer = null; }
         }
 
         // ═══ INIT ═══

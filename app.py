@@ -1030,6 +1030,155 @@ async def admin_run_migrations():
         conn.close()
 
 
+@app.get("/api/v1/odoo/mirror/browse", tags=["Odoo"])
+async def odoo_mirror_browse(
+    page: int = Query(1, ge=1),
+    per_page: int = Query(50, ge=10, le=200),
+    search: str = Query(""),
+    has_category: str = Query("any"),
+    has_description: str = Query("any"),
+    has_supplier: str = Query("any"),
+    has_image: str = Query("any"),
+    supplier: str = Query(""),
+):
+    """
+    Lista paginada del mirror con filtros utiles para auditar el progreso
+    del enriquecimiento. Para detalle de un libro -> /odoo/mirror/book/{id}.
+    """
+    import db as dbmod
+    where = ["1=1"]
+    params = []
+
+    if search.strip():
+        s = f"%{search.strip()}%"
+        where.append("(m.barcode ILIKE ? OR m.name ILIKE ? OR m.cdl_author ILIKE ?)")
+        params.extend([s, s, s])
+
+    def _flag(col, mode):
+        if mode == "yes":
+            where.append(f"({col} IS NOT NULL AND {col} <> '')")
+        elif mode == "no":
+            where.append(f"({col} IS NULL OR {col} = '')")
+
+    _flag("m.inferred_categories", has_category)
+    _flag("m.description", has_description)
+    _flag("m.supplier_names", has_supplier)
+    _flag("COALESCE(m.cdl_image_url, m.gbooks_thumbnail)", has_image)
+
+    if supplier.strip():
+        where.append("m.supplier_names ILIKE ?")
+        params.append(f"%{supplier.strip()}%")
+
+    where_sql = " AND ".join(where)
+    offset = (page - 1) * per_page
+
+    conn = dbmod.get_connection()
+    cur = conn.cursor()
+    try:
+        dbmod.execute_query(cur, f"SELECT COUNT(*) FROM odoo_books_mirror m WHERE {where_sql}", tuple(params))
+        total = cur.fetchone()[0]
+
+        dbmod.execute_query(cur, f"""
+            SELECT
+                m.odoo_id, m.barcode,
+                COALESCE(NULLIF(m.name, ''), '') AS titulo,
+                m.cdl_author AS autor,
+                COALESCE(m.cdl_editorial, m.gbooks_publisher) AS editorial,
+                m.inferred_categories AS categorias,
+                CASE WHEN m.description IS NOT NULL AND m.description <> '' THEN 1 ELSE 0 END AS tiene_desc,
+                m.supplier_names AS proveedor,
+                COALESCE(m.cdl_image_url, m.gbooks_thumbnail) AS imagen,
+                m.cdl_fetched_at, m.gbooks_fetched_at, m.suppliers_synced_at
+            FROM odoo_books_mirror m
+            WHERE {where_sql}
+            ORDER BY m.odoo_id
+            LIMIT ? OFFSET ?
+        """, tuple(params) + (per_page, offset))
+
+        cols = [c[0] for c in cur.description]
+        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+        for r in rows:
+            for k in ("cdl_fetched_at", "gbooks_fetched_at", "suppliers_synced_at"):
+                if r.get(k) is not None:
+                    r[k] = str(r[k])
+        return JSONResponse(content={
+            "total": total, "page": page, "per_page": per_page,
+            "pages": (total + per_page - 1) // per_page,
+            "rows": rows,
+        })
+    except Exception as e:
+        try: conn.rollback()
+        except Exception: pass
+        return JSONResponse(status_code=500, content={"error": f"{type(e).__name__}: {e}"})
+    finally:
+        conn.close()
+
+
+@app.get("/api/v1/odoo/mirror/book/{odoo_id}", tags=["Odoo"])
+async def odoo_mirror_book_detail(odoo_id: int):
+    """Vista 360 de un libro: mirror + JOIN con books (CDL) + distributor_books."""
+    import db as dbmod
+    conn = dbmod.get_connection()
+    cur = conn.cursor()
+    try:
+        dbmod.execute_query(cur, """
+            SELECT m.*, b.author AS books_author, b.editorial AS books_editorial,
+                   b.weight AS books_weight, b.height AS books_height,
+                   b.width AS books_width, b.translator AS books_translator,
+                   b.illustrator AS books_illustrator, b.collection AS books_collection,
+                   b.url AS books_url, b.image_url AS books_image,
+                   d.fuente AS dist_fuente, d.author AS dist_author,
+                   d.editorial AS dist_editorial, d.price AS dist_price
+            FROM odoo_books_mirror m
+            LEFT JOIN books b ON m.barcode = b.isbn
+            LEFT JOIN distributor_books d ON m.barcode = d.isbn
+            WHERE m.odoo_id = ?
+        """, (odoo_id,))
+        row = cur.fetchone()
+        if not row:
+            return JSONResponse(status_code=404, content={"error": "not found"})
+        cols = [c[0] for c in cur.description]
+        d = dict(zip(cols, row))
+        from decimal import Decimal
+        for k, v in list(d.items()):
+            if isinstance(v, Decimal):
+                d[k] = float(v)
+            elif hasattr(v, "isoformat"):
+                d[k] = v.isoformat()
+        return JSONResponse(content=d)
+    except Exception as e:
+        try: conn.rollback()
+        except Exception: pass
+        return JSONResponse(status_code=500, content={"error": f"{type(e).__name__}: {e}"})
+    finally:
+        conn.close()
+
+
+@app.get("/api/v1/odoo/mirror/suppliers-list", tags=["Odoo"])
+async def odoo_mirror_suppliers_list():
+    """Top proveedores por conteo. Util como datalist en filtros de browse."""
+    import db as dbmod
+    conn = dbmod.get_connection()
+    cur = conn.cursor()
+    try:
+        dbmod.execute_query(cur, """
+            SELECT supplier_names, COUNT(*) AS n
+            FROM odoo_books_mirror
+            WHERE supplier_names IS NOT NULL AND supplier_names <> ''
+            GROUP BY supplier_names
+            ORDER BY n DESC
+            LIMIT 50
+        """)
+        rows = [{"supplier": r[0], "count": r[1]} for r in cur.fetchall()]
+        return JSONResponse(content={"suppliers": rows})
+    except Exception as e:
+        try: conn.rollback()
+        except Exception: pass
+        return JSONResponse(status_code=500, content={"error": f"{type(e).__name__}: {e}"})
+    finally:
+        conn.close()
+
+
 @app.get("/api/v1/odoo/mirror/export.csv", tags=["Odoo"])
 async def odoo_mirror_export_csv(
     only_with_categories: bool = Query(
