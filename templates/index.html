@@ -1006,6 +1006,10 @@
                         <div class="stat-label">Google Books fetched</div>
                     </div>
                     <div class="stat-box">
+                        <div class="stat-number" style="color:#c0392b" id="mirror-stat-supplier">0</div>
+                        <div class="stat-label">Con proveedor Odoo</div>
+                    </div>
+                    <div class="stat-box">
                         <div class="stat-number" style="color:#d35400" id="mirror-stat-cdl-done">0</div>
                         <div class="stat-label">CDL fetched</div>
                     </div>
@@ -1168,6 +1172,10 @@
                     Inferir categorías cruzando con scrapes (CDL + distribuidores), crearlas en Odoo y asignarlas.
                 </p>
                 <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:12px;">
+                    <button class="btn btn-primary" onclick="suppliersSyncStart()" style="background:#d35400;"
+                            title="Pulla product.supplierinfo + res.partner desde Odoo. Espeja proveedores al mirror sin escribir nada en Odoo.">
+                        🏪 Sync proveedores Odoo
+                    </button>
                     <button class="btn btn-primary" onclick="mirrorSyncCategories()" style="background:#8e44ad;"
                             title="Pulla los nombres de las public_categ_ids de Odoo (si las tiene)">
                         🏷 1. Sync desde Odoo
@@ -1719,6 +1727,15 @@
                 document.getElementById('mirror-stat-local').textContent = (job.mirror_count_local || 0).toLocaleString();
                 document.getElementById('mirror-stat-inferred').textContent = (job.inferred_categorized || 0).toLocaleString();
                 document.getElementById('mirror-stat-categ-cache').textContent = (job.public_categories_cached || 0).toLocaleString();
+                if (job.gbooks_fetched_count !== undefined) {
+                    document.getElementById('mirror-stat-gbooks-done').textContent = (job.gbooks_fetched_count || 0).toLocaleString();
+                }
+                if (job.cdl_fetched_count !== undefined) {
+                    document.getElementById('mirror-stat-cdl-done').textContent = (job.cdl_fetched_count || 0).toLocaleString();
+                }
+                if (job.with_supplier_count !== undefined) {
+                    document.getElementById('mirror-stat-supplier').textContent = (job.with_supplier_count || 0).toLocaleString();
+                }
 
                 const badge = document.getElementById('mirror-status-badge');
                 badge.textContent = (job.status || 'idle').toUpperCase();
@@ -1756,6 +1773,43 @@
             } catch (e) {
                 console.error('Mirror poll error:', e);
             }
+        }
+
+        async function suppliersSyncStart() {
+            if (!confirm('Sync proveedores desde Odoo?\n\n' +
+                         'Lee product.supplierinfo + res.partner. Solo lectura en Odoo.\n' +
+                         'Tarda ~5 min. Espeja vendor de ~200k libros al mirror.')) return;
+            try {
+                const resp = await fetch('/api/v1/odoo/mirror/suppliers-sync', { method: 'POST' });
+                const data = await resp.json();
+                if (data.status !== 'started') {
+                    alert(`❌ ${data.message || 'No se pudo iniciar'}`);
+                    return;
+                }
+                alert('▶ Sync proveedores arrancado. Polleo cada 5s.');
+                const t = setInterval(async () => {
+                    try {
+                        const r = await fetch('/api/v1/odoo/mirror/suppliers-sync-status');
+                        const s = await r.json();
+                        if (['completed', 'error', 'stopped'].includes(s.status)) {
+                            clearInterval(t);
+                            if (s.status === 'completed') {
+                                alert(
+                                    `✅ Sync proveedores OK:\n` +
+                                    `• ${(s.supplierinfo_rows || 0).toLocaleString()} filas product.supplierinfo\n` +
+                                    `• ${(s.distinct_partners || 0).toLocaleString()} vendors distintos\n` +
+                                    `• ${(s.products_updated || 0).toLocaleString()} libros actualizados\n` +
+                                    `• ${(s.with_supplier_count || 0).toLocaleString()} libros con vendor en mirror`
+                                );
+                            } else if (s.status === 'error') {
+                                alert(`❌ Sync fallo:\n${(s.errors || []).join('\n')}`);
+                            }
+                        } else {
+                            console.log(`[SuppSync] ${s.supplierinfo_rows} si · ${s.products_updated} updated`);
+                        }
+                    } catch (_) {}
+                }, 5000);
+            } catch (e) { alert('Error: ' + e.message); }
         }
 
         async function mirrorSyncCategories() {
@@ -2035,6 +2089,9 @@
                 if (j.cdl_fetched_count !== undefined) {
                     document.getElementById('mirror-stat-cdl-done').textContent = (j.cdl_fetched_count || 0).toLocaleString();
                 }
+                if (j.with_supplier_count !== undefined) {
+                    document.getElementById('mirror-stat-supplier').textContent = (j.with_supplier_count || 0).toLocaleString();
+                }
             } catch (e) {}
         }
 
@@ -2220,6 +2277,8 @@
                 msg += `  CDL search target:           ${fmt(c.cdl_search_target_shard)}\n`;
                 msg += `  Google Books target:         ${fmt(c.gbooks_target_shard)}\n`;
                 msg += `  ISBN index (sitemap total):  ${fmt(c.isbn_index_total)}\n`;
+                msg += `\n🏪 PROVEEDORES desde Odoo (todos los shards)\n`;
+                msg += `  Libros con vendor asignado:  ${fmt(c.with_supplier_odoo)}\n`;
                 msg += `\n💶 PRECIOS desde Odoo (list_price, todos los shards)\n`;
                 msg += `  Con precio (no NULL):        ${fmt(c.price_from_odoo_any)}\n`;
                 msg += `  Con precio > 0:              ${fmt(c.price_from_odoo_nonzero)}\n`;

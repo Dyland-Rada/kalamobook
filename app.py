@@ -420,6 +420,53 @@ async def odoo_mirror_status():
     return JSONResponse(content=odoo_mirror.get_mirror_status())
 
 
+@app.post("/api/v1/odoo/mirror/suppliers-sync", tags=["Odoo"])
+async def odoo_mirror_suppliers_sync(batch_size: int = Query(2000, ge=500, le=5000)):
+    """
+    Pulla product.supplierinfo + res.partner desde Odoo y espeja el vendor
+    de cada libro en odoo_books_mirror.supplier_names. SOLO LECTURA en Odoo.
+    Idempotente. Tarda ~5 min para ~200k libros con vendor cargado.
+    """
+    import threading
+    import sys
+    import odoo_mirror
+
+    if odoo_mirror.get_suppliers_sync_status().get("status") == "running":
+        return JSONResponse(status_code=409, content={
+            "status": "error", "message": "Sync de proveedores ya esta corriendo."
+        })
+
+    def _run_in_thread():
+        if sys.platform == 'win32':
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
+        try:
+            new_loop.run_until_complete(
+                odoo_mirror.sync_suppliers_from_odoo(batch_size=batch_size)
+            )
+        finally:
+            new_loop.close()
+
+    t = threading.Thread(target=_run_in_thread, daemon=True)
+    t.start()
+    return JSONResponse(content={"status": "started"})
+
+
+@app.post("/api/v1/odoo/mirror/suppliers-sync-stop", tags=["Odoo"])
+async def odoo_mirror_suppliers_sync_stop():
+    import odoo_mirror
+    if odoo_mirror.stop_suppliers_sync():
+        return JSONResponse(content={"status": "stopping"})
+    return JSONResponse(status_code=400, content={"status": "error", "message": "No hay job corriendo."})
+
+
+@app.get("/api/v1/odoo/mirror/suppliers-sync-status", tags=["Odoo"])
+async def odoo_mirror_suppliers_sync_status():
+    import odoo_mirror
+    return JSONResponse(content=odoo_mirror.get_suppliers_sync_status())
+
+
 @app.post("/api/v1/odoo/mirror/sync-categories", tags=["Odoo"])
 async def odoo_mirror_sync_categories():
     """
@@ -898,6 +945,10 @@ async def admin_diagnose():
             f"AND gbooks_fetched_at IS NULL "
             f"AND {om._shard_clause()}"),
         ("isbn_index_total", "SELECT COUNT(*) FROM cdl_isbn_index"),
+        # ── Proveedores espejados desde Odoo (product.supplierinfo) ──
+        ("with_supplier_odoo",
+            "SELECT COUNT(*) FROM odoo_books_mirror "
+            "WHERE supplier_count IS NOT NULL AND supplier_count > 0"),
         # ── Stats de precios desde Odoo (list_price) ──
         # CAST a FLOAT obligatorio: psycopg2 devuelve Decimal y JSONResponse
         # no sabe serializarlo -> 500 'Internal Server Error'.

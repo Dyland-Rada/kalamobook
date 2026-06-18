@@ -363,6 +363,12 @@ def init_db():
         "cdl_url TEXT",
         "cdl_price TEXT",
         "cdl_language TEXT",
+        # Proveedores leidos directamente desde Odoo (product.supplierinfo).
+        # Carga inicial via Kalamo Import Tool, ~200k libros ya tienen vendor.
+        "supplier_partner_ids TEXT",   # JSON array de res.partner IDs
+        "supplier_names TEXT",          # "PLANETA | PENGUIN | UDL" separado por |
+        "supplier_count INTEGER",
+        "suppliers_synced_at TIMESTAMP",
     ):
         try:
             db.execute_query(cursor, f"ALTER TABLE odoo_books_mirror ADD COLUMN {col}")

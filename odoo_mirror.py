@@ -86,6 +86,7 @@ def get_mirror_status() -> dict:
     job["inferred_categorized"] = count_inferred_rows()
     job["gbooks_fetched_count"] = _count_with("gbooks_fetched_at IS NOT NULL")
     job["cdl_fetched_count"] = _count_with("cdl_fetched_at IS NOT NULL")
+    job["with_supplier_count"] = _count_with("supplier_count IS NOT NULL AND supplier_count > 0")
     if "errors" in job:
         job["errors"] = job["errors"][-5:]
     return job
@@ -433,6 +434,174 @@ async def sync_public_categories() -> dict:
         "fetched_categories": n_upserted,
         "backfilled_mirror_rows": backfilled,
     }
+
+
+# ── Sync de proveedores desde Odoo (product.supplierinfo) ─────────────
+# La Kalamo Import Tool cargó ~200k libros con vendor asignado. Mi mirror
+# nunca pulleó ese campo. Este job lo trae sin tocar nada en Odoo (solo lee).
+suppliers_sync_job: dict | None = None
+
+
+def get_suppliers_sync_status() -> dict:
+    job = dict(suppliers_sync_job) if suppliers_sync_job else {"status": "idle"}
+    job["with_supplier_count"] = _count_with(
+        "supplier_count IS NOT NULL AND supplier_count > 0"
+    )
+    if "errors" in job:
+        job["errors"] = job["errors"][-5:]
+    return job
+
+
+def stop_suppliers_sync():
+    global suppliers_sync_job
+    if suppliers_sync_job and suppliers_sync_job.get("status") == "running":
+        suppliers_sync_job["status"] = "stopped"
+        return True
+    return False
+
+
+async def sync_suppliers_from_odoo(batch_size: int = 2000) -> dict:
+    """
+    Lee product.supplierinfo + res.partner de Odoo y espeja vendors al
+    mirror. Solo LECTURA en Odoo, no escribe nada alli.
+
+    Steps:
+      1. Pull paginado de product.supplierinfo
+      2. Pull de res.partner para los partner_ids distintos
+      3. UPDATE bulk al mirror con supplier_names + supplier_partner_ids
+    """
+    global suppliers_sync_job
+    suppliers_sync_job = {
+        "status": "running",
+        "started_at": datetime.now().isoformat(),
+        "supplierinfo_rows": 0,
+        "distinct_partners": 0,
+        "products_updated": 0,
+        "errors": [],
+    }
+    job = suppliers_sync_job
+
+    try:
+        # ── Paso 1: trae product.supplierinfo paginado ──
+        from collections import defaultdict
+        # {product_tmpl_id: [(partner_id, partner_code, price), ...]}
+        si_by_tmpl: dict[int, list[tuple]] = defaultdict(list)
+        partner_ids: set[int] = set()
+
+        async with OdooClient() as odoo:
+            print("[SuppSync] Pullando product.supplierinfo...")
+            offset = 0
+            while job["status"] == "running":
+                rows = await odoo.search_read(
+                    "product.supplierinfo",
+                    [],
+                    ["id", "product_tmpl_id", "partner_id", "product_code", "price"],
+                    offset=offset, limit=batch_size, order="id",
+                )
+                if not rows:
+                    break
+                for r in rows:
+                    tmpl = r.get("product_tmpl_id")
+                    partner = r.get("partner_id")
+                    if isinstance(tmpl, list) and tmpl:
+                        tmpl_id = tmpl[0]
+                    else:
+                        continue
+                    partner_id = None
+                    if isinstance(partner, list) and partner:
+                        partner_id = partner[0]
+                    if partner_id:
+                        partner_ids.add(partner_id)
+                    si_by_tmpl[tmpl_id].append((
+                        partner_id,
+                        r.get("product_code") or "",
+                        r.get("price") or 0,
+                    ))
+                job["supplierinfo_rows"] += len(rows)
+                offset += len(rows)
+                print(f"[SuppSync] supplierinfo: {job['supplierinfo_rows']} filas...")
+
+            # ── Paso 2: trae res.partner por sus IDs ──
+            print(f"[SuppSync] Pullando {len(partner_ids)} res.partner...")
+            partner_names: dict[int, str] = {}
+            if partner_ids:
+                ids_list = list(partner_ids)
+                # Chunk para no mandar lista gigante en un solo XML-RPC
+                for i in range(0, len(ids_list), 500):
+                    chunk = ids_list[i:i+500]
+                    rows = await odoo.search_read(
+                        "res.partner",
+                        [["id", "in", chunk]],
+                        ["id", "name"],
+                    )
+                    for r in rows:
+                        partner_names[r["id"]] = (r.get("name") or "").strip()
+            job["distinct_partners"] = len(partner_names)
+
+        # ── Paso 3: UPDATE bulk al mirror ──
+        print(f"[SuppSync] Aplicando UPDATE a mirror "
+              f"({len(si_by_tmpl)} product_tmpl con vendor)...")
+        conn = db.get_connection()
+        cur = conn.cursor()
+        try:
+            batch = []
+            for tmpl_id, suppliers in si_by_tmpl.items():
+                names_seen = []
+                ids_seen = []
+                for partner_id, _code, _price in suppliers:
+                    if not partner_id:
+                        continue
+                    name = partner_names.get(partner_id)
+                    if name and name not in names_seen:
+                        names_seen.append(name)
+                    if partner_id not in ids_seen:
+                        ids_seen.append(partner_id)
+                if not ids_seen:
+                    continue
+                names_str = " | ".join(names_seen)
+                ids_json = json.dumps(ids_seen)
+                batch.append((ids_json, names_str, len(ids_seen), tmpl_id))
+
+                if len(batch) >= 500:
+                    _suppliers_apply_batch(cur, batch)
+                    conn.commit()
+                    job["products_updated"] += len(batch)
+                    batch = []
+
+            if batch:
+                _suppliers_apply_batch(cur, batch)
+                conn.commit()
+                job["products_updated"] += len(batch)
+        finally:
+            conn.close()
+
+        if job["status"] == "running":
+            job["status"] = "completed"
+        print(f"[SuppSync] DONE — {job['products_updated']} productos actualizados "
+              f"con vendor de Odoo")
+    except Exception as e:
+        job["status"] = "error"
+        err = f"{type(e).__name__}: {e!r}"
+        job["errors"].append(err[:200])
+        print(f"[SuppSync] Fatal: {err}")
+
+    return job
+
+
+def _suppliers_apply_batch(cur, batch):
+    """UPDATE batch de (ids_json, names_str, count, tmpl_id)."""
+    for ids_json, names_str, count, tmpl_id in batch:
+        try:
+            db.execute_query(cur, """
+                UPDATE odoo_books_mirror
+                SET supplier_partner_ids = ?,
+                    supplier_names = ?,
+                    supplier_count = ?,
+                    suppliers_synced_at = CURRENT_TIMESTAMP
+                WHERE odoo_id = ?
+            """, (ids_json, names_str, count, tmpl_id))
+        except Exception:
+            continue
 
 
 # ── Inferencia de categorias desde fuentes scrapeadas ─────────────────
@@ -1625,6 +1794,8 @@ def export_csv_streaming(only_with_categories: bool = False):
                 COALESCE(NULLIF(m.cdl_url, ''), NULLIF(b.url, ''),
                          NULLIF(d.url, '')) AS url_cdl,
                 d.fuente AS distribuidor,
+                COALESCE(NULLIF(m.supplier_names, ''), '') AS proveedor_odoo,
+                m.supplier_count AS proveedores_odoo_count,
                 m.categ_id AS odoo_categ_id,
                 m.categ_name AS odoo_categ_name,
                 m.synced_at
@@ -1661,7 +1832,8 @@ def export_csv_streaming(only_with_categories: bool = False):
         "traductor", "ilustrador",
         "peso", "alto", "ancho", "imagen",
         "fecha_publicacion", "coleccion", "url_cdl",
-        "distribuidor", "odoo_categ_id", "odoo_categ_name", "sincronizado",
+        "distribuidor", "proveedor_odoo", "proveedores_odoo_count",
+        "odoo_categ_id", "odoo_categ_name", "sincronizado",
     ]
     # Excel-friendly:
     #  - BOM UTF-8 al inicio (﻿) -> Excel detecta encoding, evita Ã©
