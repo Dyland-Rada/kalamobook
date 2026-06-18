@@ -813,6 +813,41 @@ async def admin_schema_info(table: str = Query("odoo_books_mirror")):
         conn.close()
 
 
+@app.get("/api/v1/admin/odoo-warehouses", tags=["Admin"])
+async def admin_odoo_warehouses():
+    """
+    Lista los warehouses de Odoo con su code y lot_stock_id. Util para que
+    el sync SINLI verifique que sus codigos (AZE01, ICA01, LES01...) coinciden
+    con los reales antes de escribir stock.quant.
+    """
+    from odoo_client import OdooClient
+    try:
+        async with OdooClient() as odoo:
+            rows = await odoo.search_read(
+                "stock.warehouse",
+                [],
+                ["id", "code", "name", "lot_stock_id"],
+                order="code",
+            )
+        out = []
+        for r in rows:
+            lot = r.get("lot_stock_id")
+            lot_id = lot[0] if isinstance(lot, list) and lot else None
+            lot_name = lot[1] if isinstance(lot, list) and len(lot) > 1 else None
+            out.append({
+                "id": r.get("id"),
+                "code": r.get("code") or "",
+                "name": r.get("name") or "",
+                "lot_stock_id": lot_id,
+                "lot_stock_name": lot_name,
+            })
+        return JSONResponse(content={"warehouses": out, "count": len(out)})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={
+            "error": f"{type(e).__name__}: {e}"
+        })
+
+
 @app.get("/api/v1/admin/odoo-modules", tags=["Admin"])
 async def admin_odoo_modules():
     """

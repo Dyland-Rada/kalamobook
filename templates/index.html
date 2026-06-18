@@ -1318,6 +1318,10 @@
                             title="Verifica que módulos están instalados en tu Odoo (para decidir categ_id vs public_categ_ids)">
                         📦 Módulos Odoo
                     </button>
+                    <button class="btn btn-primary" onclick="odooWarehouses()" style="background:#16a085;"
+                            title="Lista almacenes de Odoo con su code y lot_stock_id (referencia para el sync SINLI)">
+                        🏭 Almacenes Odoo
+                    </button>
                     <button class="btn btn-primary" onclick="applyMigration()" style="background:#c0392b;"
                             title="Aplica los ALTER TABLE pendientes (anade cdl_author, cdl_editorial, etc. al mirror). Sin redeploy.">
                         🔧 Aplicar migración BD
@@ -2292,6 +2296,29 @@
                 out.textContent = msg;
             } catch (e) {
                 out.textContent = '❌ Error de conexión: ' + e.message;
+            }
+        }
+
+        async function odooWarehouses() {
+            const out = document.getElementById('tools-result');
+            out.textContent = '🏭 Consultando almacenes de Odoo...';
+            try {
+                const r = await fetch('/api/v1/admin/odoo-warehouses');
+                const j = await r.json();
+                if (j.error) { out.textContent = '❌ ' + j.error; return; }
+                let msg = `ALMACENES EN ODOO (${j.count})\n\n`;
+                msg += `code           nombre                          lot_stock_id\n`;
+                msg += `─────────────────────────────────────────────────────────────\n`;
+                (j.warehouses || []).forEach(w => {
+                    const code = (w.code || '').padEnd(14);
+                    const name = (w.name || '').slice(0, 30).padEnd(32);
+                    const lot = w.lot_stock_id || '—';
+                    msg += `${code} ${name}${lot}\n`;
+                });
+                msg += `\n💡 Útil para que el sync SINLI verifique los codigos en proveedor_almacen_odoo.`;
+                out.textContent = msg;
+            } catch (e) {
+                out.textContent = '❌ Error: ' + e.message;
             }
         }
 
