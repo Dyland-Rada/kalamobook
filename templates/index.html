@@ -1136,6 +1136,37 @@
                 <div style="font-size:0.78rem; color:#888; margin-top:8px;" id="isbn-index-msg"></div>
             </div>
 
+            <!-- ═══ JOB 5 — CDL HTTP (ultra-rápido, sin browser) ═══ -->
+            <div class="card" style="border:2px solid rgba(46,204,113,0.4);">
+                <div class="card-title">
+                    ⚡ Casa del Libro — HTTP ultra-rápido (recomendado)
+                    <span class="status-badge" id="cdlh-status-badge" style="font-size:0.7rem;">IDLE</span>
+                </div>
+                <p style="color:#888; font-size:0.88rem;">
+                    <strong style="color:#2ecc71;">~2000 libros/min</strong> con aiohttp+BeautifulSoup sin browser. Trae TODOS los campos
+                    (peso, alto, ancho, encuadernación, traductor, descripción, categorías).
+                    Si CDL te rate-limita, se detiene solo. Reemplaza a los 2 jobs CDL anteriores para volumen masivo.
+                </p>
+                <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:12px;">
+                    <button class="btn btn-success" id="btn-cdlh-start" onclick="cdlhStart()">▶ Iniciar (concurrency 20)</button>
+                    <button class="btn btn-danger" id="btn-cdlh-stop" onclick="cdlhStop()" disabled>⏹ Detener</button>
+                </div>
+                <div style="margin-top:14px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; font-size:0.85rem; color:#bbb;">
+                        <span id="cdlh-progress-text">— / —</span>
+                        <span><span id="cdlh-stat-matched" style="color:#2ecc71;">0 match</span> · <span id="cdlh-stat-blocked" style="color:#e94560;">0 rate-limit</span></span>
+                    </div>
+                    <div style="background:#2c2f3e; border-radius:6px; height:10px; overflow:hidden;">
+                        <div id="cdlh-progress-fill"
+                             style="background:linear-gradient(90deg,#27ae60,#2ecc71); height:100%; width:0%; transition:width 0.3s;"></div>
+                    </div>
+                </div>
+                <div id="cdlh-errors" style="display:none; margin-top:10px;">
+                    <div class="section-label" style="color:#e94560;">Errores</div>
+                    <ul id="cdlh-errors-list" style="font-size:0.8rem; color:#e94560; padding-left:20px;"></ul>
+                </div>
+            </div>
+
             <!-- ═══ JOB 4 — CDL BULK VIA SEARCH (cobertura total) ═══ -->
             <div class="card">
                 <div class="card-title">
@@ -2155,6 +2186,17 @@
             matchedEl: 'cds-stat-matched', secondaryEl: 'cds-stat-transient', secondaryKey: 'transient_skipped',
             errorsBox: 'cds-errors', errorsList: 'cds-errors-list',
         });
+        const cdlh = makeJobController({
+            name: 'CDL HTTP',
+            startUrl: '/api/v1/odoo/mirror/cdl-http-fill',
+            stopUrl: '/api/v1/odoo/mirror/cdl-http-fill-stop',
+            statusUrl: '/api/v1/odoo/mirror/cdl-http-fill-status',
+            btnStart: 'btn-cdlh-start', btnStop: 'btn-cdlh-stop',
+            badge: 'cdlh-status-badge',
+            progressText: 'cdlh-progress-text', progressFill: 'cdlh-progress-fill',
+            matchedEl: 'cdlh-stat-matched', secondaryEl: 'cdlh-stat-blocked', secondaryKey: 'blocked_hits',
+            errorsBox: 'cdlh-errors', errorsList: 'cdlh-errors-list',
+        });
 
         async function gbfStart() { return gbf.start(); }
         async function gbfStop() { return gbf.stop(); }
@@ -2162,6 +2204,8 @@
         async function cdlStop() { return cdl.stop(); }
         async function cdsStart() { return cds.start(); }
         async function cdsStop() { return cds.stop(); }
+        async function cdlhStart() { return cdlh.start(); }
+        async function cdlhStop() { return cdlh.stop(); }
 
         async function gbfResetRecent() {
             const hours = prompt('¿Cuántas horas hacia atrás reactivar?\n(Marca como no-fetched los libros sin data real de los últimos N horas, para reintento tras rate-limit)', '24');
@@ -2596,6 +2640,12 @@
                 const s = await r.json();
                 cds.poll();
                 if (s.status === 'running') cds.startPolling();
+            } catch (e) {}
+            try {
+                const r = await fetch('/api/v1/odoo/mirror/cdl-http-fill-status');
+                const s = await r.json();
+                cdlh.poll();
+                if (s.status === 'running') cdlh.startPolling();
             } catch (e) {}
 
             distRefreshStats();
