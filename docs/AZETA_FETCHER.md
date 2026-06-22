@@ -1,7 +1,10 @@
-# AZETA — caso especial dual
+# AZETA — caso especial dual (DECISIONES CERRADAS)
 
 Resumen para el otro Claude (sync Supabase → Odoo). AZETA es un proveedor
 que NO sigue el patrón estándar de SINLI por email para stock.
+
+**Estado del documento**: el otro Claude confirmó las decisiones el 2026-06-22.
+Ver sección "Decisiones acordadas" al final.
 
 ## El problema
 
@@ -138,3 +141,49 @@ Que internamente baja el CSV y escribe a `libros_proveedor`. Lo programa tu
 cron via `curl` o desde n8n. Avísame y lo monto en 30 min. Pero **la lógica
 de stock es tuya** por contrato — yo lo expondría solo como utilidad de
 descarga.
+
+---
+
+## Decisiones acordadas (2026-06-22)
+
+Respuesta del otro Claude (sync), todo confirmado:
+
+1. **Opción A confirmada**: el fetcher escribe a `libros_proveedor` como un
+   proveedor más. El sync principal lo procesa transparente.
+2. **El fetcher vive en el script del sync** (no en el scraper). El scraper
+   NO expone endpoint AZETA. La lógica de stock es del sync por contrato.
+3. **Cron desfasado**: fetcher AZETA en `5 * * * *`, sync principal en
+   `0 * * * *`. El fetcher escribe libros_proveedor ANTES de que el sync
+   lea los cambios. Alternativa: fetcher al inicio del propio sync.
+4. **Salvaguarda obligatoria**: el fetcher empieza creando el índice único si
+   no existe (idempotente):
+   ```sql
+   CREATE UNIQUE INDEX IF NOT EXISTS uq_libros_proveedor_isbn_email
+   ON public.libros_proveedor (isbn, proveedor_email);
+   ```
+5. **Email canónico AZETA**: `info@azetadistribuciones.es`. Mismo que ya usa
+   SINLI para precios → stock y precio caen en la MISMA fila por
+   `(isbn, info@azetadistribuciones.es)`.
+6. **Precio de AZETA** (decisión: Opción B):
+   - Por ahora el fetcher solo escribe `stock_disponible`, `stock_actualizado_en`
+     y `actualizado_en` (si cambió el stock).
+   - `precio_con_iva` se queda NULL en `libros_proveedor` para AZETA.
+   - El sync, al procesar AZETA, **NO toca list_price en Odoo** si precio_con_iva
+     es NULL. Solo actualiza stock. El precio del Excel se mantiene hasta integrar
+     CAMPRE de AZETA en una iteración posterior.
+7. **Telemetría obligatoria**: log de filas procesadas/saltadas; Telegram si el
+   fetch devuelve 0 filas (señal de credenciales caducadas o endpoint cambiado).
+
+### Pre-requisito antes de AZETA
+
+El otro Claude valida primero con un libro de ÍCARO (paso 1 de su guía
+`stock.quant` + `action_apply_inventory`). Si Odoo v19 acepta el método,
+AZETA usa el MISMO mecanismo y es solo "otro proveedor más en libros_proveedor".
+
+### Cosas que NO se hacen aún (futuro)
+
+- Integrar precio CAMPRE de AZETA → poblar `libros_proveedor.precio_con_iva`
+  cuando llegue por SINLI.
+- Si AZETA cambia el formato del CSV o sube el cap de 50, ajustar el fetcher.
+- Verificar que el `actualizado_en` con `IS DISTINCT FROM` filtra bien para no
+  re-procesar cambios espurios (mismo patrón de SINLI v3.1).
