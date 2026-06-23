@@ -1054,15 +1054,20 @@ async def admin_schema_info(table: str = Query("odoo_books_mirror")):
 @app.get("/api/v1/admin/inferred-categories-summary", tags=["Admin"])
 async def admin_inferred_categories_summary(top_n: int = Query(50, ge=10, le=500)):
     """
-    Resumen de inferred_categories en odoo_books_mirror:
-      - total_books_with_categ: libros con path no vacio
-      - distinct_paths: cuantos paths unicos hay
-      - distinct_leaves: cuantas hojas (ultimo nivel) unicas
-      - distinct_roots: cuantas raices (primer nivel) unicas
-      - by_source: split por inferred_source (azeta_catalog vs otros)
-      - depth_distribution: cuantos paths tienen 1, 2, 3... niveles
-      - top_paths: los top_n paths con mas libros
-      - top_roots: los top_n root categories con mas libros (acumulado)
+    Resumen de inferred_categories en odoo_books_mirror + readiness por campo
+    para el push a Odoo (Fase 2).
+
+    Categorias:
+      - total_books_with_categ, distinct_paths, distinct_leaves, distinct_roots
+      - by_source, depth_distribution
+      - top_paths (top_n por conteo), top_roots (top_n root por libros)
+
+    Readiness para push a Odoo (cuantos libros AZETA tienen cada campo lleno):
+      - azeta_books_total: libros AZETA enriquecidos (azeta_fetched_at NOT NULL)
+      - with_description, with_weight, with_dimensions, with_image,
+        with_price_eur, with_categ
+      - fully_ready: libros que tienen TODO (desc + peso + dim + imagen +
+        precio + categ) — listos para push sin lagunas
     """
     import db as dbmod
     conn = dbmod.get_connection()
@@ -1139,6 +1144,46 @@ async def admin_inferred_categories_summary(top_n: int = Query(50, ge=10, le=500
             {"root": k, "books_total": v}
             for k, v in sorted(roots_count.items(), key=lambda x: -x[1])[:top_n]
         ]
+
+        # ── Readiness por campo (libros AZETA con cada dato lleno) ──
+        # NULLIF para tratar string vacio como NULL en TEXT columns.
+        dbmod.execute_query(cur, """
+            SELECT
+              COUNT(*) FILTER (WHERE azeta_fetched_at IS NOT NULL)                                     AS azeta_total,
+              COUNT(*) FILTER (WHERE azeta_fetched_at IS NOT NULL AND NULLIF(description, '')   IS NOT NULL) AS with_description,
+              COUNT(*) FILTER (WHERE azeta_fetched_at IS NOT NULL AND NULLIF(cdl_weight, '')    IS NOT NULL) AS with_weight,
+              COUNT(*) FILTER (WHERE azeta_fetched_at IS NOT NULL AND NULLIF(cdl_height, '')    IS NOT NULL
+                                                                  AND NULLIF(cdl_width, '')     IS NOT NULL) AS with_dimensions,
+              COUNT(*) FILTER (WHERE azeta_fetched_at IS NOT NULL AND NULLIF(cdl_image_url, '') IS NOT NULL) AS with_image,
+              COUNT(*) FILTER (WHERE azeta_fetched_at IS NOT NULL AND azeta_price_eur            IS NOT NULL) AS with_price_eur,
+              COUNT(*) FILTER (WHERE azeta_fetched_at IS NOT NULL AND NULLIF(inferred_categories, '') IS NOT NULL) AS with_categ,
+              COUNT(*) FILTER (WHERE azeta_fetched_at IS NOT NULL
+                                AND NULLIF(description, '')         IS NOT NULL
+                                AND NULLIF(cdl_weight, '')          IS NOT NULL
+                                AND NULLIF(cdl_height, '')          IS NOT NULL
+                                AND NULLIF(cdl_width, '')           IS NOT NULL
+                                AND NULLIF(cdl_image_url, '')       IS NOT NULL
+                                AND azeta_price_eur                 IS NOT NULL
+                                AND NULLIF(inferred_categories, '') IS NOT NULL) AS fully_ready
+            FROM odoo_books_mirror
+        """)
+        r = cur.fetchone()
+        total = int(r[0] or 0)
+
+        def _pct(n: int) -> str:
+            return f"{(n/total*100):.1f}%" if total else "0.0%"
+
+        ready = {
+            "azeta_books_total": total,
+            "with_description":  {"n": int(r[1] or 0), "pct": _pct(int(r[1] or 0))},
+            "with_weight":       {"n": int(r[2] or 0), "pct": _pct(int(r[2] or 0))},
+            "with_dimensions":   {"n": int(r[3] or 0), "pct": _pct(int(r[3] or 0))},
+            "with_image":        {"n": int(r[4] or 0), "pct": _pct(int(r[4] or 0))},
+            "with_price_eur":    {"n": int(r[5] or 0), "pct": _pct(int(r[5] or 0))},
+            "with_categ":        {"n": int(r[6] or 0), "pct": _pct(int(r[6] or 0))},
+            "fully_ready":       {"n": int(r[7] or 0), "pct": _pct(int(r[7] or 0))},
+        }
+        out["readiness_for_odoo"] = ready
 
         return JSONResponse(content=out)
     except Exception as e:
