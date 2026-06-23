@@ -837,6 +837,63 @@ async def odoo_mirror_cdl_http_fill_status():
     return JSONResponse(content=odoo_mirror.get_cdl_http_fill_status())
 
 
+# ─── REST API — AZETA Stock Sync ─────────────────────────────────────
+#
+# AZETA expone su stock por HTTP CSV (no por SINLI email como los otros 11
+# proveedores). Este fetcher descarga el CSV y popula libros_proveedor para
+# que el sync SINLI -> Odoo (otro Claude) lo recoja y lo lleve a Odoo AZE01.
+# NO escribimos stock.quant en Odoo desde aqui (eso es del sync por contrato).
+
+@app.post("/api/v1/azeta/stock-sync", tags=["AZETA"])
+async def azeta_stock_sync(batch_size: int = Query(500, ge=100, le=2000)):
+    """
+    Descarga el CSV de stock de AZETA y popula libros_proveedor.
+    Idempotente — el patron IS DISTINCT FROM solo mueve actualizado_en si
+    el stock cambio realmente.
+    """
+    import threading
+    import sys
+    import azeta_stock
+
+    if azeta_stock.get_azeta_status().get("status") == "running":
+        return JSONResponse(status_code=409, content={
+            "status": "error", "message": "AZETA sync ya esta corriendo."
+        })
+
+    def _run_in_thread():
+        if sys.platform == 'win32':
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
+        try:
+            new_loop.run_until_complete(
+                azeta_stock.run_azeta_sync(batch_size=batch_size)
+            )
+        finally:
+            new_loop.close()
+
+    t = threading.Thread(target=_run_in_thread, daemon=True)
+    t.start()
+    return JSONResponse(content={"status": "started"})
+
+
+@app.post("/api/v1/azeta/stock-sync-stop", tags=["AZETA"])
+async def azeta_stock_sync_stop():
+    import azeta_stock
+    if azeta_stock.stop_azeta_sync():
+        return JSONResponse(content={"status": "stopping"})
+    return JSONResponse(status_code=400, content={
+        "status": "error", "message": "No hay job corriendo."
+    })
+
+
+@app.get("/api/v1/azeta/stock-status", tags=["AZETA"])
+async def azeta_stock_status():
+    """Estado del job + stats persistentes (cuantos libros AZETA tienen stock)."""
+    import azeta_stock
+    return JSONResponse(content=azeta_stock.get_azeta_status())
+
+
 # ─── Admin: schema info + forzar migraciones sin redeploy ────────────
 
 @app.get("/api/v1/admin/schema-info", tags=["Admin"])

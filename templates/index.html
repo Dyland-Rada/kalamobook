@@ -1289,6 +1289,50 @@
                 </div>
             </div>
 
+            <!-- ═══ AZETA STOCK (CSV HTTP — caso especial) ═══ -->
+            <div class="card" style="border:2px solid rgba(211,84,0,0.4);">
+                <div class="card-title">
+                    🏪 AZETA — Sync de stock por CSV HTTP
+                    <span class="status-badge" id="azeta-status-badge" style="font-size:0.7rem;">IDLE</span>
+                </div>
+                <p style="color:#888; font-size:0.88rem;">
+                    AZETA no manda stock por SINLI email. Lo expone via CSV HTTP (cap 50/libro, actualizado cada hora).
+                    Este fetcher descarga y popula <code>libros_proveedor</code>. El sync SINLI → Odoo (otro Claude)
+                    recoge esos cambios y los lleva a Odoo almacén AZE01.
+                </p>
+                <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:12px;">
+                    <button class="btn btn-success" id="btn-azeta-start" onclick="azetaStart()">▶ Sync ahora</button>
+                    <button class="btn btn-danger" id="btn-azeta-stop" onclick="azetaStop()" disabled>⏹ Detener</button>
+                    <span id="azeta-stage" style="color:#888; font-size:0.85rem;"></span>
+                </div>
+
+                <div style="margin-top:14px; display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px;">
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#d35400" id="azeta-stat-in-db">0</div>
+                        <div class="stat-label">Libros AZETA en BD</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#27ae60" id="azeta-stat-with-stock">0</div>
+                        <div class="stat-label">Con stock > 0</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#16a085" id="azeta-stat-total-units">0</div>
+                        <div class="stat-label">Unidades totales</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#bbb; font-size:0.85rem;" id="azeta-stat-last-sync">—</div>
+                        <div class="stat-label">Última sync</div>
+                    </div>
+                </div>
+
+                <div style="margin-top:14px; font-size:0.8rem; color:#888;" id="azeta-progress-detail"></div>
+
+                <div id="azeta-errors" style="display:none; margin-top:10px;">
+                    <div class="section-label" style="color:#e94560;">Errores</div>
+                    <ul id="azeta-errors-list" style="font-size:0.8rem; color:#e94560; padding-left:20px;"></ul>
+                </div>
+            </div>
+
             <!-- ═══ CATÁLOGO DE DISTRIBUIDORES ═══ -->
             <div class="card">
                 <div class="card-title">📦 Catálogo de distribuidores (XLSX → Postgres)</div>
@@ -1500,6 +1544,8 @@
                 if (typeof gbf !== 'undefined') gbf.stopPolling();
                 if (typeof cdl !== 'undefined') cdl.stopPolling();
                 if (typeof cds !== 'undefined') cds.stopPolling();
+                if (typeof cdlh !== 'undefined') cdlh.stopPolling();
+                if (typeof azetaStopPolling === 'function') azetaStopPolling();
                 stopResumenAutoRefresh();
             }
         }
@@ -2207,6 +2253,91 @@
         async function cdlhStart() { return cdlh.start(); }
         async function cdlhStop() { return cdlh.stop(); }
 
+        // ═══ AZETA STOCK SYNC ═══
+        let azetaPollTimer = null;
+
+        async function azetaStart() {
+            if (!confirm('Sync de stock AZETA?\n\n' +
+                         'Descarga el CSV (~4MB, 262k ISBNs) y popula libros_proveedor.\n' +
+                         'Tarda ~30-60s. Idempotente.')) return;
+            document.getElementById('btn-azeta-start').disabled = true;
+            try {
+                const resp = await fetch('/api/v1/azeta/stock-sync', { method: 'POST' });
+                const data = await resp.json();
+                if (data.status !== 'started') {
+                    alert(`❌ ${data.message || 'No se pudo iniciar'}`);
+                    document.getElementById('btn-azeta-start').disabled = false;
+                    return;
+                }
+                document.getElementById('btn-azeta-stop').disabled = false;
+                azetaStartPolling();
+                azetaPoll();
+            } catch (e) {
+                alert('Error: ' + e.message);
+                document.getElementById('btn-azeta-start').disabled = false;
+            }
+        }
+
+        async function azetaStop() {
+            try { await fetch('/api/v1/azeta/stock-sync-stop', { method: 'POST' }); }
+            catch (e) {}
+        }
+
+        function azetaStartPolling() {
+            if (azetaPollTimer) return;
+            azetaPollTimer = setInterval(azetaPoll, 3000);
+        }
+        function azetaStopPolling() {
+            if (azetaPollTimer) { clearInterval(azetaPollTimer); azetaPollTimer = null; }
+        }
+
+        async function azetaPoll() {
+            try {
+                const r = await fetch('/api/v1/azeta/stock-status');
+                const s = await r.json();
+                const badge = document.getElementById('azeta-status-badge');
+                badge.textContent = (s.status || 'idle').toUpperCase();
+                badge.className = 'status-badge ' + (s.status || 'idle');
+
+                document.getElementById('azeta-stage').textContent =
+                    s.stage ? `Etapa: ${s.stage}` : '';
+
+                document.getElementById('azeta-stat-in-db').textContent = (s.azeta_in_db || 0).toLocaleString();
+                document.getElementById('azeta-stat-with-stock').textContent = (s.azeta_with_stock || 0).toLocaleString();
+                document.getElementById('azeta-stat-total-units').textContent = (s.azeta_total_units || 0).toLocaleString();
+                const last = s.last_sync_in_db || '';
+                document.getElementById('azeta-stat-last-sync').textContent = last ? last.slice(0, 19) : '—';
+
+                if (s.isbns_unique || s.inserted || s.updated_changed) {
+                    document.getElementById('azeta-progress-detail').textContent =
+                        `${(s.isbns_unique || 0).toLocaleString()} ISBNs únicos · ` +
+                        `${(s.stock_total || 0).toLocaleString()} u · ` +
+                        `ins:${s.inserted || 0} chg:${s.updated_changed || 0} same:${s.updated_unchanged || 0} · ` +
+                        `down:${s.elapsed_download_s || 0}s, upsert:${s.elapsed_upsert_s || 0}s`;
+                }
+
+                if (s.errors && s.errors.length) {
+                    document.getElementById('azeta-errors').style.display = 'block';
+                    const ul = document.getElementById('azeta-errors-list');
+                    ul.innerHTML = '';
+                    s.errors.forEach(e => { const li = document.createElement('li'); li.textContent = e; ul.appendChild(li); });
+                } else {
+                    document.getElementById('azeta-errors').style.display = 'none';
+                }
+
+                if (s.status === 'running') {
+                    document.getElementById('btn-azeta-start').disabled = true;
+                    document.getElementById('btn-azeta-stop').disabled = false;
+                } else {
+                    document.getElementById('btn-azeta-start').disabled = false;
+                    document.getElementById('btn-azeta-stop').disabled = true;
+                    if (['completed', 'error', 'stopped'].includes(s.status)) {
+                        azetaStopPolling();
+                    }
+                }
+            } catch (e) { console.error('azeta poll:', e); }
+        }
+
         async function gbfResetRecent() {
             const hours = prompt('¿Cuántas horas hacia atrás reactivar?\n(Marca como no-fetched los libros sin data real de los últimos N horas, para reintento tras rate-limit)', '24');
             if (!hours) return;
@@ -2646,6 +2777,14 @@
                 const s = await r.json();
                 cdlh.poll();
                 if (s.status === 'running') cdlh.startPolling();
+            } catch (e) {}
+
+            // AZETA: poll inicial + start polling si está running
+            try {
+                const r = await fetch('/api/v1/azeta/stock-status');
+                const s = await r.json();
+                azetaPoll();
+                if (s.status === 'running') azetaStartPolling();
             } catch (e) {}
 
             distRefreshStats();
