@@ -31,3 +31,8 @@ Thumbs.db
 
 # Temp Odoo introspection files
 .odoo_*.json
+
+# AZETA descargas locales (~700MB, no se commitean)
+azeta_stock_*.csv
+azeta_parcial_*.zip
+azeta_parcial_*.csv

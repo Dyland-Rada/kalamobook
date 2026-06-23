@@ -1289,6 +1289,54 @@
                 </div>
             </div>
 
+            <!-- ═══ AZETA CATÁLOGO COMPLETO (~1M libros con todo) ═══ -->
+            <div class="card" style="border:2px solid rgba(211,84,0,0.6); background:rgba(211,84,0,0.05);">
+                <div class="card-title">
+                    📚 AZETA — Catálogo completo (descripción, precio EUR, peso, dimensiones)
+                    <span class="status-badge" id="azetacat-status-badge" style="font-size:0.7rem;">IDLE</span>
+                </div>
+                <p style="color:#888; font-size:0.88rem;">
+                    AZETA expone su catálogo ENTERO (~1M libros) por un endpoint HTTP. Trae título, autor, editorial,
+                    <strong>precio EUR</strong>, peso, alto, ancho, encuadernación, categorías, sinopsis, portada.
+                    Reemplaza al scraping CDL para los libros de AZETA. ZIP de 200MB descargado en 30s.
+                </p>
+                <p style="color:#888; font-size:0.85rem;">
+                    <strong>Fase 1</strong>: solo carga al mirror local. No toca Odoo aún.
+                    <strong>Fase 2 (pendiente)</strong>: push a Odoo (description, peso, precio EUR, stock en AZE01).
+                </p>
+                <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:12px;">
+                    <button class="btn btn-success" id="btn-azetacat-start" onclick="azetacatStart()">▶ Cargar catálogo al mirror</button>
+                    <button class="btn btn-danger" id="btn-azetacat-stop" onclick="azetacatStop()" disabled>⏹ Detener</button>
+                    <span id="azetacat-stage" style="color:#888; font-size:0.85rem;"></span>
+                </div>
+
+                <div style="margin-top:14px; display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px;">
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#d35400" id="azetacat-stat-in-mirror">0</div>
+                        <div class="stat-label">Libros AZETA en mirror</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#27ae60" id="azetacat-stat-updated">0</div>
+                        <div class="stat-label">Actualizados</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#7f8c8d" id="azetacat-stat-skipped">0</div>
+                        <div class="stat-label">No en mirror (skip)</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#bbb; font-size:0.85rem;" id="azetacat-stat-last">—</div>
+                        <div class="stat-label">Última carga</div>
+                    </div>
+                </div>
+
+                <div style="margin-top:14px; font-size:0.8rem; color:#888;" id="azetacat-progress-detail"></div>
+
+                <div id="azetacat-errors" style="display:none; margin-top:10px;">
+                    <div class="section-label" style="color:#e94560;">Errores</div>
+                    <ul id="azetacat-errors-list" style="font-size:0.8rem; color:#e94560; padding-left:20px;"></ul>
+                </div>
+            </div>
+
             <!-- ═══ AZETA STOCK (CSV HTTP — caso especial) ═══ -->
             <div class="card" style="border:2px solid rgba(211,84,0,0.4);">
                 <div class="card-title">
@@ -1546,6 +1594,7 @@
                 if (typeof cds !== 'undefined') cds.stopPolling();
                 if (typeof cdlh !== 'undefined') cdlh.stopPolling();
                 if (typeof azetaStopPolling === 'function') azetaStopPolling();
+                if (typeof azetacatStopPolling === 'function') azetacatStopPolling();
                 stopResumenAutoRefresh();
             }
         }
@@ -2253,6 +2302,93 @@
         async function cdlhStart() { return cdlh.start(); }
         async function cdlhStop() { return cdlh.stop(); }
 
+        // ═══ AZETA CATÁLOGO COMPLETO ═══
+        let azetacatPollTimer = null;
+
+        async function azetacatStart() {
+            if (!confirm('Cargar catálogo COMPLETO de AZETA al mirror?\n\n' +
+                         '~1M libros con todos los campos (descripción, precio EUR, peso, etc.).\n' +
+                         'Descarga ZIP 200MB en 30s, parseo + UPSERT ~5-15 min.\n' +
+                         'NO toca Odoo aún (solo mirror local).')) return;
+            document.getElementById('btn-azetacat-start').disabled = true;
+            try {
+                const resp = await fetch('/api/v1/azeta/catalog-sync', { method: 'POST' });
+                const data = await resp.json();
+                if (data.status !== 'started') {
+                    alert(`❌ ${data.message || 'No se pudo iniciar'}`);
+                    document.getElementById('btn-azetacat-start').disabled = false;
+                    return;
+                }
+                document.getElementById('btn-azetacat-stop').disabled = false;
+                azetacatStartPolling();
+                azetacatPoll();
+            } catch (e) {
+                alert('Error: ' + e.message);
+                document.getElementById('btn-azetacat-start').disabled = false;
+            }
+        }
+
+        async function azetacatStop() {
+            try { await fetch('/api/v1/azeta/catalog-sync-stop', { method: 'POST' }); }
+            catch (e) {}
+        }
+
+        function azetacatStartPolling() {
+            if (azetacatPollTimer) return;
+            azetacatPollTimer = setInterval(azetacatPoll, 4000);
+        }
+        function azetacatStopPolling() {
+            if (azetacatPollTimer) { clearInterval(azetacatPollTimer); azetacatPollTimer = null; }
+        }
+
+        async function azetacatPoll() {
+            try {
+                const r = await fetch('/api/v1/azeta/catalog-status');
+                const s = await r.json();
+                const badge = document.getElementById('azetacat-status-badge');
+                badge.textContent = (s.status || 'idle').toUpperCase();
+                badge.className = 'status-badge ' + (s.status || 'idle');
+
+                document.getElementById('azetacat-stage').textContent =
+                    s.stage ? `Etapa: ${s.stage}` : '';
+                document.getElementById('azetacat-stat-in-mirror').textContent =
+                    (s.azeta_books_in_mirror || 0).toLocaleString();
+                document.getElementById('azetacat-stat-updated').textContent =
+                    (s.updated || 0).toLocaleString();
+                document.getElementById('azetacat-stat-skipped').textContent =
+                    (s.skipped_not_in_mirror || 0).toLocaleString();
+                const last = s.azeta_last_fetched || '';
+                document.getElementById('azetacat-stat-last').textContent = last ? last.slice(0, 19) : '—';
+
+                if (s.rows_parsed || s.downloaded_bytes) {
+                    document.getElementById('azetacat-progress-detail').textContent =
+                        `${(s.rows_parsed || 0).toLocaleString()} filas parseadas · ` +
+                        `${((s.downloaded_bytes || 0) / 1024 / 1024).toFixed(1)} MB descargados · ` +
+                        `down:${s.elapsed_download_s || 0}s, parse:${s.elapsed_parse_s || 0}s, upsert:${s.elapsed_upsert_s || 0}s`;
+                }
+
+                if (s.errors && s.errors.length) {
+                    document.getElementById('azetacat-errors').style.display = 'block';
+                    const ul = document.getElementById('azetacat-errors-list');
+                    ul.innerHTML = '';
+                    s.errors.forEach(e => { const li = document.createElement('li'); li.textContent = e; ul.appendChild(li); });
+                } else {
+                    document.getElementById('azetacat-errors').style.display = 'none';
+                }
+
+                if (s.status === 'running') {
+                    document.getElementById('btn-azetacat-start').disabled = true;
+                    document.getElementById('btn-azetacat-stop').disabled = false;
+                } else {
+                    document.getElementById('btn-azetacat-start').disabled = false;
+                    document.getElementById('btn-azetacat-stop').disabled = true;
+                    if (['completed', 'error', 'stopped'].includes(s.status)) {
+                        azetacatStopPolling();
+                    }
+                }
+            } catch (e) { console.error('azetacat poll:', e); }
+        }
+
         // ═══ AZETA STOCK SYNC ═══
         let azetaPollTimer = null;
 
@@ -2779,12 +2915,20 @@
                 if (s.status === 'running') cdlh.startPolling();
             } catch (e) {}
 
-            // AZETA: poll inicial + start polling si está running
+            // AZETA stock: poll inicial + start polling si está running
             try {
                 const r = await fetch('/api/v1/azeta/stock-status');
                 const s = await r.json();
                 azetaPoll();
                 if (s.status === 'running') azetaStartPolling();
+            } catch (e) {}
+
+            // AZETA catálogo: poll inicial + start polling si está running
+            try {
+                const r = await fetch('/api/v1/azeta/catalog-status');
+                const s = await r.json();
+                azetacatPoll();
+                if (s.status === 'running') azetacatStartPolling();
             } catch (e) {}
 
             distRefreshStats();

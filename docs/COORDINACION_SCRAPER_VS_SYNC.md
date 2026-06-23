@@ -3,25 +3,47 @@
 Documento que captura el reparto definitivo de competencias entre:
 
 - **Scraper** (este repo, `kalamobook`): enriquece Odoo con descripción, categorías,
-  dimensiones desde Casa del Libro.
+  dimensiones desde Casa del Libro **+ TODO lo de AZETA** (stock, precio, todo).
 - **Sync SINLI → Odoo** (otro Claude, repo de n8n): lleva precio/stock de
-  proveedores desde Supabase a Odoo, cron horario.
+  proveedores SINLI a Odoo, cron horario. **NO toca AZETA**.
 
 Ambos viven en `Server B` (Contabo Dokploy, 24 GB RAM) y comparten el mismo
 Postgres (`84.46.251.249:5432`, db `postgres`).
 
-## 1. Reparto de campos en Odoo (NO ROMPER)
+## 1. Reparto de campos en Odoo — POR PROVEEDOR
 
-| Campo Odoo | Quién escribe | El otro NO toca |
-|---|---|---|
-| `list_price` | **sync** | scraper jamás |
-| `stock.quant` | **sync** | scraper jamás |
-| `name` (al crear) | **sync** | scraper jamás (solo al CREAR un producto nuevo) |
-| `barcode` | carga inicial | ambos solo leen |
-| `description` (HTML) | **scraper** | sync jamás |
-| `categ_id` / `public_categ_ids` | **scraper** | sync jamás |
-| `weight`, `volume`, dimensiones | **scraper** (futuro) | sync jamás |
-| `seller_ids` / `supplierinfo` | nadie por ahora | (futuro: sync) |
+**Cambio importante (2026-06-23)**: AZETA pasa 100% al scraper por dos motivos:
+1. AZETA tiene su catálogo COMPLETO disponible en un CSV HTTP (1M libros con precio
+   EUR, peso, dimensiones, descripción, categorías). Más rápido que SINLI email.
+2. Sin colisión posible: AZETA va al almacén AZE01 (lot_stock_id 14). Los demás
+   proveedores escriben en almacenes distintos (ICA01/DIS03/LES01/EDI01/ALF01).
+
+### Por proveedor
+
+| Proveedor | Almacén | Stock+Precio en Odoo | Description/Dimensiones |
+|---|---|---|---|
+| **AZETA** | AZE01 (14) | **scraper (yo)** | scraper (yo) |
+| ÍCARO | ICA01 (50) | sync | scraper |
+| DISTRIFORMA | DIS03 (32) | sync | scraper |
+| PUNXES | LES01 (56) | sync | scraper |
+| ALFA OMEGA | ALF01 (?) | sync | scraper |
+| AKAL | EDI01 (38) | sync | scraper |
+| Otros SINLI | varios | sync | scraper |
+
+### Por campo de Odoo (regla general)
+
+| Campo Odoo | Quién escribe |
+|---|---|
+| `description` (HTML) | **scraper** (todos los proveedores) |
+| `categ_id` / `public_categ_ids` | **scraper** (todos) |
+| `weight`, `volume`, dimensiones | **scraper** (todos) |
+| `list_price` (excepto AZETA) | **sync** |
+| `list_price` para AZETA | **scraper** |
+| `stock.quant` en ICA01/DIS03/LES01/EDI01/ALF01 | **sync** |
+| `stock.quant` en AZE01 | **scraper** |
+| `name` al crear producto nuevo | **sync** (cuando active Grupo B) |
+| `barcode` | carga inicial |
+| `seller_ids` / `supplierinfo` | nadie por ahora |
 
 ## 2. Tablas en Postgres compartido — owner por tabla
 
@@ -85,13 +107,30 @@ código todavía. Implementación futura cuando sea relevante.
 - **Endpoint `/api/v1/admin/schema-info?table=odoo_books_mirror`**: ya existente.
   Lista columnas reales del mirror.
 
-## 6. Estado actual (2026-06-18)
+## 6. Estado actual (2026-06-23)
 
-- Scraper: ~70k libros con `cdl_fetched_at`, velocidad ~25-37 libros/min,
-  proyección 3-4 semanas para 1M libros.
-- Sync: en diseño/implementación inicial, paso 1-3 del plan del otro Claude.
+- Scraper:
+  - CDL HTTP fill validado (~2000 libros/min capacidad)
+  - Fetcher AZETA stock validado contra endpoint real (262k ISBNs)
+  - Catálogo AZETA descubierto: 1.038.024 ISBNs con TODOS los campos
+  - Decisión: AZETA pasa 100% al scraper (este lado)
+- Sync:
+  - Validó stock.quant + action_apply_inventory en Odoo v19 (workaround Fault aplicado)
+  - Va a empezar con Grupo A (actualizar stock+precio de libros que ya existen
+    en Odoo) para los proveedores SINLI no-AZETA.
+  - Grupo B (crear productos nuevos) en pausa. No requiere refresh del mirror.
 - Mirror: 1.068.869 libros espejados. 1.068.856 con vendor sincronizado.
   132k+ con categoría inferida.
+
+## 7. Carga AZETA (responsabilidad del scraper)
+
+Fases:
+- **Fase 1**: descargar catálogo CSV de AZETA, cargar al mirror (todos los campos
+  descriptivos). Sin tocar Odoo todavía.
+- **Fase 2**: push a Odoo (description, weight, dimensions, list_price para AZETA,
+  stock.quant en AZE01 lot 14).
+- **Mantenimiento**: cron horario para refrescar stock (endpoint stock.php).
+  Catálogo completo (descripción + precio) cada 24h o on-demand.
 
 ## Cambios futuros que requieren coordinación
 

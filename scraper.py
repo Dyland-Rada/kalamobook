@@ -369,6 +369,14 @@ def init_db():
         "supplier_names TEXT",          # "PLANETA | PENGUIN | UDL" separado por |
         "supplier_count INTEGER",
         "suppliers_synced_at TIMESTAMP",
+        # AZETA catalogo (CSV 1M libros). Reusamos cdl_* para campos comunes
+        # (con inferred_source='azeta_catalog'), pero el precio EUR va aparte
+        # porque cdl_price es text/COP. Y un fetched_at propio para tracking.
+        "azeta_price_eur NUMERIC",       # PVP con IVA en EUR
+        "azeta_price_no_iva NUMERIC",    # Precio sin IVA en EUR
+        "azeta_iva INTEGER",             # % IVA (4, 21)
+        "azeta_codigo TEXT",             # codigo interno AZETA (Z980080051)
+        "azeta_fetched_at TIMESTAMP",    # cuando se cargo desde CSV catalogo
     ):
         try:
             db.execute_query(cursor, f"ALTER TABLE odoo_books_mirror ADD COLUMN {col}")

@@ -894,6 +894,63 @@ async def azeta_stock_status():
     return JSONResponse(content=azeta_stock.get_azeta_status())
 
 
+@app.post("/api/v1/azeta/catalog-sync", tags=["AZETA"])
+async def azeta_catalog_sync(batch_size: int = Query(500, ge=100, le=2000)):
+    """
+    Descarga el CATALOGO completo de AZETA (~1M libros, ZIP 200MB) y carga
+    al odoo_books_mirror todos los campos descriptivos: titulo, autor,
+    editorial, precio EUR, peso, dimensiones, encuadernacion, categorias,
+    descripcion, portada, idioma, fecha edicion.
+
+    Solo actualiza libros que YA estan en el mirror (no crea nuevos).
+    Reusa columnas cdl_* con inferred_source='azeta_catalog'.
+    El precio EUR va a azeta_price_eur (no cdl_price que es text/COP).
+
+    NO push a Odoo desde aqui — eso sera la Fase 2 cuando el mirror este
+    confirmado. Tarda ~5-15 min completo.
+    """
+    import threading
+    import sys
+    import azeta_catalog
+
+    if azeta_catalog.get_catalog_status().get("status") == "running":
+        return JSONResponse(status_code=409, content={
+            "status": "error", "message": "AZETA catalog sync ya esta corriendo."
+        })
+
+    def _run_in_thread():
+        if sys.platform == 'win32':
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
+        try:
+            new_loop.run_until_complete(
+                azeta_catalog.run_catalog_sync(batch_size=batch_size)
+            )
+        finally:
+            new_loop.close()
+
+    t = threading.Thread(target=_run_in_thread, daemon=True)
+    t.start()
+    return JSONResponse(content={"status": "started"})
+
+
+@app.post("/api/v1/azeta/catalog-sync-stop", tags=["AZETA"])
+async def azeta_catalog_sync_stop():
+    import azeta_catalog
+    if azeta_catalog.stop_catalog_sync():
+        return JSONResponse(content={"status": "stopping"})
+    return JSONResponse(status_code=400, content={
+        "status": "error", "message": "No hay job corriendo."
+    })
+
+
+@app.get("/api/v1/azeta/catalog-status", tags=["AZETA"])
+async def azeta_catalog_status():
+    import azeta_catalog
+    return JSONResponse(content=azeta_catalog.get_catalog_status())
+
+
 # ─── Admin: schema info + forzar migraciones sin redeploy ────────────
 
 @app.get("/api/v1/admin/schema-info", tags=["Admin"])
