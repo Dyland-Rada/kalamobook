@@ -951,6 +951,74 @@ async def azeta_catalog_status():
     return JSONResponse(content=azeta_catalog.get_catalog_status())
 
 
+# ─── Fase 2: push de datos AZETA del mirror a Odoo ─────────────────
+
+@app.post("/api/v1/azeta/push-to-odoo", tags=["AZETA"])
+async def azeta_push_to_odoo(
+    test_isbn: str | None = Query(None, description="ISBN único para validar (modo test)"),
+    max_books: int | None = Query(None, ge=1, description="Tope de libros (None = todos)"),
+    batch_size: int = Query(200, ge=10, le=1000),
+):
+    """
+    Fase 2 AZETA. Lee odoo_books_mirror WHERE azeta_fetched_at IS NOT NULL
+    y escribe en Odoo:
+      - product.template: description, weight (kg), list_price (EUR)
+      - product.template.categ_id (desde cache de odoo_product_categories_cache)
+      - stock.quant en AZE01 (location 14, cap 50, stock=0 NO borra)
+
+    test_isbn: procesa solo ese ISBN — útil para validar con 1 libro antes
+    de soltar 1M. max_books: tope total. Sin args = push completo de todos
+    los libros AZETA enriquecidos.
+
+    Requiere: cache de categorías (push_categories_to_odoo + assign) corrido.
+    """
+    import threading
+    import sys
+    import azeta_push_odoo
+
+    if azeta_push_odoo.get_push_status().get("status") == "running":
+        return JSONResponse(status_code=409, content={
+            "status": "error", "message": "AZETA push ya esta corriendo."
+        })
+
+    def _run_in_thread():
+        if sys.platform == 'win32':
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
+        try:
+            new_loop.run_until_complete(
+                azeta_push_odoo.run_azeta_push(
+                    batch_size=batch_size,
+                    test_isbn=test_isbn,
+                    max_books=max_books,
+                )
+            )
+        finally:
+            new_loop.close()
+
+    t = threading.Thread(target=_run_in_thread, daemon=True)
+    t.start()
+    return JSONResponse(content={"status": "started", "test_isbn": test_isbn,
+                                  "max_books": max_books})
+
+
+@app.post("/api/v1/azeta/push-to-odoo-stop", tags=["AZETA"])
+async def azeta_push_to_odoo_stop():
+    import azeta_push_odoo
+    if azeta_push_odoo.stop_push():
+        return JSONResponse(content={"status": "stopping"})
+    return JSONResponse(status_code=400, content={
+        "status": "error", "message": "No hay job corriendo."
+    })
+
+
+@app.get("/api/v1/azeta/push-to-odoo-status", tags=["AZETA"])
+async def azeta_push_to_odoo_status():
+    import azeta_push_odoo
+    return JSONResponse(content=azeta_push_odoo.get_push_status())
+
+
 # ─── Admin: schema info + forzar migraciones sin redeploy ────────────
 
 @app.get("/api/v1/admin/schema-info", tags=["Admin"])
@@ -975,6 +1043,104 @@ async def admin_schema_info(table: str = Query("odoo_books_mirror")):
             cur.execute(f"PRAGMA table_info({table})")
             cols = [{"name": r[1], "type": r[2]} for r in cur.fetchall()]
         return JSONResponse(content={"table": table, "columns": cols, "count": len(cols)})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={
+            "error": f"{type(e).__name__}: {e}"
+        })
+    finally:
+        conn.close()
+
+
+@app.get("/api/v1/admin/inferred-categories-summary", tags=["Admin"])
+async def admin_inferred_categories_summary(top_n: int = Query(50, ge=10, le=500)):
+    """
+    Resumen de inferred_categories en odoo_books_mirror:
+      - total_books_with_categ: libros con path no vacio
+      - distinct_paths: cuantos paths unicos hay
+      - distinct_leaves: cuantas hojas (ultimo nivel) unicas
+      - distinct_roots: cuantas raices (primer nivel) unicas
+      - by_source: split por inferred_source (azeta_catalog vs otros)
+      - depth_distribution: cuantos paths tienen 1, 2, 3... niveles
+      - top_paths: los top_n paths con mas libros
+      - top_roots: los top_n root categories con mas libros (acumulado)
+    """
+    import db as dbmod
+    conn = dbmod.get_connection()
+    cur = conn.cursor()
+    try:
+        out: dict = {}
+
+        # Total libros con categoria
+        dbmod.execute_query(cur, """
+            SELECT COUNT(*) FROM odoo_books_mirror
+            WHERE inferred_categories IS NOT NULL AND inferred_categories <> ''
+        """)
+        out["total_books_with_categ"] = int(cur.fetchone()[0])
+
+        # Distinct paths
+        dbmod.execute_query(cur, """
+            SELECT COUNT(DISTINCT inferred_categories) FROM odoo_books_mirror
+            WHERE inferred_categories IS NOT NULL AND inferred_categories <> ''
+        """)
+        out["distinct_paths"] = int(cur.fetchone()[0])
+
+        # Por inferred_source
+        dbmod.execute_query(cur, """
+            SELECT COALESCE(inferred_source, 'unknown') AS src, COUNT(*) AS n
+            FROM odoo_books_mirror
+            WHERE inferred_categories IS NOT NULL AND inferred_categories <> ''
+            GROUP BY COALESCE(inferred_source, 'unknown')
+            ORDER BY n DESC
+        """)
+        out["by_source"] = [{"source": r[0], "books": int(r[1])} for r in cur.fetchall()]
+
+        # Top N paths por conteo
+        dbmod.execute_query(cur, """
+            SELECT inferred_categories AS path, COUNT(*) AS n
+            FROM odoo_books_mirror
+            WHERE inferred_categories IS NOT NULL AND inferred_categories <> ''
+            GROUP BY inferred_categories
+            ORDER BY n DESC
+            LIMIT ?
+        """, (top_n,))
+        out["top_paths"] = [
+            {"path": r[0], "books": int(r[1])} for r in cur.fetchall()
+        ]
+
+        # Para distribución de profundidad y top roots: cargar todos los paths
+        # con conteo (suele ser <100k filas, manejable en memoria)
+        dbmod.execute_query(cur, """
+            SELECT inferred_categories AS path, COUNT(*) AS n
+            FROM odoo_books_mirror
+            WHERE inferred_categories IS NOT NULL AND inferred_categories <> ''
+            GROUP BY inferred_categories
+        """)
+        all_paths = cur.fetchall()
+
+        # Distribucion de profundidad (cuantos " > " hay)
+        depth_dist: dict[int, int] = {}
+        leaves: set[str] = set()
+        roots_count: dict[str, int] = {}
+        for path, n in all_paths:
+            parts = [p.strip() for p in path.split(" > ") if p.strip()]
+            if not parts:
+                continue
+            d = len(parts)
+            depth_dist[d] = depth_dist.get(d, 0) + 1
+            leaves.add(parts[-1])
+            roots_count[parts[0]] = roots_count.get(parts[0], 0) + int(n)
+        out["distinct_leaves"] = len(leaves)
+        out["distinct_roots"] = len(roots_count)
+        out["depth_distribution"] = [
+            {"depth": k, "distinct_paths": v}
+            for k, v in sorted(depth_dist.items())
+        ]
+        out["top_roots"] = [
+            {"root": k, "books_total": v}
+            for k, v in sorted(roots_count.items(), key=lambda x: -x[1])[:top_n]
+        ]
+
+        return JSONResponse(content=out)
     except Exception as e:
         return JSONResponse(status_code=500, content={
             "error": f"{type(e).__name__}: {e}"

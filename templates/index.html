@@ -1302,7 +1302,7 @@
                 </p>
                 <p style="color:#888; font-size:0.85rem;">
                     <strong>Fase 1</strong>: solo carga al mirror local. No toca Odoo aún.
-                    <strong>Fase 2 (pendiente)</strong>: push a Odoo (description, peso, precio EUR, stock en AZE01).
+                    <strong>Fase 2</strong>: ver card de abajo "AZETA → Push a Odoo".
                 </p>
                 <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:12px;">
                     <button class="btn btn-success" id="btn-azetacat-start" onclick="azetacatStart()">▶ Cargar catálogo al mirror</button>
@@ -1334,6 +1334,62 @@
                 <div id="azetacat-errors" style="display:none; margin-top:10px;">
                     <div class="section-label" style="color:#e94560;">Errores</div>
                     <ul id="azetacat-errors-list" style="font-size:0.8rem; color:#e94560; padding-left:20px;"></ul>
+                </div>
+            </div>
+
+            <!-- ═══ FASE 2: AZETA PUSH A ODOO ═══ -->
+            <div class="card" style="border:2px solid rgba(155,89,182,0.7); background:rgba(155,89,182,0.06);">
+                <div class="card-title">
+                    🚀 AZETA → Push a Odoo (Fase 2)
+                    <span class="status-badge" id="azetapush-status-badge" style="font-size:0.7rem;">IDLE</span>
+                </div>
+                <p style="color:#888; font-size:0.88rem;">
+                    Lee del mirror todos los libros con <code>azeta_fetched_at</code> y escribe en Odoo:
+                    <strong>description</strong>, <strong>weight</strong> (kg), <strong>list_price</strong> (EUR),
+                    <strong>categ_id</strong> (categoría interna) y <strong>stock.quant en AZE01</strong> (location 14, cap 50).
+                </p>
+                <p style="color:#888; font-size:0.82rem;">
+                    Requiere haber corrido <em>Crear categorías en Odoo</em> y <em>Asignar a libros</em> antes
+                    (para que el cache esté lleno). Idempotente. Modo test: 1 ISBN. Stock=0 se escribe en 0 (no borra el quant).
+                </p>
+                <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:12px;">
+                    <input type="text" id="azetapush-test-isbn" placeholder="ISBN (modo test, opcional)"
+                           style="padding:8px 10px; background:#2c2f3e; color:#eee; border:1px solid #444; border-radius:6px; min-width:200px;">
+                    <input type="number" id="azetapush-max-books" placeholder="max libros (opcional)" min="1"
+                           style="padding:8px 10px; background:#2c2f3e; color:#eee; border:1px solid #444; border-radius:6px; min-width:140px;">
+                    <button class="btn btn-success" id="btn-azetapush-start" onclick="azetapushStart()">▶ Push a Odoo</button>
+                    <button class="btn btn-danger" id="btn-azetapush-stop" onclick="azetapushStop()" disabled>⏹ Detener</button>
+                    <span id="azetapush-stage" style="color:#888; font-size:0.85rem;"></span>
+                </div>
+
+                <div style="margin-top:14px; display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px;">
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#9b59b6" id="azetapush-stat-total">0</div>
+                        <div class="stat-label">A procesar</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#27ae60" id="azetapush-stat-processed">0</div>
+                        <div class="stat-label">Procesados</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#3498db" id="azetapush-stat-tmpl">0</div>
+                        <div class="stat-label">Template escrito (desc/peso/precio)</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#f39c12" id="azetapush-stat-cat">0</div>
+                        <div class="stat-label">categ_id asignado</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#16a085" id="azetapush-stat-stock">0</div>
+                        <div class="stat-label">Stock escrito en AZE01</div>
+                    </div>
+                </div>
+
+                <div style="margin-top:14px; font-size:0.8rem; color:#888;" id="azetapush-progress-detail"></div>
+
+                <div id="azetapush-errors" style="display:none; margin-top:10px;">
+                    <div class="section-label" style="color:#e94560;">Errores</div>
+                    <ul id="azetapush-errors-list" style="font-size:0.8rem; color:#e94560; padding-left:20px;"></ul>
                 </div>
             </div>
 
@@ -1595,6 +1651,7 @@
                 if (typeof cdlh !== 'undefined') cdlh.stopPolling();
                 if (typeof azetaStopPolling === 'function') azetaStopPolling();
                 if (typeof azetacatStopPolling === 'function') azetacatStopPolling();
+                if (typeof azetapushStopPolling === 'function') azetapushStopPolling();
                 stopResumenAutoRefresh();
             }
         }
@@ -2389,6 +2446,113 @@
             } catch (e) { console.error('azetacat poll:', e); }
         }
 
+        // ═══ AZETA PUSH A ODOO (Fase 2) ═══
+        let azetapushPollTimer = null;
+
+        async function azetapushStart() {
+            const isbn = (document.getElementById('azetapush-test-isbn').value || '').trim();
+            const max  = (document.getElementById('azetapush-max-books').value || '').trim();
+            let confirmMsg;
+            if (isbn) {
+                confirmMsg = `Push de UN SOLO ISBN a Odoo (modo test)?\n\nISBN: ${isbn}\n` +
+                             'Escribe description, weight, list_price, categ_id y stock.quant en AZE01.';
+            } else if (max) {
+                confirmMsg = `Push de ${max} libros AZETA a Odoo?\n\n` +
+                             'Modo limitado para validación. Idempotente.';
+            } else {
+                confirmMsg = 'Push de TODOS los libros AZETA a Odoo?\n\n' +
+                             'Escribe en Odoo: description, weight, list_price, categ_id y stock.quant en AZE01.\n' +
+                             'Puede tardar horas. Idempotente.';
+            }
+            if (!confirm(confirmMsg)) return;
+            document.getElementById('btn-azetapush-start').disabled = true;
+            try {
+                const params = new URLSearchParams();
+                if (isbn) params.set('test_isbn', isbn);
+                if (max) params.set('max_books', max);
+                const url = '/api/v1/azeta/push-to-odoo' + (params.toString() ? '?' + params.toString() : '');
+                const resp = await fetch(url, { method: 'POST' });
+                const data = await resp.json();
+                if (data.status !== 'started') {
+                    alert(`❌ ${data.message || 'No se pudo iniciar'}`);
+                    document.getElementById('btn-azetapush-start').disabled = false;
+                    return;
+                }
+                document.getElementById('btn-azetapush-stop').disabled = false;
+                azetapushStartPolling();
+                azetapushPoll();
+            } catch (e) {
+                alert('Error: ' + e.message);
+                document.getElementById('btn-azetapush-start').disabled = false;
+            }
+        }
+
+        async function azetapushStop() {
+            try { await fetch('/api/v1/azeta/push-to-odoo-stop', { method: 'POST' }); }
+            catch (e) {}
+        }
+
+        function azetapushStartPolling() {
+            if (azetapushPollTimer) return;
+            azetapushPollTimer = setInterval(azetapushPoll, 3000);
+        }
+        function azetapushStopPolling() {
+            if (azetapushPollTimer) { clearInterval(azetapushPollTimer); azetapushPollTimer = null; }
+        }
+
+        async function azetapushPoll() {
+            try {
+                const r = await fetch('/api/v1/azeta/push-to-odoo-status');
+                const s = await r.json();
+                const badge = document.getElementById('azetapush-status-badge');
+                badge.textContent = (s.status || 'idle').toUpperCase();
+                badge.className = 'status-badge ' + (s.status || 'idle');
+
+                document.getElementById('azetapush-stage').textContent =
+                    s.stage ? `Etapa: ${s.stage}${s.test_isbn ? ' · ISBN test: '+s.test_isbn : ''}` : '';
+                document.getElementById('azetapush-stat-total').textContent =
+                    (s.total_to_process || 0).toLocaleString();
+                document.getElementById('azetapush-stat-processed').textContent =
+                    (s.processed || 0).toLocaleString();
+                document.getElementById('azetapush-stat-tmpl').textContent =
+                    (s.template_written || 0).toLocaleString();
+                document.getElementById('azetapush-stat-cat').textContent =
+                    (s.categ_assigned || 0).toLocaleString();
+                document.getElementById('azetapush-stat-stock').textContent =
+                    (s.stock_written || 0).toLocaleString();
+
+                const det = [];
+                if (s.categ_no_cache) det.push(`cat sin cache: ${s.categ_no_cache.toLocaleString()}`);
+                if (s.stock_no_data)  det.push(`stock sin data: ${s.stock_no_data.toLocaleString()}`);
+                if (s.stock_no_product) det.push(`stock sin product: ${s.stock_no_product.toLocaleString()}`);
+                if (s.template_errors) det.push(`err tmpl: ${s.template_errors}`);
+                if (s.categ_errors)    det.push(`err cat: ${s.categ_errors}`);
+                if (s.stock_errors)    det.push(`err stock: ${s.stock_errors}`);
+                if (s.elapsed_s)       det.push(`${s.elapsed_s}s`);
+                document.getElementById('azetapush-progress-detail').textContent = det.join(' · ');
+
+                if (s.errors && s.errors.length) {
+                    document.getElementById('azetapush-errors').style.display = 'block';
+                    const ul = document.getElementById('azetapush-errors-list');
+                    ul.innerHTML = '';
+                    s.errors.forEach(e => { const li = document.createElement('li'); li.textContent = e; ul.appendChild(li); });
+                } else {
+                    document.getElementById('azetapush-errors').style.display = 'none';
+                }
+
+                if (s.status === 'running') {
+                    document.getElementById('btn-azetapush-start').disabled = true;
+                    document.getElementById('btn-azetapush-stop').disabled = false;
+                } else {
+                    document.getElementById('btn-azetapush-start').disabled = false;
+                    document.getElementById('btn-azetapush-stop').disabled = true;
+                    if (['completed', 'error', 'stopped'].includes(s.status)) {
+                        azetapushStopPolling();
+                    }
+                }
+            } catch (e) { console.error('azetapush poll:', e); }
+        }
+
         // ═══ AZETA STOCK SYNC ═══
         let azetaPollTimer = null;
 
@@ -2929,6 +3093,14 @@
                 const s = await r.json();
                 azetacatPoll();
                 if (s.status === 'running') azetacatStartPolling();
+            } catch (e) {}
+
+            // AZETA push (Fase 2): poll inicial + start polling si está running
+            try {
+                const r = await fetch('/api/v1/azeta/push-to-odoo-status');
+                const s = await r.json();
+                azetapushPoll();
+                if (s.status === 'running') azetapushStartPolling();
             } catch (e) {}
 
             distRefreshStats();
