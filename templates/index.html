@@ -1197,6 +1197,152 @@
                 </div>
             </div>
 
+            <!-- ═══ AUDITORÍA: RESUMEN DE CATEGORÍAS + READINESS FASE 2 ═══ -->
+            <div class="card" style="border:2px solid rgba(52,152,219,0.5); background:rgba(52,152,219,0.04);">
+                <div class="card-title">
+                    📊 Auditoría: categorías inferidas + readiness Fase 2
+                </div>
+                <p style="color:#888; font-size:0.88rem;">
+                    Antes de crear categorías en Odoo o disparar el push de la Fase 2, revisa qué tenemos:
+                    cuántos paths únicos, cuántos libros AZETA tienen cada campo listo (descripción, peso,
+                    medidas, imagen, precio, categoría), y los top paths/raíces.
+                </p>
+                <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:10px;">
+                    <button class="btn btn-primary" onclick="loadCategSummary()" style="background:#3498db;">
+                        🔄 Cargar / refrescar resumen
+                    </button>
+                    <a href="/api/v1/admin/inferred-categories-summary?top_n=200" target="_blank"
+                       class="btn btn-primary" style="background:#5d6d7e; text-decoration:none;">
+                        🔗 Ver JSON crudo (top_n=200)
+                    </a>
+                    <span id="categ-summary-loading" style="color:#888; font-size:0.85rem; display:none;">
+                        Cargando…
+                    </span>
+                </div>
+
+                <!-- Readiness para Odoo (8 stats) -->
+                <div id="categ-summary-readiness" style="display:none; margin-top:18px;">
+                    <div class="section-label" style="color:#3498db; margin-bottom:8px;">
+                        🚀 Readiness para Fase 2 (libros AZETA con cada campo lleno)
+                    </div>
+                    <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px;">
+                        <div class="stat-box">
+                            <div class="stat-number" style="color:#9b59b6" id="ready-total">0</div>
+                            <div class="stat-label">Total libros AZETA</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-number" id="ready-desc">0%</div>
+                            <div class="stat-label">Con descripción <span id="ready-desc-n" style="color:#888"></span></div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-number" id="ready-weight">0%</div>
+                            <div class="stat-label">Con peso <span id="ready-weight-n" style="color:#888"></span></div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-number" id="ready-dim">0%</div>
+                            <div class="stat-label">Con medidas <span id="ready-dim-n" style="color:#888"></span></div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-number" id="ready-img">0%</div>
+                            <div class="stat-label">Con imagen <span id="ready-img-n" style="color:#888"></span></div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-number" id="ready-price">0%</div>
+                            <div class="stat-label">Con precio EUR <span id="ready-price-n" style="color:#888"></span></div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-number" id="ready-cat">0%</div>
+                            <div class="stat-label">Con categoría <span id="ready-cat-n" style="color:#888"></span></div>
+                        </div>
+                        <div class="stat-box" style="border:1px solid #27ae60;">
+                            <div class="stat-number" style="color:#27ae60" id="ready-full">0%</div>
+                            <div class="stat-label"><strong>TODO completo</strong> <span id="ready-full-n" style="color:#888"></span></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Cardinalidad de categorías -->
+                <div id="categ-summary-card" style="display:none; margin-top:18px;">
+                    <div class="section-label" style="color:#3498db; margin-bottom:8px;">
+                        🏷 Cardinalidad de categorías inferidas
+                    </div>
+                    <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px;">
+                        <div class="stat-box">
+                            <div class="stat-number" style="color:#9b59b6" id="card-total-books">0</div>
+                            <div class="stat-label">Libros con categoría</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-number" style="color:#e67e22" id="card-paths">0</div>
+                            <div class="stat-label">Paths únicos (→ crear en Odoo)</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-number" style="color:#16a085" id="card-leaves">0</div>
+                            <div class="stat-label">Hojas únicas</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-number" style="color:#3498db" id="card-roots">0</div>
+                            <div class="stat-label">Raíces únicas</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- by_source y depth_distribution lado a lado -->
+                <div id="categ-summary-meta" style="display:none; margin-top:18px; display:grid; grid-template-columns:1fr 1fr; gap:18px;">
+                    <div>
+                        <div class="section-label" style="color:#3498db; margin-bottom:6px;">Por fuente (inferred_source)</div>
+                        <table style="width:100%; font-size:0.85rem; border-collapse:collapse;" id="tbl-by-source">
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                    <div>
+                        <div class="section-label" style="color:#3498db; margin-bottom:6px;">Por profundidad de path</div>
+                        <table style="width:100%; font-size:0.85rem; border-collapse:collapse;" id="tbl-depth">
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Top paths y top roots lado a lado -->
+                <div id="categ-summary-tops" style="display:none; margin-top:18px; display:grid; grid-template-columns:1fr 1fr; gap:18px;">
+                    <div>
+                        <div class="section-label" style="color:#3498db; margin-bottom:6px;">
+                            🥇 Top paths con más libros
+                        </div>
+                        <div style="max-height:360px; overflow-y:auto; border:1px solid #2c2f3e; border-radius:6px;">
+                            <table style="width:100%; font-size:0.8rem; border-collapse:collapse;" id="tbl-top-paths">
+                                <thead style="position:sticky; top:0; background:#1c1f2e;">
+                                    <tr>
+                                        <th style="text-align:left; padding:6px 8px; color:#bbb; border-bottom:1px solid #2c2f3e;">#</th>
+                                        <th style="text-align:left; padding:6px 8px; color:#bbb; border-bottom:1px solid #2c2f3e;">Path</th>
+                                        <th style="text-align:right; padding:6px 8px; color:#bbb; border-bottom:1px solid #2c2f3e;">Libros</th>
+                                    </tr>
+                                </thead>
+                                <tbody></tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div>
+                        <div class="section-label" style="color:#3498db; margin-bottom:6px;">
+                            🏆 Top raíces (acumulado de libros bajo cada raíz)
+                        </div>
+                        <div style="max-height:360px; overflow-y:auto; border:1px solid #2c2f3e; border-radius:6px;">
+                            <table style="width:100%; font-size:0.8rem; border-collapse:collapse;" id="tbl-top-roots">
+                                <thead style="position:sticky; top:0; background:#1c1f2e;">
+                                    <tr>
+                                        <th style="text-align:left; padding:6px 8px; color:#bbb; border-bottom:1px solid #2c2f3e;">#</th>
+                                        <th style="text-align:left; padding:6px 8px; color:#bbb; border-bottom:1px solid #2c2f3e;">Raíz</th>
+                                        <th style="text-align:right; padding:6px 8px; color:#bbb; border-bottom:1px solid #2c2f3e;">Libros</th>
+                                    </tr>
+                                </thead>
+                                <tbody></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="categ-summary-error" style="display:none; margin-top:14px; color:#e94560; font-size:0.85rem;"></div>
+            </div>
+
             <!-- ═══ CATEGORÍAS ═══ -->
             <div class="card">
                 <div class="card-title">🏷 Categorías</div>
@@ -2145,6 +2291,100 @@
                     alert(`❌ ${data.message || 'No se pudo iniciar'}`);
                 }
             } catch (e) { alert('Error: ' + e.message); }
+        }
+
+        // ═══ AUDITORÍA DE CATEGORÍAS + READINESS ═══
+        async function loadCategSummary() {
+            const loading = document.getElementById('categ-summary-loading');
+            const errBox = document.getElementById('categ-summary-error');
+            loading.style.display = 'inline';
+            errBox.style.display = 'none';
+            try {
+                const r = await fetch('/api/v1/admin/inferred-categories-summary?top_n=50');
+                const s = await r.json();
+                if (s.error) {
+                    errBox.style.display = 'block';
+                    errBox.textContent = s.error;
+                    return;
+                }
+
+                // ── Cardinalidad ──────────────────────────────────────
+                document.getElementById('card-total-books').textContent = (s.total_books_with_categ || 0).toLocaleString();
+                document.getElementById('card-paths').textContent       = (s.distinct_paths || 0).toLocaleString();
+                document.getElementById('card-leaves').textContent      = (s.distinct_leaves || 0).toLocaleString();
+                document.getElementById('card-roots').textContent       = (s.distinct_roots || 0).toLocaleString();
+                document.getElementById('categ-summary-card').style.display = 'block';
+
+                // ── Readiness ─────────────────────────────────────────
+                const ready = s.readiness_for_odoo || {};
+                const setReady = (key, statId, nId) => {
+                    const obj = ready[key];
+                    if (!obj) return;
+                    document.getElementById(statId).textContent = obj.pct;
+                    document.getElementById(nId).textContent = `(${(obj.n||0).toLocaleString()})`;
+                };
+                document.getElementById('ready-total').textContent = (ready.azeta_books_total || 0).toLocaleString();
+                setReady('with_description', 'ready-desc',   'ready-desc-n');
+                setReady('with_weight',      'ready-weight', 'ready-weight-n');
+                setReady('with_dimensions',  'ready-dim',    'ready-dim-n');
+                setReady('with_image',       'ready-img',    'ready-img-n');
+                setReady('with_price_eur',   'ready-price',  'ready-price-n');
+                setReady('with_categ',       'ready-cat',    'ready-cat-n');
+                setReady('fully_ready',      'ready-full',   'ready-full-n');
+                document.getElementById('categ-summary-readiness').style.display = 'block';
+
+                // ── by_source + depth ────────────────────────────────
+                const tbodySrc = document.querySelector('#tbl-by-source tbody');
+                tbodySrc.innerHTML = '';
+                (s.by_source || []).forEach(row => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e;">${row.source}</td>` +
+                                   `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e; text-align:right; color:#16a085;">${row.books.toLocaleString()}</td>`;
+                    tbodySrc.appendChild(tr);
+                });
+                const tbodyDepth = document.querySelector('#tbl-depth tbody');
+                tbodyDepth.innerHTML = '';
+                (s.depth_distribution || []).forEach(row => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e;">Profundidad ${row.depth}</td>` +
+                                   `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e; text-align:right; color:#e67e22;">${row.distinct_paths.toLocaleString()} paths</td>`;
+                    tbodyDepth.appendChild(tr);
+                });
+                document.getElementById('categ-summary-meta').style.display = 'grid';
+
+                // ── Top paths + top roots ────────────────────────────
+                const tbodyPaths = document.querySelector('#tbl-top-paths tbody');
+                tbodyPaths.innerHTML = '';
+                (s.top_paths || []).forEach((row, i) => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e; color:#888;">${i+1}</td>` +
+                                   `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e;">${escapeHtml(row.path)}</td>` +
+                                   `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e; text-align:right; color:#27ae60;">${row.books.toLocaleString()}</td>`;
+                    tbodyPaths.appendChild(tr);
+                });
+                const tbodyRoots = document.querySelector('#tbl-top-roots tbody');
+                tbodyRoots.innerHTML = '';
+                (s.top_roots || []).forEach((row, i) => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e; color:#888;">${i+1}</td>` +
+                                   `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e;">${escapeHtml(row.root)}</td>` +
+                                   `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e; text-align:right; color:#3498db;">${row.books_total.toLocaleString()}</td>`;
+                    tbodyRoots.appendChild(tr);
+                });
+                document.getElementById('categ-summary-tops').style.display = 'grid';
+            } catch (e) {
+                errBox.style.display = 'block';
+                errBox.textContent = 'Error: ' + e.message;
+            } finally {
+                loading.style.display = 'none';
+            }
+        }
+
+        function escapeHtml(s) {
+            return String(s || '')
+                .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
         }
 
         async function categoriesPush() {
