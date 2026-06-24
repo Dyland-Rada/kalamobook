@@ -502,21 +502,89 @@ def _read_stock_targets(test_isbn: str | None = None,
     return out
 
 
+# Concurrencia configurable. Empezar conservador (8) — si Odoo aguanta sube.
+PUSH_CONCURRENCY = int(os.environ.get("AZETA_PUSH_CONCURRENCY", "8"))
+
+
+async def _process_stock_target(odoo: OdooClient, t: dict,
+                                 pid_cache: dict[int, int],
+                                 job: dict, sem: asyncio.Semaphore):
+    """Procesa un libro: resuelve pid, escribe quant, aplica inventario."""
+    async with sem:
+        if job["status"] != "running":
+            return
+        try:
+            template_id = t["odoo_id"]
+            pid = pid_cache.get(template_id)
+            if pid is None:
+                pid = await _get_product_id(odoo, template_id)
+                if pid:
+                    pid_cache[template_id] = pid
+            if not pid:
+                job["stock_no_product"] += 1
+                job["processed"] += 1
+                return
+
+            qty = t["qty"]
+            quants = await odoo.search_read(
+                "stock.quant",
+                [["product_id", "=", pid],
+                 ["location_id", "=", AZE01_LOCATION_ID]],
+                ["id", "quantity"], limit=1,
+            )
+
+            if quants:
+                quant_id = quants[0]["id"]
+                await odoo.write("stock.quant", [quant_id],
+                                 {"inventory_quantity": qty})
+            else:
+                quant_id = await odoo.execute_kw(
+                    "stock.quant", "create",
+                    [{"product_id": pid,
+                      "location_id": AZE01_LOCATION_ID,
+                      "inventory_quantity": qty}],
+                )
+            try:
+                await odoo.execute_kw(
+                    "stock.quant", "action_apply_inventory",
+                    [[quant_id]],
+                )
+            except Exception as apply_err:
+                verify = await odoo.read(
+                    "stock.quant", [quant_id], ["quantity"]
+                )
+                if not (verify and abs(
+                    float(verify[0].get("quantity") or 0) - qty
+                ) < 0.01):
+                    raise apply_err
+            job["stock_written"] += 1
+        except Exception as e:
+            job["stock_errors"] += 1
+            err = f"isbn={t['barcode']}: {type(e).__name__}: {str(e)[:120]}"
+            job["errors"].append(err)
+        finally:
+            job["processed"] += 1
+
+
 async def run_azeta_stock_push_only(test_isbn: str | None = None,
-                                     max_books: int | None = None) -> dict:
+                                     max_books: int | None = None,
+                                     concurrency: int | None = None) -> dict:
     """
     Push SOLO de stock.quant en AZE01 (location 14). No toca template
     ni categorias. Mucho mas rapido que run_azeta_push completo.
 
     test_isbn: procesa solo 1 ISBN (validacion)
     max_books: tope total
+    concurrency: workers en paralelo (default PUSH_CONCURRENCY)
     """
     global stock_push_job
+    conc = concurrency or PUSH_CONCURRENCY
     stock_push_job = {
         "status": "running",
         "started_at": datetime.now().isoformat(),
         "stage": "starting",
         "test_isbn": test_isbn,
+        "concurrency": conc,
         "total_to_process": 0,
         "processed": 0,
         "stock_written": 0,
@@ -532,7 +600,8 @@ async def run_azeta_stock_push_only(test_isbn: str | None = None,
         job["stage"] = "loading"
         targets = _read_stock_targets(test_isbn=test_isbn, max_books=max_books)
         job["total_to_process"] = len(targets)
-        print(f"[AzetaStockPush] {len(targets):,} libros AZETA a actualizar stock")
+        print(f"[AzetaStockPush] {len(targets):,} libros AZETA a actualizar "
+              f"stock (concurrency={conc})")
 
         if not targets:
             job["status"] = "completed"
@@ -540,59 +609,21 @@ async def run_azeta_stock_push_only(test_isbn: str | None = None,
             return job
 
         job["stage"] = "pushing"
+        pid_cache: dict[int, int] = {}
+        sem = asyncio.Semaphore(conc)
+
         async with OdooClient() as odoo:
-            for t in targets:
+            # Process en olas de 500 para no construir tareas para 236k
+            WAVE = 500
+            for wave_start in range(0, len(targets), WAVE):
                 if job["status"] != "running":
                     break
-
-                # Mismo workflow que _push_stock_quant pero con qty ya resuelto
-                pid = await _get_product_id(odoo, t["odoo_id"])
-                if not pid:
-                    job["stock_no_product"] += 1
-                    job["processed"] += 1
-                    continue
-
-                quants = await odoo.search_read(
-                    "stock.quant",
-                    [["product_id", "=", pid],
-                     ["location_id", "=", AZE01_LOCATION_ID]],
-                    ["id", "quantity"], limit=1,
-                )
-
-                try:
-                    qty = t["qty"]
-                    if quants:
-                        quant_id = quants[0]["id"]
-                        await odoo.write("stock.quant", [quant_id],
-                                         {"inventory_quantity": qty})
-                    else:
-                        quant_id = await odoo.execute_kw(
-                            "stock.quant", "create",
-                            [{"product_id": pid,
-                              "location_id": AZE01_LOCATION_ID,
-                              "inventory_quantity": qty}],
-                        )
-                    try:
-                        await odoo.execute_kw(
-                            "stock.quant", "action_apply_inventory",
-                            [[quant_id]],
-                        )
-                    except Exception as apply_err:
-                        verify = await odoo.read(
-                            "stock.quant", [quant_id], ["quantity"]
-                        )
-                        if not (verify and abs(
-                            float(verify[0].get("quantity") or 0) - qty
-                        ) < 0.01):
-                            raise apply_err
-                    job["stock_written"] += 1
-                except Exception as e:
-                    job["stock_errors"] += 1
-                    err = f"pid={pid} isbn={t['barcode']}: {type(e).__name__}: {str(e)[:120]}"
-                    job["errors"].append(err)
-
-                job["processed"] += 1
-                if job["processed"] % 200 == 0:
+                wave = targets[wave_start:wave_start + WAVE]
+                await asyncio.gather(*[
+                    _process_stock_target(odoo, t, pid_cache, job, sem)
+                    for t in wave
+                ])
+                if job["processed"] % 1000 < WAVE:
                     print(f"[AzetaStockPush] {job['processed']:,}/"
                           f"{job['total_to_process']:,} "
                           f"ok:{job['stock_written']} err:{job['stock_errors']}")

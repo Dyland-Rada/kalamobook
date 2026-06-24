@@ -1049,10 +1049,13 @@ async def azeta_push_to_odoo_status():
 async def azeta_stock_push_only(
     test_isbn: str | None = Query(None, description="ISBN único (modo test)"),
     max_books: int | None = Query(None, ge=1, description="Tope de libros"),
+    concurrency: int | None = Query(None, ge=1, le=32, description="workers en paralelo"),
 ):
     """
     Push SOLO de stock.quant en AZE01. No toca description/weight/categ.
     Mucho más rápido que push-to-odoo completo.
+
+    concurrency: workers en paralelo (default env AZETA_PUSH_CONCURRENCY o 8).
 
     Usa libros_proveedor AZETA como fuente de qty (debes haber corrido
     /api/v1/azeta/stock-sync antes para tenerlo fresco).
@@ -1075,6 +1078,7 @@ async def azeta_stock_push_only(
             new_loop.run_until_complete(
                 azeta_push_odoo.run_azeta_stock_push_only(
                     test_isbn=test_isbn, max_books=max_books,
+                    concurrency=concurrency,
                 )
             )
         finally:
@@ -1083,7 +1087,8 @@ async def azeta_stock_push_only(
     t = threading.Thread(target=_run_in_thread, daemon=True)
     t.start()
     return JSONResponse(content={"status": "started", "test_isbn": test_isbn,
-                                  "max_books": max_books})
+                                  "max_books": max_books,
+                                  "concurrency": concurrency})
 
 
 @app.post("/api/v1/azeta/stock-push-only-stop", tags=["AZETA"])
@@ -1142,10 +1147,17 @@ async def azeta_stock_cron_status():
 # ─── SYNC STOCK SINLI → Odoo (proveedores no-AZETA) ──────────────────
 
 @app.post("/api/v1/sync-stock/run-once", tags=["SINLI Sync"])
-async def sync_stock_run_once():
+async def sync_stock_run_once(
+    solo_proveedor: str | None = Query(None, description="email del proveedor (filtro, opcional)"),
+    max_books: int | None = Query(None, ge=1, description="tope total (None = sin tope)"),
+    concurrency: int | None = Query(None, ge=1, le=32, description="workers en paralelo"),
+):
     """
-    Una pasada del sync: 1 lote de 2000 libros SINLI (no-AZETA) que hayan
-    cambiado desde el ultimo_timestamp. Idempotente.
+    Una pasada del sync: 1 lote de hasta 2000 libros SINLI (no-AZETA) que
+    hayan cambiado desde el ultimo_timestamp.
+
+    Si pasas solo_proveedor o max_books, NO avanza el marcapaginas (modo
+    validación). Para procesar normalmente y avanzar marker, no pases filtros.
     """
     import threading
     import sys
@@ -1163,21 +1175,37 @@ async def sync_stock_run_once():
         asyncio.set_event_loop(new_loop)
         try:
             new_loop.run_until_complete(
-                sync_stock_sinli.run_once(loop_until_empty=False)
+                sync_stock_sinli.run_once(
+                    loop_until_empty=False,
+                    solo_proveedor=solo_proveedor,
+                    max_books=max_books,
+                    concurrency=concurrency,
+                )
             )
         finally:
             new_loop.close()
 
     t = threading.Thread(target=_run_in_thread, daemon=True)
     t.start()
-    return JSONResponse(content={"status": "started"})
+    return JSONResponse(content={
+        "status": "started",
+        "solo_proveedor": solo_proveedor,
+        "max_books": max_books,
+        "concurrency": concurrency,
+    })
 
 
 @app.post("/api/v1/sync-stock/run-backlog", tags=["SINLI Sync"])
-async def sync_stock_run_backlog():
+async def sync_stock_run_backlog(
+    solo_proveedor: str | None = Query(None, description="filtro por proveedor"),
+    max_books: int | None = Query(None, ge=1, description="tope total"),
+    concurrency: int | None = Query(None, ge=1, le=32),
+):
     """
     Modo backlog: bucle hasta vaciar todos los pendientes (~104k libros la
     primera vez). Idempotente, se puede detener con /stop.
+
+    Si pasas solo_proveedor o max_books, NO avanza marcapaginas (validación).
     """
     import threading
     import sys
@@ -1195,14 +1223,24 @@ async def sync_stock_run_backlog():
         asyncio.set_event_loop(new_loop)
         try:
             new_loop.run_until_complete(
-                sync_stock_sinli.run_once(loop_until_empty=True)
+                sync_stock_sinli.run_once(
+                    loop_until_empty=True,
+                    solo_proveedor=solo_proveedor,
+                    max_books=max_books,
+                    concurrency=concurrency,
+                )
             )
         finally:
             new_loop.close()
 
     t = threading.Thread(target=_run_in_thread, daemon=True)
     t.start()
-    return JSONResponse(content={"status": "started", "mode": "backlog"})
+    return JSONResponse(content={
+        "status": "started", "mode": "backlog",
+        "solo_proveedor": solo_proveedor,
+        "max_books": max_books,
+        "concurrency": concurrency,
+    })
 
 
 @app.post("/api/v1/sync-stock/stop", tags=["SINLI Sync"])

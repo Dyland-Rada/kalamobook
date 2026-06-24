@@ -1599,6 +1599,8 @@
                            style="padding:8px 10px; background:#2c2f3e; color:#eee; border:1px solid #444; border-radius:6px; min-width:180px;">
                     <input type="number" id="azetasp-max-books" placeholder="max libros (opcional)" min="1"
                            style="padding:8px 10px; background:#2c2f3e; color:#eee; border:1px solid #444; border-radius:6px; min-width:140px;">
+                    <input type="number" id="azetasp-concurrency" placeholder="concurrency (default 8)" min="1" max="32"
+                           style="padding:8px 10px; background:#2c2f3e; color:#eee; border:1px solid #444; border-radius:6px; min-width:160px;">
                     <button class="btn btn-success" id="btn-azetasp-start" onclick="azetaspStart()">▶ Push stock ahora</button>
                     <button class="btn btn-danger" id="btn-azetasp-stop" onclick="azetaspStop()" disabled>⏹ Detener</button>
                     <span id="azetasp-stage" style="color:#888; font-size:0.85rem;"></span>
@@ -1703,12 +1705,30 @@
                 <div class="section-label" style="color:#2ecc71; margin-top:18px;">
                     1. Ejecución manual
                 </div>
+                <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:8px;">
+                    <select id="sinli-proveedor" style="padding:8px 10px; background:#2c2f3e; color:#eee; border:1px solid #444; border-radius:6px;">
+                        <option value="">— Todos los proveedores —</option>
+                        <option value="sinli.icaro@zonalibros.com">ICARO</option>
+                        <option value="fandite@distriforma.es">DISTRIFORMA</option>
+                        <option value="sinli@punxes.es">LES PUNXES</option>
+                        <option value="sinli@alfaomega.es">ALFA OMEGA</option>
+                        <option value="sinli@akal.com">AKAL</option>
+                    </select>
+                    <input type="number" id="sinli-max-books" placeholder="max libros (test)" min="1"
+                           style="padding:8px 10px; background:#2c2f3e; color:#eee; border:1px solid #444; border-radius:6px; min-width:130px;">
+                    <input type="number" id="sinli-concurrency" placeholder="concurrency (default 8)" min="1" max="32"
+                           style="padding:8px 10px; background:#2c2f3e; color:#eee; border:1px solid #444; border-radius:6px; min-width:150px;">
+                </div>
                 <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:8px;">
                     <button class="btn btn-primary" id="btn-sinli-once" onclick="sinliRunOnce()" style="background:#3498db;">▶ Sync ahora (1 lote)</button>
                     <button class="btn btn-success" id="btn-sinli-backlog" onclick="sinliRunBacklog()">▶ Arrancar backlog (hasta vaciar)</button>
                     <button class="btn btn-danger" id="btn-sinli-stop" onclick="sinliStop()" disabled>⏹ Detener</button>
                     <span id="sinli-stage" style="color:#888; font-size:0.85rem;"></span>
                 </div>
+                <p style="margin-top:6px; font-size:0.78rem; color:#888;">
+                    ⚠️ <strong>Filtro o max_books activos = modo validación</strong>: NO avanza el marcapáginas
+                    (puedes probar 10 libros sin "consumirlos" del backlog real).
+                </p>
 
                 <div style="margin-top:14px; display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px;">
                     <div class="stat-box">
@@ -3105,6 +3125,7 @@
         async function azetaspStart() {
             const isbn = (document.getElementById('azetasp-test-isbn').value || '').trim();
             const max  = (document.getElementById('azetasp-max-books').value || '').trim();
+            const conc = (document.getElementById('azetasp-concurrency').value || '').trim();
             let confirmMsg;
             if (isbn) {
                 confirmMsg = `Push stock-only de UN ISBN a Odoo (modo test)?\n\nISBN: ${isbn}\n\n` +
@@ -3112,7 +3133,8 @@
             } else if (max) {
                 confirmMsg = `Push stock-only de ${max} libros a Odoo?\n\nValidación con muestra. Idempotente.`;
             } else {
-                confirmMsg = 'Push stock-only de TODOS los libros AZETA con stock?\n\n' +
+                confirmMsg = 'Push stock-only de TODOS los libros AZETA con stock (~236k)?\n\n' +
+                             `Concurrency: ${conc || 8} workers en paralelo.\n` +
                              'Solo escribe stock.quant en AZE01. Idempotente.\n\n' +
                              'Requiere haber corrido el fetcher CSV (paso 1) antes para tener datos en libros_proveedor.';
             }
@@ -3122,6 +3144,7 @@
                 const params = new URLSearchParams();
                 if (isbn) params.set('test_isbn', isbn);
                 if (max) params.set('max_books', max);
+                if (conc) params.set('concurrency', conc);
                 const url = '/api/v1/azeta/stock-push-only' + (params.toString() ? '?' + params.toString() : '');
                 const resp = await fetch(url, { method: 'POST' });
                 const data = await resp.json();
@@ -3263,18 +3286,36 @@
         let sinliPollTimer = null;
         let sinliCronPollTimer = null;
 
+        function sinliBuildParams() {
+            const params = new URLSearchParams();
+            const prov = document.getElementById('sinli-proveedor').value;
+            const max  = document.getElementById('sinli-max-books').value;
+            const conc = document.getElementById('sinli-concurrency').value;
+            if (prov) params.set('solo_proveedor', prov);
+            if (max)  params.set('max_books', max);
+            if (conc) params.set('concurrency', conc);
+            const s = params.toString();
+            return s ? '?' + s : '';
+        }
+
         async function sinliRunOnce() {
-            if (!confirm('Ejecutar un lote del sync SINLI?\n\n' +
+            const qs = sinliBuildParams();
+            const filtros = qs ? ` con filtros: ${qs}` : '';
+            if (!confirm(`Ejecutar un lote del sync SINLI${filtros}?\n\n` +
                          'Procesa hasta 2000 libros (no-AZETA) cambiados desde el último timestamp.\n' +
+                         (qs ? '⚠️ Modo validación (filtros activos): NO avanza marcapáginas.\n' : '') +
                          'Idempotente.')) return;
-            await sinliPost('/api/v1/sync-stock/run-once', 'once');
+            await sinliPost('/api/v1/sync-stock/run-once' + qs, 'once');
         }
 
         async function sinliRunBacklog() {
-            if (!confirm('Arrancar BACKLOG SINLI?\n\n' +
+            const qs = sinliBuildParams();
+            const filtros = qs ? ` con filtros: ${qs}` : '';
+            if (!confirm(`Arrancar BACKLOG SINLI${filtros}?\n\n` +
                          'Bucle hasta vaciar todos los pendientes (~104k libros la primera vez).\n' +
-                         'Tarda ~16-20h. Idempotente. Puedes parar con ⏹ Detener.')) return;
-            await sinliPost('/api/v1/sync-stock/run-backlog', 'backlog');
+                         'Con concurrency=8 tarda ~3-6h. Idempotente. Puedes parar con ⏹ Detener.\n' +
+                         (qs ? '⚠️ Modo validación (filtros activos): NO avanza marcapáginas.\n' : ''))) return;
+            await sinliPost('/api/v1/sync-stock/run-backlog' + qs, 'backlog');
         }
 
         async function sinliPost(url, mode) {

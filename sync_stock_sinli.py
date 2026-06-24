@@ -35,6 +35,7 @@ ENTIDAD = "libros_proveedor_to_odoo"
 AZETA_EMAIL = "info@azetadistribuciones.es"
 BATCH_SIZE = 2000
 CRON_INTERVAL_S = int(os.environ.get("SYNC_STOCK_CRON_INTERVAL_S", "3600"))
+PUSH_CONCURRENCY = int(os.environ.get("SYNC_STOCK_CONCURRENCY", "8"))
 
 # Estado en memoria
 sync_job: dict | None = None
@@ -235,27 +236,45 @@ def _record_error(isbn: str, proveedor: str, mensaje: str, payload: dict):
 
 
 # ─── Query del lote ───────────────────────────────────────────────────
-def _fetch_batch(marker, limit: int = BATCH_SIZE) -> list[dict]:
+def _fetch_batch(marker, limit: int = BATCH_SIZE,
+                 solo_proveedor: str | None = None) -> list[dict]:
     """
     Lote de libros NO-AZETA cambiados después del marcador.
     JOIN con mirror = solo libros que ya existen en Odoo (grupo A).
+    solo_proveedor: si se pasa, filtra por ese proveedor_email específico.
     """
     conn = db.get_connection()
     cur = conn.cursor()
     try:
-        db.execute_query(cur, """
-            SELECT lp.isbn, lp.proveedor_email, lp.stock_disponible,
-                   lp.precio_con_iva, lp.actualizado_en,
-                   m.odoo_id, m.list_price
-            FROM libros_proveedor lp
-            JOIN odoo_books_mirror m ON m.barcode = lp.isbn
-            WHERE lp.actualizado_en > ?
-              AND lp.proveedor_email != ?
-              AND lp.isbn IS NOT NULL
-              AND m.odoo_id IS NOT NULL
-            ORDER BY lp.actualizado_en
-            LIMIT ?
-        """, (marker, AZETA_EMAIL, limit))
+        if solo_proveedor:
+            db.execute_query(cur, """
+                SELECT lp.isbn, lp.proveedor_email, lp.stock_disponible,
+                       lp.precio_con_iva, lp.actualizado_en,
+                       m.odoo_id, m.list_price
+                FROM libros_proveedor lp
+                JOIN odoo_books_mirror m ON m.barcode = lp.isbn
+                WHERE lp.actualizado_en > ?
+                  AND lp.proveedor_email = ?
+                  AND lp.proveedor_email != ?
+                  AND lp.isbn IS NOT NULL
+                  AND m.odoo_id IS NOT NULL
+                ORDER BY lp.actualizado_en
+                LIMIT ?
+            """, (marker, solo_proveedor, AZETA_EMAIL, limit))
+        else:
+            db.execute_query(cur, """
+                SELECT lp.isbn, lp.proveedor_email, lp.stock_disponible,
+                       lp.precio_con_iva, lp.actualizado_en,
+                       m.odoo_id, m.list_price
+                FROM libros_proveedor lp
+                JOIN odoo_books_mirror m ON m.barcode = lp.isbn
+                WHERE lp.actualizado_en > ?
+                  AND lp.proveedor_email != ?
+                  AND lp.isbn IS NOT NULL
+                  AND m.odoo_id IS NOT NULL
+                ORDER BY lp.actualizado_en
+                LIMIT ?
+            """, (marker, AZETA_EMAIL, limit))
         rows = cur.fetchall()
     finally:
         conn.close()
@@ -372,10 +391,15 @@ async def _push_one(odoo: OdooClient, book: dict,
 
 
 # ─── Orchestrators ────────────────────────────────────────────────────
-def _new_job(mode: str) -> dict:
+def _new_job(mode: str, concurrency: int = PUSH_CONCURRENCY,
+             solo_proveedor: str | None = None,
+             max_books: int | None = None) -> dict:
     return {
         "status": "running",
         "mode": mode,
+        "concurrency": concurrency,
+        "solo_proveedor": solo_proveedor,
+        "max_books": max_books,
         "started_at": datetime.now().isoformat(),
         "stage": "starting",
         "items_total_estimate": 0,
@@ -393,72 +417,103 @@ def _new_job(mode: str) -> dict:
     }
 
 
-async def _run_one_batch(odoo: OdooClient,
+async def _process_book(odoo: OdooClient, book: dict,
                          prov_to_wh: dict[str, str],
                          wh_to_loc: dict[str, int],
                          pid_cache: dict[int, int],
-                         job: dict) -> tuple[int, Any]:
-    """
-    Procesa un lote. Devuelve (n_procesados, max_actualizado_en).
-    """
-    marker = _get_marker()
-    job["stage"] = f"fetching (marker={marker})"
-    batch = _fetch_batch(marker, BATCH_SIZE)
-    if not batch:
-        return 0, marker
-
-    job["stage"] = f"pushing batch ({len(batch)} libros)"
-    max_ts = marker
-    n_ok = 0
-    for book in batch:
+                         job: dict,
+                         sem: asyncio.Semaphore):
+    """Procesa un libro con semaphore (concurrencia controlada)."""
+    async with sem:
         if job["status"] != "running":
-            break
+            return
+        try:
+            wh_code = prov_to_wh.get(book["proveedor_email"])
+            if not wh_code:
+                _record_error(book["isbn"], book["proveedor_email"],
+                              "Proveedor sin mapping en proveedor_almacen_odoo",
+                              {"book": book})
+                job["err_no_warehouse"] += 1
+                return
 
-        # Resolver warehouse → location
-        wh_code = prov_to_wh.get(book["proveedor_email"])
-        if not wh_code:
-            _record_error(book["isbn"], book["proveedor_email"],
-                          "Proveedor sin mapping en proveedor_almacen_odoo",
-                          {"book": book})
-            job["err_no_warehouse"] += 1
-        else:
-            # Salvaguarda anti-colisión: si location_id=14 (AZE01),
-            # NUNCA escribir (eso es del scraper AZETA)
             location_id = wh_to_loc.get(wh_code)
             if not location_id:
                 _record_error(book["isbn"], book["proveedor_email"],
                               f"Warehouse {wh_code} sin lot_stock_id en Odoo",
                               {"wh": wh_code})
                 job["err_no_warehouse"] += 1
-            elif location_id == 14:
+                return
+            # Salvaguarda anti-colisión: NUNCA escribir en location 14 (AZE01)
+            if location_id == 14:
                 _record_error(book["isbn"], book["proveedor_email"],
                               "Anti-colision: location 14 (AZE01) es del scraper",
                               {"wh": wh_code, "location_id": location_id})
                 job["err_no_warehouse"] += 1
-            else:
-                ok = await _push_one(odoo, book, location_id, pid_cache, job)
-                if ok:
-                    n_ok += 1
+                return
 
-        job["items_processed"] += 1
+            await _push_one(odoo, book, location_id, pid_cache, job)
+        finally:
+            job["items_processed"] += 1
+
+
+async def _run_one_batch(odoo: OdooClient,
+                         prov_to_wh: dict[str, str],
+                         wh_to_loc: dict[str, int],
+                         pid_cache: dict[int, int],
+                         job: dict,
+                         solo_proveedor: str | None = None,
+                         limit_override: int | None = None) -> tuple[int, Any]:
+    """
+    Procesa un lote en paralelo (concurrencia PUSH_CONCURRENCY).
+    Devuelve (n_procesados, max_actualizado_en).
+    """
+    marker = _get_marker()
+    limit = limit_override or BATCH_SIZE
+    job["stage"] = f"fetching (marker={marker})"
+    batch = _fetch_batch(marker, limit, solo_proveedor=solo_proveedor)
+    if not batch:
+        return 0, marker
+
+    job["stage"] = f"pushing batch ({len(batch)} libros, conc={job.get('concurrency', PUSH_CONCURRENCY)})"
+    max_ts = marker
+    sem = asyncio.Semaphore(job.get("concurrency", PUSH_CONCURRENCY))
+
+    # Actualizamos max_ts al inicio (antes del gather, en caso de stop a medias
+    # mantenemos el avance)
+    for book in batch:
         if book["actualizado_en"] and (max_ts is None or book["actualizado_en"] > max_ts):
             max_ts = book["actualizado_en"]
 
-        if job["items_processed"] % 100 == 0:
-            print(f"[SinliSync] {job['items_processed']:,} "
-                  f"stk:{job['stock_written']} prc:{job['price_written']} "
-                  f"err:{job['err_no_product']+job['err_apply']+job['err_other']}")
+    # Procesar todos en paralelo con semaphore (corre máximo N a la vez)
+    await asyncio.gather(*[
+        _process_book(odoo, book, prov_to_wh, wh_to_loc, pid_cache, job, sem)
+        for book in batch
+    ])
+
+    print(f"[SinliSync] batch DONE proc={job['items_processed']:,} "
+          f"stk:{job['stock_written']} prc:{job['price_written']} "
+          f"err:{job['err_no_product']+job['err_apply']+job['err_other']+job['err_no_warehouse']}")
 
     return len(batch), max_ts
 
 
-async def run_once(loop_until_empty: bool = False) -> dict:
+async def run_once(loop_until_empty: bool = False,
+                    solo_proveedor: str | None = None,
+                    max_books: int | None = None,
+                    concurrency: int | None = None) -> dict:
     """
     Modo run-once: un lote.
     Si loop_until_empty=True, sigue hasta vaciar (modo backlog).
+    solo_proveedor: filtra por proveedor_email (e.g. 'sinli.icaro@zonalibros.com')
+    max_books: tope total de libros (None = sin tope, BATCH_SIZE por lote)
+    concurrency: workers en paralelo (default PUSH_CONCURRENCY=8)
     """
     global sync_job
-    sync_job = _new_job("backlog" if loop_until_empty else "once")
+    conc = concurrency or PUSH_CONCURRENCY
+    mode = "backlog" if loop_until_empty else "once"
+    if solo_proveedor or max_books:
+        mode = "test" if max_books and max_books <= 50 else mode
+    sync_job = _new_job(mode, conc, solo_proveedor, max_books)
     job = sync_job
     t_start = time.monotonic()
 
@@ -477,18 +532,34 @@ async def run_once(loop_until_empty: bool = False) -> dict:
         conn = db.get_connection()
         cur = conn.cursor()
         try:
-            db.execute_query(cur, """
-                SELECT COUNT(*) FROM libros_proveedor lp
-                JOIN odoo_books_mirror m ON m.barcode = lp.isbn
-                WHERE lp.actualizado_en > ?
-                  AND lp.proveedor_email != ?
-                  AND lp.isbn IS NOT NULL
-                  AND m.odoo_id IS NOT NULL
-            """, (marker, AZETA_EMAIL))
-            job["items_total_estimate"] = int(cur.fetchone()[0])
+            if solo_proveedor:
+                db.execute_query(cur, """
+                    SELECT COUNT(*) FROM libros_proveedor lp
+                    JOIN odoo_books_mirror m ON m.barcode = lp.isbn
+                    WHERE lp.actualizado_en > ?
+                      AND lp.proveedor_email = ?
+                      AND lp.proveedor_email != ?
+                      AND lp.isbn IS NOT NULL
+                      AND m.odoo_id IS NOT NULL
+                """, (marker, solo_proveedor, AZETA_EMAIL))
+            else:
+                db.execute_query(cur, """
+                    SELECT COUNT(*) FROM libros_proveedor lp
+                    JOIN odoo_books_mirror m ON m.barcode = lp.isbn
+                    WHERE lp.actualizado_en > ?
+                      AND lp.proveedor_email != ?
+                      AND lp.isbn IS NOT NULL
+                      AND m.odoo_id IS NOT NULL
+                """, (marker, AZETA_EMAIL))
+            est = int(cur.fetchone()[0])
+            if max_books:
+                est = min(est, max_books)
+            job["items_total_estimate"] = est
         finally:
             conn.close()
-        print(f"[SinliSync] {job['items_total_estimate']:,} pendientes desde marker={marker}")
+        print(f"[SinliSync] {job['items_total_estimate']:,} pendientes "
+              f"desde marker={marker} prov={solo_proveedor or 'ALL'} "
+              f"conc={conc}")
 
         async with OdooClient() as odoo:
             job["stage"] = "loading_warehouses"
@@ -496,17 +567,27 @@ async def run_once(loop_until_empty: bool = False) -> dict:
             print(f"[SinliSync] Warehouses cargados: {wh_to_loc}")
 
             while job["status"] == "running":
+                # Limitar el batch al max_books restante si aplica
+                remaining = (max_books - job["items_processed"]) if max_books else None
+                if remaining is not None and remaining <= 0:
+                    break
+                batch_limit = min(BATCH_SIZE, remaining) if remaining else BATCH_SIZE
+
                 n, max_ts = await _run_one_batch(
-                    odoo, prov_to_wh, wh_to_loc, pid_cache, job
+                    odoo, prov_to_wh, wh_to_loc, pid_cache, job,
+                    solo_proveedor=solo_proveedor,
+                    limit_override=batch_limit,
                 )
                 if n == 0:
                     break
 
                 job["batches_done"] += 1
-                # Avanzar marcapáginas con el max_ts del lote (ok=True)
-                if max_ts and job["status"] == "running":
+                # Avanzar marcapáginas con el max_ts del lote (ok=True).
+                # Importante: si solo_proveedor o max_books están activos
+                # (modo prueba), NO avanzamos marker — solo es validación.
+                if (max_ts and job["status"] == "running"
+                        and not solo_proveedor and not max_books):
                     _advance_marker(max_ts, job["items_processed"], ok=True)
-                    # Re-adquirir lock (advance_marker libera lock)
                     if not _acquire_lock():
                         job["errors"].append("Lock perdido durante el bucle.")
                         break
