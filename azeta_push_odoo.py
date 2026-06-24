@@ -435,9 +435,322 @@ async def run_azeta_push(batch_size: int = DEFAULT_BATCH_SIZE,
     return job
 
 
+# ─────────────────────────────────────────────────────────────────────
+# STOCK-ONLY PUSH (modo rapido, solo escribe stock.quant en AZE01)
+# ─────────────────────────────────────────────────────────────────────
+
+stock_push_job: dict | None = None
+
+
+def get_stock_push_status() -> dict:
+    job = dict(stock_push_job) if stock_push_job else {"status": "idle"}
+    if "errors" in job:
+        job["errors"] = job["errors"][-15:]
+    return job
+
+
+def stop_stock_push():
+    global stock_push_job
+    if stock_push_job and stock_push_job.get("status") == "running":
+        stock_push_job["status"] = "stopped"
+        return True
+    return False
+
+
+def _read_stock_targets(test_isbn: str | None = None,
+                       max_books: int | None = None) -> list[dict]:
+    """
+    Lee odoo_id + barcode + qty (cap 50) cruzando mirror con
+    libros_proveedor AZETA. Solo libros con odoo_id no nulo.
+    """
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        if test_isbn:
+            sql = """
+                SELECT m.odoo_id, m.barcode, COALESCE(lp.stock_disponible, 0)
+                FROM odoo_books_mirror m
+                JOIN libros_proveedor lp ON lp.isbn = m.barcode
+                WHERE lp.proveedor_email = ?
+                  AND m.odoo_id IS NOT NULL
+                  AND m.barcode = ?
+                LIMIT 1
+            """
+            db.execute_query(cur, sql, (AZETA_PROVEEDOR_EMAIL, test_isbn))
+        else:
+            sql = """
+                SELECT m.odoo_id, m.barcode, COALESCE(lp.stock_disponible, 0)
+                FROM odoo_books_mirror m
+                JOIN libros_proveedor lp ON lp.isbn = m.barcode
+                WHERE lp.proveedor_email = ?
+                  AND m.odoo_id IS NOT NULL
+                ORDER BY m.odoo_id
+            """
+            if max_books:
+                sql += f"\n                LIMIT {int(max_books)}"
+            db.execute_query(cur, sql, (AZETA_PROVEEDOR_EMAIL,))
+        rows = cur.fetchall()
+    finally:
+        conn.close()
+
+    out = []
+    for r in rows:
+        qty = int(r[2] or 0)
+        if qty > STOCK_CAP:
+            qty = STOCK_CAP
+        out.append({"odoo_id": r[0], "barcode": r[1], "qty": qty})
+    return out
+
+
+async def run_azeta_stock_push_only(test_isbn: str | None = None,
+                                     max_books: int | None = None) -> dict:
+    """
+    Push SOLO de stock.quant en AZE01 (location 14). No toca template
+    ni categorias. Mucho mas rapido que run_azeta_push completo.
+
+    test_isbn: procesa solo 1 ISBN (validacion)
+    max_books: tope total
+    """
+    global stock_push_job
+    stock_push_job = {
+        "status": "running",
+        "started_at": datetime.now().isoformat(),
+        "stage": "starting",
+        "test_isbn": test_isbn,
+        "total_to_process": 0,
+        "processed": 0,
+        "stock_written": 0,
+        "stock_errors": 0,
+        "stock_no_product": 0,
+        "elapsed_s": 0,
+        "errors": [],
+    }
+    job = stock_push_job
+    t_start = time.monotonic()
+
+    try:
+        job["stage"] = "loading"
+        targets = _read_stock_targets(test_isbn=test_isbn, max_books=max_books)
+        job["total_to_process"] = len(targets)
+        print(f"[AzetaStockPush] {len(targets):,} libros AZETA a actualizar stock")
+
+        if not targets:
+            job["status"] = "completed"
+            job["stage"] = "done"
+            return job
+
+        job["stage"] = "pushing"
+        async with OdooClient() as odoo:
+            for t in targets:
+                if job["status"] != "running":
+                    break
+
+                # Mismo workflow que _push_stock_quant pero con qty ya resuelto
+                pid = await _get_product_id(odoo, t["odoo_id"])
+                if not pid:
+                    job["stock_no_product"] += 1
+                    job["processed"] += 1
+                    continue
+
+                quants = await odoo.search_read(
+                    "stock.quant",
+                    [["product_id", "=", pid],
+                     ["location_id", "=", AZE01_LOCATION_ID]],
+                    ["id", "quantity"], limit=1,
+                )
+
+                try:
+                    qty = t["qty"]
+                    if quants:
+                        quant_id = quants[0]["id"]
+                        await odoo.write("stock.quant", [quant_id],
+                                         {"inventory_quantity": qty})
+                    else:
+                        quant_id = await odoo.execute_kw(
+                            "stock.quant", "create",
+                            [{"product_id": pid,
+                              "location_id": AZE01_LOCATION_ID,
+                              "inventory_quantity": qty}],
+                        )
+                    try:
+                        await odoo.execute_kw(
+                            "stock.quant", "action_apply_inventory",
+                            [[quant_id]],
+                        )
+                    except Exception as apply_err:
+                        verify = await odoo.read(
+                            "stock.quant", [quant_id], ["quantity"]
+                        )
+                        if not (verify and abs(
+                            float(verify[0].get("quantity") or 0) - qty
+                        ) < 0.01):
+                            raise apply_err
+                    job["stock_written"] += 1
+                except Exception as e:
+                    job["stock_errors"] += 1
+                    err = f"pid={pid} isbn={t['barcode']}: {type(e).__name__}: {str(e)[:120]}"
+                    job["errors"].append(err)
+
+                job["processed"] += 1
+                if job["processed"] % 200 == 0:
+                    print(f"[AzetaStockPush] {job['processed']:,}/"
+                          f"{job['total_to_process']:,} "
+                          f"ok:{job['stock_written']} err:{job['stock_errors']}")
+
+        if job["status"] == "running":
+            job["status"] = "completed"
+        job["stage"] = "done"
+        job["elapsed_s"] = round(time.monotonic() - t_start, 2)
+        print(f"[AzetaStockPush] DONE proc={job['processed']:,} "
+              f"ok={job['stock_written']:,} err={job['stock_errors']:,} "
+              f"en {job['elapsed_s']}s")
+    except Exception as e:
+        job["status"] = "error"
+        err = f"{type(e).__name__}: {e!r}"
+        job["errors"].append(err[:300])
+        print(f"[AzetaStockPush] Fatal: {err}")
+
+    return job
+
+
+# ─────────────────────────────────────────────────────────────────────
+# CRON: fetcher CSV AZETA -> libros_proveedor -> push stock a Odoo
+# ─────────────────────────────────────────────────────────────────────
+
+CRON_INTERVAL_S = int(os.environ.get("AZETA_STOCK_CRON_INTERVAL_S", "3600"))
+
+_cron_task: asyncio.Task | None = None
+_cron_state: dict = {
+    "enabled": False,
+    "interval_s": CRON_INTERVAL_S,
+    "last_run_at": None,
+    "last_run_status": None,
+    "last_fetcher_summary": None,
+    "last_push_summary": None,
+    "next_run_at": None,
+    "runs_total": 0,
+    "errors": [],
+}
+
+
+def get_cron_status() -> dict:
+    out = dict(_cron_state)
+    if "errors" in out:
+        out["errors"] = out["errors"][-10:]
+    out["task_running"] = bool(_cron_task and not _cron_task.done())
+    return out
+
+
+async def run_full_stock_cycle() -> dict:
+    """
+    Ciclo completo: descarga CSV de stock AZETA -> libros_proveedor ->
+    push stock.quant a Odoo AZE01.
+    """
+    import azeta_stock  # import local: evita ciclo si alguien importa al reves
+
+    summary = {"fetcher": None, "push": None,
+               "started_at": datetime.now().isoformat()}
+    try:
+        fetcher_res = await azeta_stock.run_azeta_sync()
+        summary["fetcher"] = {
+            "status": fetcher_res.get("status"),
+            "isbns_unique": fetcher_res.get("isbns_unique", 0),
+            "stock_total": fetcher_res.get("stock_total", 0),
+            "updated_changed": fetcher_res.get("updated_changed", 0),
+            "elapsed_s": fetcher_res.get("elapsed_total_s", 0),
+        }
+        if fetcher_res.get("status") == "error":
+            summary["error"] = "Fetcher AZETA fallo"
+            return summary
+    except Exception as e:
+        summary["error"] = f"Fetcher: {type(e).__name__}: {e!r}"
+        return summary
+
+    try:
+        push_res = await run_azeta_stock_push_only()
+        summary["push"] = {
+            "status": push_res.get("status"),
+            "processed": push_res.get("processed", 0),
+            "stock_written": push_res.get("stock_written", 0),
+            "stock_errors": push_res.get("stock_errors", 0),
+            "elapsed_s": push_res.get("elapsed_s", 0),
+        }
+    except Exception as e:
+        summary["error"] = f"Push: {type(e).__name__}: {e!r}"
+
+    return summary
+
+
+async def _cron_loop():
+    """Loop interno: ejecuta run_full_stock_cycle cada interval_s."""
+    print(f"[StockCron] Arrancado, intervalo {_cron_state['interval_s']}s")
+    while _cron_state["enabled"]:
+        try:
+            t0 = time.monotonic()
+            res = await run_full_stock_cycle()
+            elapsed = round(time.monotonic() - t0, 1)
+            _cron_state["last_run_at"] = datetime.now().isoformat()
+            _cron_state["last_run_status"] = "ok" if not res.get("error") else "error"
+            _cron_state["last_fetcher_summary"] = res.get("fetcher")
+            _cron_state["last_push_summary"] = res.get("push")
+            _cron_state["runs_total"] += 1
+            if res.get("error"):
+                _cron_state["errors"].append(f"run #{_cron_state['runs_total']}: {res['error']}")
+            print(f"[StockCron] Run #{_cron_state['runs_total']} OK en {elapsed}s")
+        except Exception as e:
+            _cron_state["last_run_status"] = "error"
+            err = f"{type(e).__name__}: {e!r}"
+            _cron_state["errors"].append(err[:300])
+            print(f"[StockCron] Fatal en ciclo: {err}")
+
+        # Espera con check cada segundo (responsive al stop)
+        from datetime import timedelta
+        _cron_state["next_run_at"] = (
+            datetime.now() + timedelta(seconds=_cron_state["interval_s"])
+        ).isoformat()
+        for _ in range(_cron_state["interval_s"]):
+            if not _cron_state["enabled"]:
+                break
+            await asyncio.sleep(1)
+
+    print("[StockCron] Detenido")
+    _cron_state["next_run_at"] = None
+
+
+def start_stock_cron() -> bool:
+    """Arranca el cron task. False si ya estaba corriendo."""
+    global _cron_task
+    if _cron_task and not _cron_task.done():
+        return False
+    _cron_state["enabled"] = True
+    _cron_state["errors"] = []
+    try:
+        _cron_task = asyncio.create_task(_cron_loop())
+        return True
+    except RuntimeError:
+        # No hay event loop activo (ej. arranque fuera de FastAPI)
+        _cron_state["enabled"] = False
+        return False
+
+
+def stop_stock_cron() -> bool:
+    """Marca el cron para que termine. False si ya estaba detenido."""
+    if not _cron_state["enabled"]:
+        return False
+    _cron_state["enabled"] = False
+    return True
+
+
 if __name__ == "__main__":
-    # python azeta_push_odoo.py <isbn>     -> test 1 libro
+    # python azeta_push_odoo.py <isbn>     -> test 1 libro (push completo)
     # python azeta_push_odoo.py            -> push completo
+    # python azeta_push_odoo.py stock      -> stock-only push
+    # python azeta_push_odoo.py cycle      -> ciclo fetcher+push una vez
     import sys
     arg = sys.argv[1] if len(sys.argv) > 1 else None
-    asyncio.run(run_azeta_push(test_isbn=arg))
+    if arg == "stock":
+        asyncio.run(run_azeta_stock_push_only())
+    elif arg == "cycle":
+        asyncio.run(run_full_stock_cycle())
+    else:
+        asyncio.run(run_azeta_push(test_isbn=arg))

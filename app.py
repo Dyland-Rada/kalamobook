@@ -92,6 +92,18 @@ async def startup():
         print("[Startup] PROXY: NINGUNO — saliendo con IP directa del server")
     print("=" * 60)
 
+    # Auto-arrancar el cron de stock AZETA si la env var lo pide
+    if os.environ.get("AZETA_STOCK_CRON_ENABLED", "").lower() in ("1", "true", "yes"):
+        try:
+            import azeta_push_odoo
+            if azeta_push_odoo.start_stock_cron():
+                print(f"[Startup] AZETA stock cron AUTO-ARRANCADO "
+                      f"(intervalo {azeta_push_odoo.CRON_INTERVAL_S}s)")
+            else:
+                print("[Startup] AZETA stock cron NO arrancado (ya activo)")
+        except Exception as e:
+            print(f"[Startup] AZETA stock cron FALLO: {type(e).__name__}: {e}")
+
 
 # ─── Web Interface (HTML) ────────────────────────────────────────────
 
@@ -1017,6 +1029,102 @@ async def azeta_push_to_odoo_stop():
 async def azeta_push_to_odoo_status():
     import azeta_push_odoo
     return JSONResponse(content=azeta_push_odoo.get_push_status())
+
+
+# ─── AZETA STOCK-ONLY PUSH + CRON ────────────────────────────────────
+
+@app.post("/api/v1/azeta/stock-push-only", tags=["AZETA"])
+async def azeta_stock_push_only(
+    test_isbn: str | None = Query(None, description="ISBN único (modo test)"),
+    max_books: int | None = Query(None, ge=1, description="Tope de libros"),
+):
+    """
+    Push SOLO de stock.quant en AZE01. No toca description/weight/categ.
+    Mucho más rápido que push-to-odoo completo.
+
+    Usa libros_proveedor AZETA como fuente de qty (debes haber corrido
+    /api/v1/azeta/stock-sync antes para tenerlo fresco).
+    """
+    import threading
+    import sys
+    import azeta_push_odoo
+
+    if azeta_push_odoo.get_stock_push_status().get("status") == "running":
+        return JSONResponse(status_code=409, content={
+            "status": "error", "message": "AZETA stock push ya esta corriendo."
+        })
+
+    def _run_in_thread():
+        if sys.platform == 'win32':
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
+        try:
+            new_loop.run_until_complete(
+                azeta_push_odoo.run_azeta_stock_push_only(
+                    test_isbn=test_isbn, max_books=max_books,
+                )
+            )
+        finally:
+            new_loop.close()
+
+    t = threading.Thread(target=_run_in_thread, daemon=True)
+    t.start()
+    return JSONResponse(content={"status": "started", "test_isbn": test_isbn,
+                                  "max_books": max_books})
+
+
+@app.post("/api/v1/azeta/stock-push-only-stop", tags=["AZETA"])
+async def azeta_stock_push_only_stop():
+    import azeta_push_odoo
+    if azeta_push_odoo.stop_stock_push():
+        return JSONResponse(content={"status": "stopping"})
+    return JSONResponse(status_code=400, content={
+        "status": "error", "message": "No hay job corriendo."
+    })
+
+
+@app.get("/api/v1/azeta/stock-push-only-status", tags=["AZETA"])
+async def azeta_stock_push_only_status():
+    import azeta_push_odoo
+    return JSONResponse(content=azeta_push_odoo.get_stock_push_status())
+
+
+@app.post("/api/v1/azeta/stock-cron/start", tags=["AZETA"])
+async def azeta_stock_cron_start():
+    """
+    Arranca el cron interno: cada 1h descarga CSV de stock AZETA al
+    mirror y luego pushea stock.quant a Odoo AZE01.
+
+    Idempotente. El estado vive en memoria — si reinicias el servidor el
+    cron NO se reinicia salvo que AZETA_STOCK_CRON_ENABLED=1 en env.
+    """
+    import azeta_push_odoo
+    if azeta_push_odoo.start_stock_cron():
+        return JSONResponse(content={
+            "status": "started",
+            "interval_s": azeta_push_odoo.CRON_INTERVAL_S,
+        })
+    return JSONResponse(status_code=400, content={
+        "status": "error",
+        "message": "Cron ya estaba corriendo o no hay event loop."
+    })
+
+
+@app.post("/api/v1/azeta/stock-cron/stop", tags=["AZETA"])
+async def azeta_stock_cron_stop():
+    import azeta_push_odoo
+    if azeta_push_odoo.stop_stock_cron():
+        return JSONResponse(content={"status": "stopping"})
+    return JSONResponse(status_code=400, content={
+        "status": "error", "message": "Cron no estaba corriendo."
+    })
+
+
+@app.get("/api/v1/azeta/stock-cron/status", tags=["AZETA"])
+async def azeta_stock_cron_status():
+    import azeta_push_odoo
+    return JSONResponse(content=azeta_push_odoo.get_cron_status())
 
 
 # ─── Admin: schema info + forzar migraciones sin redeploy ────────────

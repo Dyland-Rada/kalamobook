@@ -1542,16 +1542,19 @@
             <!-- ═══ AZETA STOCK (CSV HTTP — caso especial) ═══ -->
             <div class="card" style="border:2px solid rgba(211,84,0,0.4);">
                 <div class="card-title">
-                    🏪 AZETA — Sync de stock por CSV HTTP
+                    🏪 AZETA — Stock: CSV → mirror → Odoo AZE01
                     <span class="status-badge" id="azeta-status-badge" style="font-size:0.7rem;">IDLE</span>
                 </div>
                 <p style="color:#888; font-size:0.88rem;">
-                    AZETA no manda stock por SINLI email. Lo expone via CSV HTTP (cap 50/libro, actualizado cada hora).
-                    Este fetcher descarga y popula <code>libros_proveedor</code>. El sync SINLI → Odoo (otro Claude)
-                    recoge esos cambios y los lleva a Odoo almacén AZE01.
+                    AZETA expone su stock vía CSV HTTP (cap 50/libro, actualizado cada hora).
+                    Flujo: <strong>1)</strong> fetcher descarga CSV a <code>libros_proveedor</code> ·
+                    <strong>2)</strong> push escribe <code>stock.quant</code> en Odoo en almacén <strong>AZE01</strong> (location 14).
                 </p>
-                <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:12px;">
-                    <button class="btn btn-success" id="btn-azeta-start" onclick="azetaStart()">▶ Sync ahora</button>
+
+                <!-- Bloque 1: fetcher CSV -->
+                <div class="section-label" style="color:#d35400; margin-top:14px;">1. Fetcher CSV → libros_proveedor</div>
+                <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:8px;">
+                    <button class="btn btn-success" id="btn-azeta-start" onclick="azetaStart()">▶ Sync CSV ahora</button>
                     <button class="btn btn-danger" id="btn-azeta-stop" onclick="azetaStop()" disabled>⏹ Detener</button>
                     <span id="azeta-stage" style="color:#888; font-size:0.85rem;"></span>
                 </div>
@@ -1575,12 +1578,92 @@
                     </div>
                 </div>
 
-                <div style="margin-top:14px; font-size:0.8rem; color:#888;" id="azeta-progress-detail"></div>
+                <div style="margin-top:8px; font-size:0.8rem; color:#888;" id="azeta-progress-detail"></div>
 
                 <div id="azeta-errors" style="display:none; margin-top:10px;">
-                    <div class="section-label" style="color:#e94560;">Errores</div>
+                    <div class="section-label" style="color:#e94560;">Errores fetcher</div>
                     <ul id="azeta-errors-list" style="font-size:0.8rem; color:#e94560; padding-left:20px;"></ul>
                 </div>
+
+                <!-- Bloque 2: push stock-only a Odoo -->
+                <div class="section-label" style="color:#16a085; margin-top:24px;">
+                    2. Push stock-only → Odoo AZE01
+                    <span class="status-badge" id="azetasp-status-badge" style="font-size:0.7rem;">IDLE</span>
+                </div>
+                <p style="color:#888; font-size:0.82rem;">
+                    Escribe SOLO <code>stock.quant</code> (no toca descripción/peso/precio). Cap 50.
+                    <strong>Stock=0 se escribe en 0</strong> (no borra el quant).
+                </p>
+                <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:8px;">
+                    <input type="text" id="azetasp-test-isbn" placeholder="ISBN test (opcional)"
+                           style="padding:8px 10px; background:#2c2f3e; color:#eee; border:1px solid #444; border-radius:6px; min-width:180px;">
+                    <input type="number" id="azetasp-max-books" placeholder="max libros (opcional)" min="1"
+                           style="padding:8px 10px; background:#2c2f3e; color:#eee; border:1px solid #444; border-radius:6px; min-width:140px;">
+                    <button class="btn btn-success" id="btn-azetasp-start" onclick="azetaspStart()">▶ Push stock ahora</button>
+                    <button class="btn btn-danger" id="btn-azetasp-stop" onclick="azetaspStop()" disabled>⏹ Detener</button>
+                    <span id="azetasp-stage" style="color:#888; font-size:0.85rem;"></span>
+                </div>
+
+                <div style="margin-top:10px; display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px;">
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#9b59b6" id="azetasp-stat-total">0</div>
+                        <div class="stat-label">A procesar</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#27ae60" id="azetasp-stat-processed">0</div>
+                        <div class="stat-label">Procesados</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#16a085" id="azetasp-stat-written">0</div>
+                        <div class="stat-label">Stock escrito en AZE01</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#e74c3c" id="azetasp-stat-err">0</div>
+                        <div class="stat-label">Errores</div>
+                    </div>
+                </div>
+
+                <div style="margin-top:8px; font-size:0.8rem; color:#888;" id="azetasp-progress-detail"></div>
+
+                <div id="azetasp-errors" style="display:none; margin-top:10px;">
+                    <div class="section-label" style="color:#e94560;">Errores push</div>
+                    <ul id="azetasp-errors-list" style="font-size:0.8rem; color:#e94560; padding-left:20px;"></ul>
+                </div>
+
+                <!-- Bloque 3: cron interno cada 1h -->
+                <div class="section-label" style="color:#3498db; margin-top:24px;">
+                    3. Cron automático (cada 1h)
+                    <span class="status-badge" id="azetacron-status-badge" style="font-size:0.7rem;">IDLE</span>
+                </div>
+                <p style="color:#888; font-size:0.82rem;">
+                    Encadena fetcher + push automáticamente cada hora. Idempotente.
+                    Para que se reactive solo tras un reboot, pon <code>AZETA_STOCK_CRON_ENABLED=1</code> en EasyPanel.
+                </p>
+                <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:8px;">
+                    <button class="btn btn-success" id="btn-azetacron-start" onclick="azetacronStart()">▶ Activar cron 1h</button>
+                    <button class="btn btn-danger" id="btn-azetacron-stop" onclick="azetacronStop()" disabled>⏹ Detener cron</button>
+                </div>
+
+                <div style="margin-top:10px; display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px;">
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#3498db" id="azetacron-stat-runs">0</div>
+                        <div class="stat-label">Ciclos totales</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#bbb; font-size:0.85rem;" id="azetacron-stat-last">—</div>
+                        <div class="stat-label">Último ciclo</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#bbb; font-size:0.85rem;" id="azetacron-stat-next">—</div>
+                        <div class="stat-label">Próximo ciclo</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#bbb; font-size:0.85rem;" id="azetacron-stat-status">—</div>
+                        <div class="stat-label">Último resultado</div>
+                    </div>
+                </div>
+
+                <div style="margin-top:8px; font-size:0.8rem; color:#888;" id="azetacron-progress-detail"></div>
             </div>
 
             <!-- ═══ CATÁLOGO DE DISTRIBUIDORES ═══ -->
@@ -1798,6 +1881,8 @@
                 if (typeof azetaStopPolling === 'function') azetaStopPolling();
                 if (typeof azetacatStopPolling === 'function') azetacatStopPolling();
                 if (typeof azetapushStopPolling === 'function') azetapushStopPolling();
+                if (typeof azetaspStopPolling === 'function') azetaspStopPolling();
+                if (typeof azetacronStopPolling === 'function') azetacronStopPolling();
                 stopResumenAutoRefresh();
             }
         }
@@ -2878,6 +2963,166 @@
             } catch (e) { console.error('azeta poll:', e); }
         }
 
+        // ═══ AZETA STOCK-ONLY PUSH (Fase 2 simplificada) ═══
+        let azetaspPollTimer = null;
+
+        async function azetaspStart() {
+            const isbn = (document.getElementById('azetasp-test-isbn').value || '').trim();
+            const max  = (document.getElementById('azetasp-max-books').value || '').trim();
+            let confirmMsg;
+            if (isbn) {
+                confirmMsg = `Push stock-only de UN ISBN a Odoo (modo test)?\n\nISBN: ${isbn}\n\n` +
+                             'Solo escribe stock.quant en AZE01. No toca otros campos.';
+            } else if (max) {
+                confirmMsg = `Push stock-only de ${max} libros a Odoo?\n\nValidación con muestra. Idempotente.`;
+            } else {
+                confirmMsg = 'Push stock-only de TODOS los libros AZETA con stock?\n\n' +
+                             'Solo escribe stock.quant en AZE01. Idempotente.\n\n' +
+                             'Requiere haber corrido el fetcher CSV (paso 1) antes para tener datos en libros_proveedor.';
+            }
+            if (!confirm(confirmMsg)) return;
+            document.getElementById('btn-azetasp-start').disabled = true;
+            try {
+                const params = new URLSearchParams();
+                if (isbn) params.set('test_isbn', isbn);
+                if (max) params.set('max_books', max);
+                const url = '/api/v1/azeta/stock-push-only' + (params.toString() ? '?' + params.toString() : '');
+                const resp = await fetch(url, { method: 'POST' });
+                const data = await resp.json();
+                if (data.status !== 'started') {
+                    alert(`❌ ${data.message || 'No se pudo iniciar'}`);
+                    document.getElementById('btn-azetasp-start').disabled = false;
+                    return;
+                }
+                document.getElementById('btn-azetasp-stop').disabled = false;
+                azetaspStartPolling();
+                azetaspPoll();
+            } catch (e) {
+                alert('Error: ' + e.message);
+                document.getElementById('btn-azetasp-start').disabled = false;
+            }
+        }
+
+        async function azetaspStop() {
+            try { await fetch('/api/v1/azeta/stock-push-only-stop', { method: 'POST' }); }
+            catch (e) {}
+        }
+
+        function azetaspStartPolling() {
+            if (azetaspPollTimer) return;
+            azetaspPollTimer = setInterval(azetaspPoll, 3000);
+        }
+        function azetaspStopPolling() {
+            if (azetaspPollTimer) { clearInterval(azetaspPollTimer); azetaspPollTimer = null; }
+        }
+
+        async function azetaspPoll() {
+            try {
+                const r = await fetch('/api/v1/azeta/stock-push-only-status');
+                const s = await r.json();
+                const badge = document.getElementById('azetasp-status-badge');
+                badge.textContent = (s.status || 'idle').toUpperCase();
+                badge.className = 'status-badge ' + (s.status || 'idle');
+
+                document.getElementById('azetasp-stage').textContent =
+                    s.stage ? `Etapa: ${s.stage}${s.test_isbn ? ' · ISBN test: '+s.test_isbn : ''}` : '';
+                document.getElementById('azetasp-stat-total').textContent = (s.total_to_process || 0).toLocaleString();
+                document.getElementById('azetasp-stat-processed').textContent = (s.processed || 0).toLocaleString();
+                document.getElementById('azetasp-stat-written').textContent = (s.stock_written || 0).toLocaleString();
+                document.getElementById('azetasp-stat-err').textContent = (s.stock_errors || 0).toLocaleString();
+
+                const det = [];
+                if (s.stock_no_product) det.push(`sin product: ${s.stock_no_product.toLocaleString()}`);
+                if (s.elapsed_s)        det.push(`${s.elapsed_s}s`);
+                document.getElementById('azetasp-progress-detail').textContent = det.join(' · ');
+
+                if (s.errors && s.errors.length) {
+                    document.getElementById('azetasp-errors').style.display = 'block';
+                    const ul = document.getElementById('azetasp-errors-list');
+                    ul.innerHTML = '';
+                    s.errors.forEach(e => { const li = document.createElement('li'); li.textContent = e; ul.appendChild(li); });
+                } else {
+                    document.getElementById('azetasp-errors').style.display = 'none';
+                }
+
+                if (s.status === 'running') {
+                    document.getElementById('btn-azetasp-start').disabled = true;
+                    document.getElementById('btn-azetasp-stop').disabled = false;
+                } else {
+                    document.getElementById('btn-azetasp-start').disabled = false;
+                    document.getElementById('btn-azetasp-stop').disabled = true;
+                    if (['completed', 'error', 'stopped'].includes(s.status)) {
+                        azetaspStopPolling();
+                    }
+                }
+            } catch (e) { console.error('azetasp poll:', e); }
+        }
+
+        // ═══ AZETA STOCK CRON (cada 1h) ═══
+        let azetacronPollTimer = null;
+
+        async function azetacronStart() {
+            if (!confirm('Activar cron AZETA cada 1h?\n\n' +
+                         'Cada hora descarga el CSV de stock y actualiza Odoo AZE01.\n' +
+                         'Si reinicias el servidor el cron NO se reactiva (a menos que ' +
+                         'AZETA_STOCK_CRON_ENABLED=1 esté en EasyPanel).')) return;
+            try {
+                const r = await fetch('/api/v1/azeta/stock-cron/start', { method: 'POST' });
+                const d = await r.json();
+                if (d.status !== 'started') { alert('❌ ' + (d.message || 'No se pudo')); return; }
+                azetacronStartPolling();
+                azetacronPoll();
+            } catch (e) { alert('Error: ' + e.message); }
+        }
+
+        async function azetacronStop() {
+            if (!confirm('Detener cron de AZETA?')) return;
+            try { await fetch('/api/v1/azeta/stock-cron/stop', { method: 'POST' }); }
+            catch (e) {}
+        }
+
+        function azetacronStartPolling() {
+            if (azetacronPollTimer) return;
+            azetacronPollTimer = setInterval(azetacronPoll, 10000);
+        }
+        function azetacronStopPolling() {
+            if (azetacronPollTimer) { clearInterval(azetacronPollTimer); azetacronPollTimer = null; }
+        }
+
+        async function azetacronPoll() {
+            try {
+                const r = await fetch('/api/v1/azeta/stock-cron/status');
+                const s = await r.json();
+                const badge = document.getElementById('azetacron-status-badge');
+                const running = !!s.enabled;
+                badge.textContent = running ? 'RUNNING' : 'IDLE';
+                badge.className = 'status-badge ' + (running ? 'running' : 'idle');
+
+                document.getElementById('azetacron-stat-runs').textContent = (s.runs_total || 0).toLocaleString();
+                document.getElementById('azetacron-stat-last').textContent =
+                    s.last_run_at ? s.last_run_at.slice(0, 19).replace('T', ' ') : '—';
+                document.getElementById('azetacron-stat-next').textContent =
+                    s.next_run_at ? s.next_run_at.slice(0, 19).replace('T', ' ') : '—';
+                document.getElementById('azetacron-stat-status').textContent =
+                    s.last_run_status || '—';
+
+                const det = [];
+                if (s.last_fetcher_summary) {
+                    const f = s.last_fetcher_summary;
+                    det.push(`fetcher: ${(f.isbns_unique||0).toLocaleString()} ISBNs, ${(f.stock_total||0).toLocaleString()} unid, ${f.elapsed_s}s`);
+                }
+                if (s.last_push_summary) {
+                    const p = s.last_push_summary;
+                    det.push(`push: ${(p.stock_written||0).toLocaleString()}/${(p.processed||0).toLocaleString()} ok, ${p.stock_errors||0} err, ${p.elapsed_s}s`);
+                }
+                if (s.interval_s) det.push(`intervalo: ${s.interval_s}s`);
+                document.getElementById('azetacron-progress-detail').textContent = det.join(' · ');
+
+                document.getElementById('btn-azetacron-start').disabled = running;
+                document.getElementById('btn-azetacron-stop').disabled = !running;
+            } catch (e) { console.error('azetacron poll:', e); }
+        }
+
         async function gbfResetRecent() {
             const hours = prompt('¿Cuántas horas hacia atrás reactivar?\n(Marca como no-fetched los libros sin data real de los últimos N horas, para reintento tras rate-limit)', '24');
             if (!hours) return;
@@ -3341,6 +3586,20 @@
                 const s = await r.json();
                 azetapushPoll();
                 if (s.status === 'running') azetapushStartPolling();
+            } catch (e) {}
+
+            // AZETA stock-only push: poll inicial + start polling si está running
+            try {
+                const r = await fetch('/api/v1/azeta/stock-push-only-status');
+                const s = await r.json();
+                azetaspPoll();
+                if (s.status === 'running') azetaspStartPolling();
+            } catch (e) {}
+
+            // AZETA cron: poll inicial + start polling siempre (es ligero)
+            try {
+                azetacronPoll();
+                azetacronStartPolling();
             } catch (e) {}
 
             distRefreshStats();
