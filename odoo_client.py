@@ -52,7 +52,10 @@ class OdooClient:
             self._session = None
 
     async def _rpc(self, service: str, method: str, args: list) -> Any:
-        """Low-level JSON-RPC call."""
+        """
+        Low-level JSON-RPC call con retry automatico para 429/502/503/504.
+        Backoff exponencial: 1s, 2s, 4s. Total 3 reintentos.
+        """
         if self._session is None:
             self._session = aiohttp.ClientSession(timeout=self.timeout)
         payload = {
@@ -60,14 +63,40 @@ class OdooClient:
             "method": "call",
             "params": {"service": service, "method": method, "args": args},
         }
-        async with self._session.post(f"{self.url}/jsonrpc", json=payload) as resp:
-            resp.raise_for_status()
-            body = await resp.json()
-        if "error" in body:
-            err = body["error"]
-            msg = err.get("data", {}).get("message") or err.get("message", "Unknown")
-            raise OdooError(f"Odoo: {msg}")
-        return body.get("result")
+        retry_status = {429, 502, 503, 504}
+        last_err: Exception | None = None
+        for attempt in range(4):  # 1 intento + 3 retries
+            try:
+                async with self._session.post(f"{self.url}/jsonrpc",
+                                              json=payload) as resp:
+                    if resp.status in retry_status and attempt < 3:
+                        wait = 2 ** attempt  # 1, 2, 4
+                        await asyncio.sleep(wait)
+                        continue
+                    resp.raise_for_status()
+                    body = await resp.json()
+                if "error" in body:
+                    err = body["error"]
+                    msg = err.get("data", {}).get("message") or err.get("message", "Unknown")
+                    raise OdooError(f"Odoo: {msg}")
+                return body.get("result")
+            except aiohttp.ClientResponseError as e:
+                last_err = e
+                if e.status in retry_status and attempt < 3:
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+                raise
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                # Errores de red transientes: reintenta con backoff
+                last_err = e
+                if attempt < 3:
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+                raise
+        # Si por algún motivo agotamos retries sin raise
+        if last_err:
+            raise last_err
+        raise OdooError("RPC: agotados los retries sin error capturado")
 
     async def authenticate(self) -> int:
         """Login and cache the user id."""
