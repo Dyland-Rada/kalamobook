@@ -115,7 +115,11 @@ def _release_lock():
         conn.close()
 
 
-def _get_marker() -> str | None:
+def _get_marker():
+    """
+    Lee ultimo_timestamp y lo devuelve siempre como naive datetime para
+    que compare bien con libros_proveedor.actualizado_en (timestamp sin tz).
+    """
     conn = db.get_connection()
     cur = conn.cursor()
     try:
@@ -123,7 +127,16 @@ def _get_marker() -> str | None:
             "SELECT ultimo_timestamp FROM sync_state WHERE entidad = ?",
             (ENTIDAD,))
         r = cur.fetchone()
-        return r[0] if r else None
+        if not r or r[0] is None:
+            return None
+        ts = r[0]
+        # sync_state.ultimo_timestamp es timestamptz (aware), pero
+        # libros_proveedor.actualizado_en es timestamp sin tz (naive).
+        # Para comparar en Python: convertir aware -> naive (UTC).
+        if hasattr(ts, "tzinfo") and ts.tzinfo is not None:
+            from datetime import timezone
+            ts = ts.astimezone(timezone.utc).replace(tzinfo=None)
+        return ts
     finally:
         conn.close()
 
