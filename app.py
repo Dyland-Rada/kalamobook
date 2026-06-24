@@ -104,6 +104,18 @@ async def startup():
         except Exception as e:
             print(f"[Startup] AZETA stock cron FALLO: {type(e).__name__}: {e}")
 
+    # Auto-arrancar el cron del sync SINLI si la env var lo pide
+    if os.environ.get("SYNC_STOCK_CRON_ENABLED", "").lower() in ("1", "true", "yes"):
+        try:
+            import sync_stock_sinli
+            if sync_stock_sinli.start_cron():
+                print(f"[Startup] SINLI sync cron AUTO-ARRANCADO "
+                      f"(intervalo {sync_stock_sinli.CRON_INTERVAL_S}s)")
+            else:
+                print("[Startup] SINLI sync cron NO arrancado (ya activo)")
+        except Exception as e:
+            print(f"[Startup] SINLI sync cron FALLO: {type(e).__name__}: {e}")
+
 
 # ─── Web Interface (HTML) ────────────────────────────────────────────
 
@@ -1125,6 +1137,136 @@ async def azeta_stock_cron_stop():
 async def azeta_stock_cron_status():
     import azeta_push_odoo
     return JSONResponse(content=azeta_push_odoo.get_cron_status())
+
+
+# ─── SYNC STOCK SINLI → Odoo (proveedores no-AZETA) ──────────────────
+
+@app.post("/api/v1/sync-stock/run-once", tags=["SINLI Sync"])
+async def sync_stock_run_once():
+    """
+    Una pasada del sync: 1 lote de 2000 libros SINLI (no-AZETA) que hayan
+    cambiado desde el ultimo_timestamp. Idempotente.
+    """
+    import threading
+    import sys
+    import sync_stock_sinli
+
+    if sync_stock_sinli.get_status().get("status") == "running":
+        return JSONResponse(status_code=409, content={
+            "status": "error", "message": "Sync SINLI ya esta corriendo."
+        })
+
+    def _run_in_thread():
+        if sys.platform == 'win32':
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
+        try:
+            new_loop.run_until_complete(
+                sync_stock_sinli.run_once(loop_until_empty=False)
+            )
+        finally:
+            new_loop.close()
+
+    t = threading.Thread(target=_run_in_thread, daemon=True)
+    t.start()
+    return JSONResponse(content={"status": "started"})
+
+
+@app.post("/api/v1/sync-stock/run-backlog", tags=["SINLI Sync"])
+async def sync_stock_run_backlog():
+    """
+    Modo backlog: bucle hasta vaciar todos los pendientes (~104k libros la
+    primera vez). Idempotente, se puede detener con /stop.
+    """
+    import threading
+    import sys
+    import sync_stock_sinli
+
+    if sync_stock_sinli.get_status().get("status") == "running":
+        return JSONResponse(status_code=409, content={
+            "status": "error", "message": "Sync SINLI ya esta corriendo."
+        })
+
+    def _run_in_thread():
+        if sys.platform == 'win32':
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
+        try:
+            new_loop.run_until_complete(
+                sync_stock_sinli.run_once(loop_until_empty=True)
+            )
+        finally:
+            new_loop.close()
+
+    t = threading.Thread(target=_run_in_thread, daemon=True)
+    t.start()
+    return JSONResponse(content={"status": "started", "mode": "backlog"})
+
+
+@app.post("/api/v1/sync-stock/stop", tags=["SINLI Sync"])
+async def sync_stock_stop():
+    import sync_stock_sinli
+    if sync_stock_sinli.stop():
+        return JSONResponse(content={"status": "stopping"})
+    return JSONResponse(status_code=400, content={
+        "status": "error", "message": "No hay sync corriendo."
+    })
+
+
+@app.get("/api/v1/sync-stock/status", tags=["SINLI Sync"])
+async def sync_stock_status():
+    import sync_stock_sinli
+    return JSONResponse(content={
+        "job": sync_stock_sinli.get_status(),
+        "marker": sync_stock_sinli.get_marker_info(),
+        "pending_count": sync_stock_sinli.get_pending_count(),
+        "recent_errors": sync_stock_sinli.get_recent_errors(20),
+    })
+
+
+@app.post("/api/v1/sync-stock/cron/start", tags=["SINLI Sync"])
+async def sync_stock_cron_start():
+    """Activa cron 1h del sync SINLI."""
+    import sync_stock_sinli
+    if sync_stock_sinli.start_cron():
+        return JSONResponse(content={
+            "status": "started",
+            "interval_s": sync_stock_sinli.CRON_INTERVAL_S,
+        })
+    return JSONResponse(status_code=400, content={
+        "status": "error",
+        "message": "Cron ya corriendo o sin event loop."
+    })
+
+
+@app.post("/api/v1/sync-stock/cron/stop", tags=["SINLI Sync"])
+async def sync_stock_cron_stop():
+    import sync_stock_sinli
+    if sync_stock_sinli.stop_cron():
+        return JSONResponse(content={"status": "stopping"})
+    return JSONResponse(status_code=400, content={
+        "status": "error", "message": "Cron no estaba corriendo."
+    })
+
+
+@app.get("/api/v1/sync-stock/cron/status", tags=["SINLI Sync"])
+async def sync_stock_cron_status():
+    import sync_stock_sinli
+    return JSONResponse(content=sync_stock_sinli.get_cron_status())
+
+
+@app.post("/api/v1/sync-stock/marker-to-now", tags=["SINLI Sync"])
+async def sync_stock_marker_to_now():
+    """
+    Setea ultimo_timestamp = NOW(). Usar SOLO después de terminar el
+    backlog inicial — evita reprocesar todo en la siguiente corrida.
+    """
+    import sync_stock_sinli
+    sync_stock_sinli._set_marker_to_now()
+    return JSONResponse(content={"status": "ok",
+                                  "marker": sync_stock_sinli.get_marker_info()})
 
 
 # ─── Admin: schema info + forzar migraciones sin redeploy ────────────

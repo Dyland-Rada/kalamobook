@@ -1666,6 +1666,140 @@
                 <div style="margin-top:8px; font-size:0.8rem; color:#888;" id="azetacron-progress-detail"></div>
             </div>
 
+            <!-- ═══ SYNC STOCK SINLI → ODOO (delegado por Server A) ═══ -->
+            <div class="card" style="border:2px solid rgba(46,204,113,0.55); background:rgba(46,204,113,0.04);">
+                <div class="card-title">
+                    📦 Sync stock SINLI → Odoo (ICARO/DISTRIFORMA/PUNXES/AKAL/ALFA OMEGA)
+                    <span class="status-badge" id="sinli-status-badge" style="font-size:0.7rem;">IDLE</span>
+                </div>
+                <p style="color:#888; font-size:0.88rem;">
+                    Lee <code>libros_proveedor</code> (proveedores SINLI, <strong>NO AZETA</strong>)
+                    y escribe en Odoo el stock + precio (condicional) en el almacén correspondiente
+                    de cada proveedor. Filtro anti-colisión: nunca toca location 14 (AZE01).
+                    Lock + marcapáginas en <code>sync_state</code>. Errores en <code>sync_errores</code>.
+                </p>
+
+                <!-- Estado del marcapáginas -->
+                <div style="margin-top:10px; display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px;">
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#e67e22" id="sinli-pending">0</div>
+                        <div class="stat-label">Pendientes (no-AZETA)</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#bbb; font-size:0.85rem;" id="sinli-marker">—</div>
+                        <div class="stat-label">Último timestamp procesado</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#bbb; font-size:0.85rem;" id="sinli-last-run">—</div>
+                        <div class="stat-label">Última ejecución</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#bbb; font-size:0.85rem;" id="sinli-lock">—</div>
+                        <div class="stat-label">Lock</div>
+                    </div>
+                </div>
+
+                <!-- Bloque 1: run-once / run-backlog manual -->
+                <div class="section-label" style="color:#2ecc71; margin-top:18px;">
+                    1. Ejecución manual
+                </div>
+                <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:8px;">
+                    <button class="btn btn-primary" id="btn-sinli-once" onclick="sinliRunOnce()" style="background:#3498db;">▶ Sync ahora (1 lote)</button>
+                    <button class="btn btn-success" id="btn-sinli-backlog" onclick="sinliRunBacklog()">▶ Arrancar backlog (hasta vaciar)</button>
+                    <button class="btn btn-danger" id="btn-sinli-stop" onclick="sinliStop()" disabled>⏹ Detener</button>
+                    <span id="sinli-stage" style="color:#888; font-size:0.85rem;"></span>
+                </div>
+
+                <div style="margin-top:14px; display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px;">
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#9b59b6" id="sinli-stat-total">0</div>
+                        <div class="stat-label">A procesar (est.)</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#27ae60" id="sinli-stat-proc">0</div>
+                        <div class="stat-label">Procesados</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#16a085" id="sinli-stat-stock">0</div>
+                        <div class="stat-label">Stock escrito</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#f39c12" id="sinli-stat-price">0</div>
+                        <div class="stat-label">Precio actualizado</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#e74c3c" id="sinli-stat-err">0</div>
+                        <div class="stat-label">Errores</div>
+                    </div>
+                </div>
+
+                <div style="margin-top:10px; font-size:0.8rem; color:#888;" id="sinli-progress-detail"></div>
+
+                <!-- Bloque 2: marcapáginas -->
+                <div class="section-label" style="color:#2ecc71; margin-top:18px;">
+                    2. Marcapáginas (usar SOLO tras terminar backlog)
+                </div>
+                <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:8px;">
+                    <button class="btn btn-primary" onclick="sinliMarkerToNow()" style="background:#8e44ad;">
+                        🔖 Setear marker a NOW()
+                    </button>
+                    <span style="color:#888; font-size:0.82rem;">
+                        Evita reprocesar todo. Hacer SOLO después de terminar el backlog inicial completo.
+                    </span>
+                </div>
+
+                <!-- Bloque 3: cron 1h -->
+                <div class="section-label" style="color:#2ecc71; margin-top:18px;">
+                    3. Cron automático (cada 1h)
+                    <span class="status-badge" id="sinli-cron-badge" style="font-size:0.7rem;">IDLE</span>
+                </div>
+                <p style="color:#888; font-size:0.82rem;">
+                    Cron interno asyncio. Cada 1h hace run-once (1 lote). Para auto-arrancar tras
+                    reboot, pon <code>SYNC_STOCK_CRON_ENABLED=1</code> en EasyPanel.
+                </p>
+                <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:8px;">
+                    <button class="btn btn-success" id="btn-sinli-cron-start" onclick="sinliCronStart()">▶ Activar cron 1h</button>
+                    <button class="btn btn-danger" id="btn-sinli-cron-stop" onclick="sinliCronStop()" disabled>⏹ Detener cron</button>
+                </div>
+                <div style="margin-top:10px; display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px;">
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#3498db" id="sinli-cron-runs">0</div>
+                        <div class="stat-label">Ciclos totales</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#bbb; font-size:0.85rem;" id="sinli-cron-last">—</div>
+                        <div class="stat-label">Último ciclo</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#bbb; font-size:0.85rem;" id="sinli-cron-next">—</div>
+                        <div class="stat-label">Próximo ciclo</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#bbb; font-size:0.85rem;" id="sinli-cron-status">—</div>
+                        <div class="stat-label">Último resultado</div>
+                    </div>
+                </div>
+                <div style="margin-top:8px; font-size:0.8rem; color:#888;" id="sinli-cron-detail"></div>
+
+                <!-- Bloque 4: errores recientes -->
+                <div class="section-label" style="color:#e74c3c; margin-top:18px;">
+                    4. Errores recientes (últimos 20)
+                </div>
+                <div style="max-height:200px; overflow-y:auto; border:1px solid #2c2f3e; border-radius:6px; margin-top:6px;">
+                    <table style="width:100%; font-size:0.78rem; border-collapse:collapse;" id="sinli-errors-table">
+                        <thead style="position:sticky; top:0; background:#1c1f2e;">
+                            <tr>
+                                <th style="text-align:left; padding:4px 8px; color:#bbb; border-bottom:1px solid #2c2f3e;">ISBN</th>
+                                <th style="text-align:left; padding:4px 8px; color:#bbb; border-bottom:1px solid #2c2f3e;">Proveedor</th>
+                                <th style="text-align:left; padding:4px 8px; color:#bbb; border-bottom:1px solid #2c2f3e;">Error</th>
+                                <th style="text-align:left; padding:4px 8px; color:#bbb; border-bottom:1px solid #2c2f3e;">Cuándo</th>
+                            </tr>
+                        </thead>
+                        <tbody><tr><td colspan="4" style="padding:8px; color:#888;">— sin errores —</td></tr></tbody>
+                    </table>
+                </div>
+            </div>
+
             <!-- ═══ CATÁLOGO DE DISTRIBUIDORES ═══ -->
             <div class="card">
                 <div class="card-title">📦 Catálogo de distribuidores (XLSX → Postgres)</div>
@@ -1883,6 +2017,8 @@
                 if (typeof azetapushStopPolling === 'function') azetapushStopPolling();
                 if (typeof azetaspStopPolling === 'function') azetaspStopPolling();
                 if (typeof azetacronStopPolling === 'function') azetacronStopPolling();
+                if (typeof sinliStopPolling === 'function') sinliStopPolling();
+                if (typeof sinliCronStopPolling === 'function') sinliCronStopPolling();
                 stopResumenAutoRefresh();
             }
         }
@@ -3123,6 +3259,202 @@
             } catch (e) { console.error('azetacron poll:', e); }
         }
 
+        // ═══ SYNC STOCK SINLI → ODOO ═══
+        let sinliPollTimer = null;
+        let sinliCronPollTimer = null;
+
+        async function sinliRunOnce() {
+            if (!confirm('Ejecutar un lote del sync SINLI?\n\n' +
+                         'Procesa hasta 2000 libros (no-AZETA) cambiados desde el último timestamp.\n' +
+                         'Idempotente.')) return;
+            await sinliPost('/api/v1/sync-stock/run-once', 'once');
+        }
+
+        async function sinliRunBacklog() {
+            if (!confirm('Arrancar BACKLOG SINLI?\n\n' +
+                         'Bucle hasta vaciar todos los pendientes (~104k libros la primera vez).\n' +
+                         'Tarda ~16-20h. Idempotente. Puedes parar con ⏹ Detener.')) return;
+            await sinliPost('/api/v1/sync-stock/run-backlog', 'backlog');
+        }
+
+        async function sinliPost(url, mode) {
+            document.getElementById('btn-sinli-once').disabled = true;
+            document.getElementById('btn-sinli-backlog').disabled = true;
+            try {
+                const r = await fetch(url, { method: 'POST' });
+                const d = await r.json();
+                if (d.status !== 'started') {
+                    alert('❌ ' + (d.message || 'No se pudo iniciar'));
+                    document.getElementById('btn-sinli-once').disabled = false;
+                    document.getElementById('btn-sinli-backlog').disabled = false;
+                    return;
+                }
+                document.getElementById('btn-sinli-stop').disabled = false;
+                sinliStartPolling();
+                sinliPoll();
+            } catch (e) {
+                alert('Error: ' + e.message);
+                document.getElementById('btn-sinli-once').disabled = false;
+                document.getElementById('btn-sinli-backlog').disabled = false;
+            }
+        }
+
+        async function sinliStop() {
+            try { await fetch('/api/v1/sync-stock/stop', { method: 'POST' }); }
+            catch (e) {}
+        }
+
+        async function sinliMarkerToNow() {
+            if (!confirm('Setear marker SINLI a NOW()?\n\n' +
+                         '⚠️ Hacer SOLO después de terminar el backlog inicial completo.\n' +
+                         'Si lo haces antes, saltarás todos los pendientes.')) return;
+            try {
+                const r = await fetch('/api/v1/sync-stock/marker-to-now', { method: 'POST' });
+                const d = await r.json();
+                if (d.status === 'ok') {
+                    alert('✅ Marker actualizado a NOW(). El próximo cron solo procesará cambios desde ahora.');
+                    sinliPoll();
+                } else {
+                    alert('❌ ' + (d.message || 'No se pudo'));
+                }
+            } catch (e) { alert('Error: ' + e.message); }
+        }
+
+        function sinliStartPolling() {
+            if (sinliPollTimer) return;
+            sinliPollTimer = setInterval(sinliPoll, 4000);
+        }
+        function sinliStopPolling() {
+            if (sinliPollTimer) { clearInterval(sinliPollTimer); sinliPollTimer = null; }
+        }
+
+        async function sinliPoll() {
+            try {
+                const r = await fetch('/api/v1/sync-stock/status');
+                const data = await r.json();
+                const j = data.job || {};
+                const m = data.marker || {};
+
+                const badge = document.getElementById('sinli-status-badge');
+                badge.textContent = (j.status || 'idle').toUpperCase();
+                badge.className = 'status-badge ' + (j.status || 'idle');
+
+                document.getElementById('sinli-stage').textContent =
+                    j.stage ? `Etapa: ${j.stage} · modo: ${j.mode || '—'}` : '';
+                document.getElementById('sinli-pending').textContent = (data.pending_count || 0).toLocaleString();
+                document.getElementById('sinli-marker').textContent =
+                    m.ultimo_timestamp ? m.ultimo_timestamp.slice(0, 19) : '—';
+                document.getElementById('sinli-last-run').textContent =
+                    m.ultima_ejecucion ? m.ultima_ejecucion.slice(0, 19) : '—';
+                document.getElementById('sinli-lock').textContent =
+                    m.lock_activo ? '🔒 ACTIVO' : '✓ libre';
+
+                document.getElementById('sinli-stat-total').textContent = (j.items_total_estimate || 0).toLocaleString();
+                document.getElementById('sinli-stat-proc').textContent  = (j.items_processed || 0).toLocaleString();
+                document.getElementById('sinli-stat-stock').textContent = (j.stock_written || 0).toLocaleString();
+                document.getElementById('sinli-stat-price').textContent = (j.price_written || 0).toLocaleString();
+                const errsTotal = (j.err_no_product||0)+(j.err_apply||0)+(j.err_price||0)+(j.err_other||0)+(j.err_no_warehouse||0);
+                document.getElementById('sinli-stat-err').textContent = errsTotal.toLocaleString();
+
+                const det = [];
+                if (j.batches_done) det.push(`lotes: ${j.batches_done}`);
+                if (j.err_no_product) det.push(`sin product: ${j.err_no_product}`);
+                if (j.err_apply)      det.push(`apply err: ${j.err_apply}`);
+                if (j.err_price)      det.push(`price err: ${j.err_price}`);
+                if (j.err_other)      det.push(`otros err: ${j.err_other}`);
+                if (j.err_no_warehouse) det.push(`sin warehouse: ${j.err_no_warehouse}`);
+                if (j.elapsed_s) det.push(`${j.elapsed_s}s`);
+                document.getElementById('sinli-progress-detail').textContent = det.join(' · ');
+
+                // Errores recientes
+                const tbody = document.querySelector('#sinli-errors-table tbody');
+                tbody.innerHTML = '';
+                if (data.recent_errors && data.recent_errors.length) {
+                    data.recent_errors.forEach(e => {
+                        const tr = document.createElement('tr');
+                        tr.innerHTML =
+                            `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e; color:#bbb;">${escapeHtml(e.isbn||'')}</td>` +
+                            `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e;">${escapeHtml((e.proveedor||'').split('@')[0])}</td>` +
+                            `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e; color:#e74c3c;">${escapeHtml((e.mensaje||'').slice(0,80))}</td>` +
+                            `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e; color:#888;">${escapeHtml((e.creado||'').slice(0,19))}</td>`;
+                        tbody.appendChild(tr);
+                    });
+                } else {
+                    tbody.innerHTML = '<tr><td colspan="4" style="padding:8px; color:#888;">— sin errores —</td></tr>';
+                }
+
+                if (j.status === 'running') {
+                    document.getElementById('btn-sinli-once').disabled = true;
+                    document.getElementById('btn-sinli-backlog').disabled = true;
+                    document.getElementById('btn-sinli-stop').disabled = false;
+                } else {
+                    document.getElementById('btn-sinli-once').disabled = false;
+                    document.getElementById('btn-sinli-backlog').disabled = false;
+                    document.getElementById('btn-sinli-stop').disabled = true;
+                    if (['completed', 'error', 'stopped'].includes(j.status)) {
+                        sinliStopPolling();
+                    }
+                }
+            } catch (e) { console.error('sinli poll:', e); }
+        }
+
+        async function sinliCronStart() {
+            if (!confirm('Activar cron SINLI cada 1h?\n\n' +
+                         'Cada hora hace run-once (1 lote de 2000 libros máx).\n' +
+                         'Para auto-arrancar tras reboot pon SYNC_STOCK_CRON_ENABLED=1 en EasyPanel.')) return;
+            try {
+                const r = await fetch('/api/v1/sync-stock/cron/start', { method: 'POST' });
+                const d = await r.json();
+                if (d.status !== 'started') { alert('❌ ' + (d.message || 'No se pudo')); return; }
+                sinliCronStartPolling();
+                sinliCronPoll();
+            } catch (e) { alert('Error: ' + e.message); }
+        }
+
+        async function sinliCronStop() {
+            if (!confirm('Detener cron SINLI?')) return;
+            try { await fetch('/api/v1/sync-stock/cron/stop', { method: 'POST' }); }
+            catch (e) {}
+        }
+
+        function sinliCronStartPolling() {
+            if (sinliCronPollTimer) return;
+            sinliCronPollTimer = setInterval(sinliCronPoll, 10000);
+        }
+        function sinliCronStopPolling() {
+            if (sinliCronPollTimer) { clearInterval(sinliCronPollTimer); sinliCronPollTimer = null; }
+        }
+
+        async function sinliCronPoll() {
+            try {
+                const r = await fetch('/api/v1/sync-stock/cron/status');
+                const s = await r.json();
+                const badge = document.getElementById('sinli-cron-badge');
+                const running = !!s.enabled;
+                badge.textContent = running ? 'RUNNING' : 'IDLE';
+                badge.className = 'status-badge ' + (running ? 'running' : 'idle');
+
+                document.getElementById('sinli-cron-runs').textContent = (s.runs_total || 0).toLocaleString();
+                document.getElementById('sinli-cron-last').textContent =
+                    s.last_run_at ? s.last_run_at.slice(0, 19).replace('T', ' ') : '—';
+                document.getElementById('sinli-cron-next').textContent =
+                    s.next_run_at ? s.next_run_at.slice(0, 19).replace('T', ' ') : '—';
+                document.getElementById('sinli-cron-status').textContent =
+                    s.last_run_status || '—';
+
+                const det = [];
+                if (s.last_summary) {
+                    const ls = s.last_summary;
+                    det.push(`último: ${(ls.items_processed||0).toLocaleString()} proc, ${(ls.stock_written||0).toLocaleString()} stock, ${(ls.price_written||0).toLocaleString()} precios, ${ls.errors_total||0} err, ${ls.elapsed_s}s`);
+                }
+                if (s.interval_s) det.push(`intervalo: ${s.interval_s}s`);
+                document.getElementById('sinli-cron-detail').textContent = det.join(' · ');
+
+                document.getElementById('btn-sinli-cron-start').disabled = running;
+                document.getElementById('btn-sinli-cron-stop').disabled = !running;
+            } catch (e) { console.error('sinli cron poll:', e); }
+        }
+
         async function gbfResetRecent() {
             const hours = prompt('¿Cuántas horas hacia atrás reactivar?\n(Marca como no-fetched los libros sin data real de los últimos N horas, para reintento tras rate-limit)', '24');
             if (!hours) return;
@@ -3600,6 +3932,20 @@
             try {
                 azetacronPoll();
                 azetacronStartPolling();
+            } catch (e) {}
+
+            // SINLI sync: poll inicial + start polling si está running
+            try {
+                const r = await fetch('/api/v1/sync-stock/status');
+                const data = await r.json();
+                sinliPoll();
+                if (data.job && data.job.status === 'running') sinliStartPolling();
+            } catch (e) {}
+
+            // SINLI cron: poll inicial + start polling siempre (ligero)
+            try {
+                sinliCronPoll();
+                sinliCronStartPolling();
             } catch (e) {}
 
             distRefreshStats();
