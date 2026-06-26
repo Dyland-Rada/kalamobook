@@ -1801,7 +1801,26 @@
                 </div>
                 <div style="margin-top:8px; font-size:0.8rem; color:#888;" id="sinli-cron-detail"></div>
 
-                <!-- Bloque 4: errores recientes -->
+                <!-- Bloque 4b: buscador de ISBN (debug stock) -->
+                <div class="section-label" style="color:#2ecc71; margin-top:18px;">
+                    🔍 Buscador de stock por ISBN (debug BD vs Odoo)
+                </div>
+                <p style="color:#888; font-size:0.82rem;">
+                    Inspecciona cualquier ISBN: estado en libros_proveedor, mirror, y todos los quants
+                    en Odoo (qty real, inv_qty objetivo, sincronizado o no).
+                </p>
+                <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:8px;">
+                    <input type="text" id="stock-debug-isbn" placeholder="ISBN (ej. 9788412545982)"
+                           style="padding:8px 10px; background:#2c2f3e; color:#eee; border:1px solid #444; border-radius:6px; min-width:240px;"
+                           onkeypress="if(event.key==='Enter')stockDebugSearch()">
+                    <button class="btn btn-primary" onclick="stockDebugSearch()" style="background:#2ecc71;">
+                        🔍 Buscar
+                    </button>
+                    <span id="stock-debug-loading" style="color:#888; font-size:0.85rem; display:none;">Cargando...</span>
+                </div>
+                <div id="stock-debug-result" style="margin-top:14px;"></div>
+
+                <!-- Bloque 5: errores recientes -->
                 <div class="section-label" style="color:#e74c3c; margin-top:18px;">
                     4. Errores recientes (últimos 20)
                 </div>
@@ -3494,6 +3513,111 @@
                 document.getElementById('btn-sinli-cron-start').disabled = running;
                 document.getElementById('btn-sinli-cron-stop').disabled = !running;
             } catch (e) { console.error('sinli cron poll:', e); }
+        }
+
+        // ═══ STOCK DEBUG: buscador de ISBN ═══
+        async function stockDebugSearch() {
+            const isbn = (document.getElementById('stock-debug-isbn').value || '').trim();
+            if (!isbn) { alert('Pega un ISBN'); return; }
+            const loading = document.getElementById('stock-debug-loading');
+            const result = document.getElementById('stock-debug-result');
+            loading.style.display = 'inline';
+            result.innerHTML = '';
+            try {
+                const r = await fetch('/api/v1/admin/stock-debug?isbn=' + encodeURIComponent(isbn));
+                const d = await r.json();
+                if (d.error) {
+                    result.innerHTML = `<div style="color:#e94560;">${escapeHtml(d.error)}</div>`;
+                    return;
+                }
+
+                let html = '';
+
+                // BD: libros_proveedor
+                html += '<div class="section-label" style="color:#2ecc71; margin-top:10px;">📦 libros_proveedor (BD)</div>';
+                if (d.libros_proveedor && d.libros_proveedor.length) {
+                    html += '<table style="width:100%; font-size:0.82rem; border-collapse:collapse; margin-top:4px;"><thead><tr style="background:#1c1f2e;">';
+                    html += '<th style="text-align:left; padding:4px 8px; color:#bbb;">Proveedor</th>';
+                    html += '<th style="text-align:right; padding:4px 8px; color:#bbb;">Stock BD</th>';
+                    html += '<th style="text-align:left; padding:4px 8px; color:#bbb;">Stock TS</th>';
+                    html += '<th style="text-align:right; padding:4px 8px; color:#bbb;">Precio</th>';
+                    html += '<th style="text-align:left; padding:4px 8px; color:#bbb;">→ Warehouse</th>';
+                    html += '</tr></thead><tbody>';
+                    d.libros_proveedor.forEach(lp => {
+                        const wh = (d.proveedor_warehouse_map || {})[lp.proveedor_email] || {};
+                        html += '<tr>';
+                        html += `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e;">${escapeHtml(lp.proveedor_email)}</td>`;
+                        html += `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e; text-align:right; color:#16a085;">${lp.stock_disponible || 0}</td>`;
+                        html += `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e; color:#888;">${escapeHtml((lp.stock_actualizado_en || '').slice(0,19))}</td>`;
+                        html += `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e; text-align:right;">${lp.precio_con_iva ?? '-'}</td>`;
+                        html += `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e; color:#3498db;">${wh.code || '?'} (${wh.nombre || '?'})</td>`;
+                        html += '</tr>';
+                    });
+                    html += '</tbody></table>';
+                } else {
+                    html += '<div style="color:#888; font-size:0.85rem;">— No hay registros en libros_proveedor —</div>';
+                }
+
+                // Mirror
+                if (d.mirror) {
+                    html += '<div class="section-label" style="color:#2ecc71; margin-top:14px;">🪞 odoo_books_mirror</div>';
+                    html += `<div style="font-size:0.85rem; color:#bbb;">odoo_id=<strong>${d.mirror.odoo_id}</strong> · list_price=<strong>${d.mirror.list_price}</strong> · azeta_price=${d.mirror.azeta_price_eur ?? '-'} · ${escapeHtml(d.mirror.name || '')}</div>`;
+                } else {
+                    html += '<div class="section-label" style="color:#e94560; margin-top:14px;">🪞 NO en mirror (libro no espejado)</div>';
+                }
+
+                // Odoo quants
+                html += '<div class="section-label" style="color:#2ecc71; margin-top:14px;">🏢 Odoo: stock.quant en cada location</div>';
+                if (d.odoo_templates && d.odoo_templates.length) {
+                    d.odoo_templates.forEach(t => {
+                        html += `<div style="font-size:0.85rem; color:#bbb; margin-top:6px;">template id=<strong>${t.id}</strong> · ${escapeHtml(t.name || '')} · list_price=${t.list_price} · qty_total=${t.qty_available_total} · weight=${t.weight}</div>`;
+                        t.variants.forEach(v => {
+                            html += `<div style="font-size:0.8rem; color:#888; margin-left:14px;">variante product_id=${v.product_id}</div>`;
+                            if (!v.quants.length) {
+                                html += `<div style="font-size:0.8rem; color:#888; margin-left:28px;">— sin quants —</div>`;
+                                return;
+                            }
+                            html += '<table style="width:calc(100% - 28px); margin-left:28px; font-size:0.78rem; border-collapse:collapse; margin-top:4px;"><thead><tr style="background:#1c1f2e;">';
+                            html += '<th style="text-align:left; padding:4px 8px; color:#bbb;">Location</th>';
+                            html += '<th style="text-align:right; padding:4px 8px; color:#bbb;">qty REAL</th>';
+                            html += '<th style="text-align:right; padding:4px 8px; color:#bbb;">inv_qty objetivo</th>';
+                            html += '<th style="text-align:center; padding:4px 8px; color:#bbb;">sync?</th>';
+                            html += '<th style="text-align:left; padding:4px 8px; color:#bbb;">write_date</th>';
+                            html += '</tr></thead><tbody>';
+                            v.quants.forEach(q => {
+                                const locStr = Array.isArray(q.location) ? q.location[1] : q.location;
+                                const okColor = q.synced ? '#27ae60' : '#e67e22';
+                                html += '<tr>';
+                                html += `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e;">${escapeHtml(String(locStr))}</td>`;
+                                html += `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e; text-align:right;">${q.quantity}</td>`;
+                                html += `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e; text-align:right;">${q.inventory_quantity}</td>`;
+                                html += `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e; text-align:center; color:${okColor};">${q.synced ? '✓' : '⏳'}</td>`;
+                                html += `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e; color:#888;">${escapeHtml((q.write_date || '').slice(0,19))}</td>`;
+                                html += '</tr>';
+                            });
+                            html += '</tbody></table>';
+                        });
+                    });
+                } else {
+                    html += '<div style="color:#888; font-size:0.85rem;">— No hay product.template en Odoo con ese barcode —</div>';
+                }
+
+                // Errores
+                if (d.sync_errores && d.sync_errores.length) {
+                    html += '<div class="section-label" style="color:#e74c3c; margin-top:14px;">⚠️ Errores recientes</div>';
+                    html += '<ul style="font-size:0.8rem; color:#e94560; padding-left:20px;">';
+                    d.sync_errores.forEach(e => {
+                        html += `<li>${escapeHtml(e.cuando.slice(0,19))} · ${escapeHtml(e.proveedor)} · ${escapeHtml(e.mensaje.slice(0,150))}</li>`;
+                    });
+                    html += '</ul>';
+                }
+
+                result.innerHTML = html;
+            } catch (e) {
+                result.innerHTML = `<div style="color:#e94560;">Error: ${escapeHtml(e.message)}</div>`;
+            } finally {
+                loading.style.display = 'none';
+            }
         }
 
         async function gbfResetRecent() {

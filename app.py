@@ -1482,6 +1482,124 @@ async def admin_inferred_categories_summary(top_n: int = Query(50, ge=10, le=500
         conn.close()
 
 
+@app.get("/api/v1/admin/stock-debug", tags=["Admin"])
+async def admin_stock_debug(isbn: str = Query(..., description="ISBN/barcode a inspeccionar")):
+    """
+    Devuelve el estado de un ISBN en BD (libros_proveedor + mirror) y en
+    Odoo (product.template + product.product + stock.quant en todas las
+    locations). Util para validar cualquier desincronización.
+    """
+    import db as dbmod
+    from odoo_client import OdooClient
+
+    isbn = (isbn or "").strip()
+    if not isbn:
+        return JSONResponse(status_code=400, content={"error": "isbn requerido"})
+
+    out: dict[str, Any] = {"isbn": isbn}
+    conn = dbmod.get_connection()
+    cur = conn.cursor()
+    try:
+        # 1. libros_proveedor
+        dbmod.execute_query(cur, """
+            SELECT proveedor_email, stock_disponible, stock_actualizado_en,
+                   precio_con_iva, actualizado_en
+            FROM libros_proveedor WHERE isbn = ?
+            ORDER BY proveedor_email
+        """, (isbn,))
+        out["libros_proveedor"] = [{
+            "proveedor_email": r[0], "stock_disponible": r[1],
+            "stock_actualizado_en": str(r[2]) if r[2] else None,
+            "precio_con_iva": float(r[3]) if r[3] is not None else None,
+            "actualizado_en": str(r[4]) if r[4] else None,
+        } for r in cur.fetchall()]
+
+        # 2. mirror
+        dbmod.execute_query(cur, """
+            SELECT odoo_id, name, list_price, azeta_fetched_at,
+                   azeta_price_eur, supplier_names
+            FROM odoo_books_mirror WHERE barcode = ?
+        """, (isbn,))
+        r = cur.fetchone()
+        out["mirror"] = {
+            "odoo_id": r[0], "name": r[1],
+            "list_price": float(r[2]) if r[2] is not None else None,
+            "azeta_fetched_at": str(r[3]) if r[3] else None,
+            "azeta_price_eur": float(r[4]) if r[4] is not None else None,
+            "supplier_names": r[5],
+        } if r else None
+
+        # 3. mapeo proveedor->warehouse
+        dbmod.execute_query(cur, """
+            SELECT proveedor_email, warehouse_code, nombre_proveedor
+            FROM proveedor_almacen_odoo
+        """)
+        out["proveedor_warehouse_map"] = {
+            r[0]: {"code": r[1], "nombre": r[2]} for r in cur.fetchall()
+        }
+
+        # 4. errores recientes para este ISBN
+        dbmod.execute_query(cur, """
+            SELECT mensaje_error, proveedor_email, creado_en, intentos
+            FROM sync_errores WHERE isbn = ?
+            ORDER BY creado_en DESC LIMIT 10
+        """, (isbn,))
+        out["sync_errores"] = [{
+            "mensaje": r[0], "proveedor": r[1],
+            "cuando": str(r[2]), "intentos": r[3],
+        } for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+    # 5. Odoo: template + variantes + quants en TODAS las locations
+    try:
+        async with OdooClient() as odoo:
+            templates = await odoo.search_read(
+                "product.template", [["barcode", "=", isbn]],
+                ["id", "name", "list_price", "categ_id", "weight",
+                 "qty_available"], limit=5,
+            )
+            out["odoo_templates"] = []
+            for t in templates:
+                tmpl_entry: dict = {
+                    "id": t["id"], "name": t["name"],
+                    "list_price": t["list_price"],
+                    "qty_available_total": t.get("qty_available"),
+                    "weight": t.get("weight"),
+                    "categ_id": t.get("categ_id"),
+                    "variants": [],
+                }
+                variants = await odoo.search_read(
+                    "product.product",
+                    [["product_tmpl_id", "=", t["id"]]],
+                    ["id", "name"], limit=10,
+                )
+                for v in variants:
+                    quants = await odoo.search_read(
+                        "stock.quant",
+                        [["product_id", "=", v["id"]]],
+                        ["id", "location_id", "quantity",
+                         "inventory_quantity", "write_date"],
+                    )
+                    tmpl_entry["variants"].append({
+                        "product_id": v["id"], "name": v["name"],
+                        "quants": [{
+                            "id": q["id"],
+                            "location": q["location_id"],
+                            "quantity": q["quantity"],
+                            "inventory_quantity": q["inventory_quantity"],
+                            "write_date": q["write_date"],
+                            "synced": abs(float(q["quantity"] or 0)
+                                          - float(q["inventory_quantity"] or 0)) < 0.01,
+                        } for q in quants],
+                    })
+                out["odoo_templates"].append(tmpl_entry)
+    except Exception as e:
+        out["odoo_error"] = f"{type(e).__name__}: {e}"
+
+    return JSONResponse(content=out)
+
+
 @app.get("/api/v1/admin/odoo-warehouses", tags=["Admin"])
 async def admin_odoo_warehouses():
     """
