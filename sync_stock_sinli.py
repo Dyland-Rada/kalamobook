@@ -303,104 +303,63 @@ def _fetch_batch(marker, limit: int = BATCH_SIZE,
     } for r in rows]
 
 
-# ─── Push de un libro ─────────────────────────────────────────────────
-async def _get_product_id_cached(odoo: OdooClient, template_id: int,
-                                  cache: dict[int, int]) -> int | None:
-    if template_id in cache:
-        return cache[template_id]
-    res = await odoo.search_read(
-        "product.product",
-        [["product_tmpl_id", "=", template_id]],
-        ["id"], limit=1,
-    )
-    pid = res[0]["id"] if res else None
-    if pid:
-        cache[template_id] = pid
-    return pid
+# ─── Batch helpers ────────────────────────────────────────────────────
+SEARCH_CHUNK = int(os.environ.get("SYNC_STOCK_SEARCH_CHUNK", "1000"))
+WRITE_CHUNK  = int(os.environ.get("SYNC_STOCK_WRITE_CHUNK", "500"))
+CREATE_CHUNK = int(os.environ.get("SYNC_STOCK_CREATE_CHUNK", "200"))
 
 
-async def _push_one(odoo: OdooClient, book: dict,
-                     location_id: int, pid_cache: dict[int, int],
-                     job: dict):
-    """
-    Push de un libro: stock + precio condicional.
-    Si falla, guarda en sync_errores y devuelve False.
-    """
-    isbn = book["isbn"]
-    proveedor = book["proveedor_email"]
-    template_id = book["odoo_id"]
-    qty = book["stock_disponible"]
-    price = book["precio_con_iva"]
-    list_price_now = book["list_price_mirror"]
+def _chunks(lst, size):
+    for i in range(0, len(lst), size):
+        yield lst[i:i + size]
 
-    try:
-        # 1. Resolver product_id (variante)
-        pid = await _get_product_id_cached(odoo, template_id, pid_cache)
-        if not pid:
-            _record_error(isbn, proveedor, "product.product no encontrado",
-                          {"template_id": template_id})
-            job["err_no_product"] += 1
-            return False
 
-        # 2. Stock: buscar quant en location, write/create
-        quants = await odoo.search_read(
-            "stock.quant",
-            [["product_id", "=", pid], ["location_id", "=", location_id]],
-            ["id"], limit=1,
+async def _resolve_product_ids_batch(odoo: OdooClient,
+                                      template_ids: list[int]) -> dict[int, int]:
+    """{template_id: product.product.id}, batch search."""
+    out: dict[int, int] = {}
+    unique = list(set(template_ids))
+    for chunk in _chunks(unique, SEARCH_CHUNK):
+        rows = await odoo.search_read(
+            "product.product",
+            [["product_tmpl_id", "in", chunk]],
+            ["id", "product_tmpl_id"],
         )
-        if quants:
-            quant_id = quants[0]["id"]
-            await odoo.write("stock.quant", [quant_id],
-                             {"inventory_quantity": qty})
-        else:
-            quant_id = await odoo.execute_kw(
-                "stock.quant", "create",
-                [{"product_id": pid, "location_id": location_id,
-                  "inventory_quantity": qty}],
-            )
+        for r in rows:
+            tmpl = r.get("product_tmpl_id")
+            tmpl_id = tmpl[0] if isinstance(tmpl, list) else tmpl
+            if tmpl_id not in out:
+                out[tmpl_id] = r["id"]
+    return out
 
-        # 3. Aplicar (workaround Fault)
-        try:
-            await odoo.execute_kw(
-                "stock.quant", "action_apply_inventory", [[quant_id]],
-            )
-        except Exception as apply_err:
-            verify = await odoo.read("stock.quant", [quant_id], ["quantity"])
-            if not (verify and abs(
-                float(verify[0].get("quantity") or 0) - qty
-            ) < 0.01):
-                # Falló de verdad
-                _record_error(isbn, proveedor,
-                              f"apply_inventory: {type(apply_err).__name__}: {apply_err!r}",
-                              {"pid": pid, "qty": qty,
-                               "location_id": location_id})
-                job["err_apply"] += 1
-                return False
 
-        job["stock_written"] += 1
-
-        # 4. Precio condicional
-        if price is not None and (
-            list_price_now is None or abs(price - list_price_now) > 0.001
-        ):
-            try:
-                await odoo.write("product.template", [template_id],
-                                 {"list_price": price})
-                job["price_written"] += 1
-            except Exception as price_err:
-                _record_error(isbn, proveedor,
-                              f"price write: {type(price_err).__name__}: {price_err!r}",
-                              {"template_id": template_id, "price": price})
-                job["err_price"] += 1
-
-        return True
-
-    except Exception as e:
-        _record_error(isbn, proveedor,
-                      f"{type(e).__name__}: {e!r}",
-                      {"template_id": template_id, "qty": qty, "price": price})
-        job["err_other"] += 1
-        return False
+async def _resolve_quants_in_locations(odoo: OdooClient,
+                                        product_ids: list[int],
+                                        location_ids: list[int]) -> dict[tuple[int, int], int]:
+    """
+    {(product_id, location_id): quant_id} para los que YA existen.
+    1 search_read por chunk con [product_id IN ...] y [location_id IN ...].
+    """
+    out: dict[tuple[int, int], int] = {}
+    if not product_ids or not location_ids:
+        return out
+    unique_pids = list(set(product_ids))
+    for chunk in _chunks(unique_pids, SEARCH_CHUNK):
+        rows = await odoo.search_read(
+            "stock.quant",
+            [["product_id", "in", chunk],
+             ["location_id", "in", location_ids]],
+            ["id", "product_id", "location_id"],
+        )
+        for r in rows:
+            pid = r.get("product_id")
+            loc = r.get("location_id")
+            pid_v = pid[0] if isinstance(pid, list) else pid
+            loc_v = loc[0] if isinstance(loc, list) else loc
+            key = (pid_v, loc_v)
+            if key not in out:
+                out[key] = r["id"]
+    return out
 
 
 # ─── Orchestrators ────────────────────────────────────────────────────
@@ -430,45 +389,6 @@ def _new_job(mode: str, concurrency: int = PUSH_CONCURRENCY,
     }
 
 
-async def _process_book(odoo: OdooClient, book: dict,
-                         prov_to_wh: dict[str, str],
-                         wh_to_loc: dict[str, int],
-                         pid_cache: dict[int, int],
-                         job: dict,
-                         sem: asyncio.Semaphore):
-    """Procesa un libro con semaphore (concurrencia controlada)."""
-    async with sem:
-        if job["status"] != "running":
-            return
-        try:
-            wh_code = prov_to_wh.get(book["proveedor_email"])
-            if not wh_code:
-                _record_error(book["isbn"], book["proveedor_email"],
-                              "Proveedor sin mapping en proveedor_almacen_odoo",
-                              {"book": book})
-                job["err_no_warehouse"] += 1
-                return
-
-            location_id = wh_to_loc.get(wh_code)
-            if not location_id:
-                _record_error(book["isbn"], book["proveedor_email"],
-                              f"Warehouse {wh_code} sin lot_stock_id en Odoo",
-                              {"wh": wh_code})
-                job["err_no_warehouse"] += 1
-                return
-            # Salvaguarda anti-colisión: NUNCA escribir en location 14 (AZE01)
-            if location_id == 14:
-                _record_error(book["isbn"], book["proveedor_email"],
-                              "Anti-colision: location 14 (AZE01) es del scraper",
-                              {"wh": wh_code, "location_id": location_id})
-                job["err_no_warehouse"] += 1
-                return
-
-            await _push_one(odoo, book, location_id, pid_cache, job)
-        finally:
-            job["items_processed"] += 1
-
-
 async def _run_one_batch(odoo: OdooClient,
                          prov_to_wh: dict[str, str],
                          wh_to_loc: dict[str, int],
@@ -477,7 +397,9 @@ async def _run_one_batch(odoo: OdooClient,
                          solo_proveedor: str | None = None,
                          limit_override: int | None = None) -> tuple[int, Any]:
     """
-    Procesa un lote en paralelo (concurrencia PUSH_CONCURRENCY).
+    Procesa un lote en batch (multi-location).
+    Estrategia: resolver pids batch, agrupar libros por (location, qty),
+    write masivos por grupo, action_apply en lotes.
     Devuelve (n_procesados, max_actualizado_en).
     """
     marker = _get_marker()
@@ -487,25 +409,181 @@ async def _run_one_batch(odoo: OdooClient,
     if not batch:
         return 0, marker
 
-    job["stage"] = f"pushing batch ({len(batch)} libros, conc={job.get('concurrency', PUSH_CONCURRENCY)})"
+    job["stage"] = f"batch pushing ({len(batch)} libros)"
     max_ts = marker
-    sem = asyncio.Semaphore(job.get("concurrency", PUSH_CONCURRENCY))
 
-    # Actualizamos max_ts al inicio (antes del gather, en caso de stop a medias
-    # mantenemos el avance)
+    # ── 1. Validar warehouse/location de cada libro ──────────────────
+    valid_books: list[dict] = []
     for book in batch:
         if book["actualizado_en"] and (max_ts is None or book["actualizado_en"] > max_ts):
             max_ts = book["actualizado_en"]
 
-    # Procesar todos en paralelo con semaphore (corre máximo N a la vez)
-    await asyncio.gather(*[
-        _process_book(odoo, book, prov_to_wh, wh_to_loc, pid_cache, job, sem)
-        for book in batch
-    ])
+        wh_code = prov_to_wh.get(book["proveedor_email"])
+        if not wh_code:
+            _record_error(book["isbn"], book["proveedor_email"],
+                          "Proveedor sin mapping en proveedor_almacen_odoo",
+                          {"book": book})
+            job["err_no_warehouse"] += 1
+            job["items_processed"] += 1
+            continue
+        location_id = wh_to_loc.get(wh_code)
+        if not location_id:
+            _record_error(book["isbn"], book["proveedor_email"],
+                          f"Warehouse {wh_code} sin lot_stock_id en Odoo",
+                          {"wh": wh_code})
+            job["err_no_warehouse"] += 1
+            job["items_processed"] += 1
+            continue
+        # Anti-colisión: NUNCA escribir en location 14 (AZE01)
+        if location_id == 14:
+            _record_error(book["isbn"], book["proveedor_email"],
+                          "Anti-colision: location 14 (AZE01) es del scraper",
+                          {"wh": wh_code, "location_id": location_id})
+            job["err_no_warehouse"] += 1
+            job["items_processed"] += 1
+            continue
+        book["location_id"] = location_id
+        valid_books.append(book)
 
-    print(f"[SinliSync] batch DONE proc={job['items_processed']:,} "
-          f"stk:{job['stock_written']} prc:{job['price_written']} "
-          f"err:{job['err_no_product']+job['err_apply']+job['err_other']+job['err_no_warehouse']}")
+    if not valid_books:
+        return len(batch), max_ts
+
+    # ── 2. Resolver pids batch ──────────────────────────────────────
+    template_ids_needed = [b["odoo_id"] for b in valid_books
+                            if b["odoo_id"] not in pid_cache]
+    if template_ids_needed:
+        new_pids = await _resolve_product_ids_batch(odoo, template_ids_needed)
+        pid_cache.update(new_pids)
+    print(f"[SinliBatch] pids resueltos: {len(pid_cache):,}")
+
+    # ── 3. Resolver quants existentes en las locations del lote ─────
+    location_ids = list(set(b["location_id"] for b in valid_books))
+    pids_needed = [pid_cache[b["odoo_id"]] for b in valid_books
+                    if pid_cache.get(b["odoo_id"])]
+    quant_cache = await _resolve_quants_in_locations(
+        odoo, pids_needed, location_ids
+    )
+    print(f"[SinliBatch] quants existentes: {len(quant_cache):,} "
+          f"en {len(location_ids)} locations")
+
+    # ── 4. Particionar: create vs update por (location, qty) ────────
+    to_create: list[dict] = []
+    to_update_by_loc_qty: dict[tuple[int, int], list[int]] = {}
+    # Precio: agrupar por precio (1 write por valor único)
+    prices_by_value: dict[float, list[int]] = {}
+
+    for book in valid_books:
+        pid = pid_cache.get(book["odoo_id"])
+        if not pid:
+            _record_error(book["isbn"], book["proveedor_email"],
+                          "product.product no encontrado",
+                          {"template_id": book["odoo_id"]})
+            job["err_no_product"] += 1
+            job["items_processed"] += 1
+            continue
+
+        loc_id = book["location_id"]
+        qty = book["stock_disponible"]
+        key = (pid, loc_id)
+        if key in quant_cache:
+            to_update_by_loc_qty.setdefault((loc_id, qty), []).append(quant_cache[key])
+        else:
+            to_create.append({
+                "product_id": pid,
+                "location_id": loc_id,
+                "inventory_quantity": qty,
+            })
+
+        # Precio condicional
+        price = book["precio_con_iva"]
+        list_price_now = book["list_price_mirror"]
+        if price is not None and (
+            list_price_now is None or abs(price - list_price_now) > 0.001
+        ):
+            prices_by_value.setdefault(price, []).append(book["odoo_id"])
+
+        job["items_processed"] += 1
+
+    print(f"[SinliBatch] particion: {len(to_create):,} crear, "
+          f"{sum(len(v) for v in to_update_by_loc_qty.values()):,} update "
+          f"({len(to_update_by_loc_qty)} grupos), "
+          f"{sum(len(v) for v in prices_by_value.values()):,} precios "
+          f"({len(prices_by_value)} valores únicos)")
+
+    # ── 5. CREATE en lotes ──────────────────────────────────────────
+    new_quant_ids: list[int] = []
+    for chunk in _chunks(to_create, CREATE_CHUNK):
+        try:
+            res = await odoo.execute_kw("stock.quant", "create", [chunk])
+            if isinstance(res, list):
+                new_quant_ids.extend(res)
+            elif isinstance(res, int):
+                new_quant_ids.append(res)
+            job["stock_written"] += len(chunk)
+        except Exception as e:
+            job["err_apply"] += len(chunk)
+            err = f"create chunk: {type(e).__name__}: {str(e)[:150]}"
+            job["errors"].append(err)
+            print(f"[SinliBatch] {err}")
+
+    # ── 6. UPDATE quants por (location, qty) ─────────────────────────
+    for (loc_id, qty), quant_ids in to_update_by_loc_qty.items():
+        for chunk in _chunks(quant_ids, WRITE_CHUNK):
+            try:
+                await odoo.write("stock.quant", chunk,
+                                 {"inventory_quantity": qty})
+                job["stock_written"] += len(chunk)
+            except Exception as e:
+                job["err_apply"] += len(chunk)
+                err = f"update loc={loc_id} qty={qty}: {type(e).__name__}: {str(e)[:150]}"
+                job["errors"].append(err)
+                print(f"[SinliBatch] {err}")
+
+    # ── 7. APPLY en lotes ────────────────────────────────────────────
+    all_quant_ids = new_quant_ids + [
+        qid for qids in to_update_by_loc_qty.values() for qid in qids
+    ]
+    for chunk in _chunks(all_quant_ids, WRITE_CHUNK):
+        try:
+            await odoo.execute_kw(
+                "stock.quant", "action_apply_inventory", [chunk]
+            )
+        except Exception as apply_err:
+            # Workaround Fault: verificar releyendo
+            try:
+                verify = await odoo.read(
+                    "stock.quant", chunk, ["quantity", "inventory_quantity"]
+                )
+                ok = all(
+                    abs(float(v.get("quantity") or 0)
+                        - float(v.get("inventory_quantity") or 0)) < 0.01
+                    for v in verify
+                )
+                if not ok:
+                    job["err_apply"] += 1
+                    err = f"apply chunk: {type(apply_err).__name__}: {str(apply_err)[:150]}"
+                    job["errors"].append(err)
+            except Exception as verify_err:
+                job["err_apply"] += 1
+                err = f"verify chunk: {type(verify_err).__name__}: {str(verify_err)[:150]}"
+                job["errors"].append(err)
+
+    # ── 8. PRECIO: write por valor único ────────────────────────────
+    for price, tmpl_ids in prices_by_value.items():
+        for chunk in _chunks(tmpl_ids, WRITE_CHUNK):
+            try:
+                await odoo.write("product.template", chunk,
+                                 {"list_price": price})
+                job["price_written"] += len(chunk)
+            except Exception as e:
+                job["err_price"] += len(chunk)
+                err = f"price={price}: {type(e).__name__}: {str(e)[:150]}"
+                job["errors"].append(err)
+
+    print(f"[SinliBatch] DONE batch: stk={job['stock_written']:,} "
+          f"prc={job['price_written']:,} err_apply={job['err_apply']} "
+          f"err_price={job['err_price']} err_wh={job['err_no_warehouse']} "
+          f"err_np={job['err_no_product']}")
 
     return len(batch), max_ts
 

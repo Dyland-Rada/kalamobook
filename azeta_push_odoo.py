@@ -502,131 +502,256 @@ def _read_stock_targets(test_isbn: str | None = None,
     return out
 
 
-# Concurrencia configurable. Empezar conservador (8) — si Odoo aguanta sube.
-PUSH_CONCURRENCY = int(os.environ.get("AZETA_PUSH_CONCURRENCY", "8"))
+# Tamaño de lote para batch operations.
+# - SEARCH_CHUNK: cuántos IDs por search_read [in [...]] (500-1000 OK)
+# - WRITE_CHUNK: cuántos quant_ids por write/apply (500-1000 OK, evita 502)
+# - CREATE_CHUNK: cuántos dicts por create (más bajo, 200-500)
+SEARCH_CHUNK = int(os.environ.get("AZETA_PUSH_SEARCH_CHUNK", "1000"))
+WRITE_CHUNK  = int(os.environ.get("AZETA_PUSH_WRITE_CHUNK", "500"))
+CREATE_CHUNK = int(os.environ.get("AZETA_PUSH_CREATE_CHUNK", "200"))
 
 
-async def _process_stock_target(odoo: OdooClient, t: dict,
-                                 pid_cache: dict[int, int],
-                                 job: dict, sem: asyncio.Semaphore):
-    """Procesa un libro: resuelve pid, escribe quant, aplica inventario."""
-    async with sem:
-        if job["status"] != "running":
-            return
-        try:
-            template_id = t["odoo_id"]
-            pid = pid_cache.get(template_id)
-            if pid is None:
-                pid = await _get_product_id(odoo, template_id)
-                if pid:
-                    pid_cache[template_id] = pid
-            if not pid:
-                job["stock_no_product"] += 1
-                job["processed"] += 1
-                return
+def _chunks(lst, size):
+    for i in range(0, len(lst), size):
+        yield lst[i:i + size]
 
-            qty = t["qty"]
-            quants = await odoo.search_read(
-                "stock.quant",
-                [["product_id", "=", pid],
-                 ["location_id", "=", AZE01_LOCATION_ID]],
-                ["id", "quantity"], limit=1,
-            )
 
-            if quants:
-                quant_id = quants[0]["id"]
-                await odoo.write("stock.quant", [quant_id],
-                                 {"inventory_quantity": qty})
-            else:
-                quant_id = await odoo.execute_kw(
-                    "stock.quant", "create",
-                    [{"product_id": pid,
-                      "location_id": AZE01_LOCATION_ID,
-                      "inventory_quantity": qty}],
-                )
-            try:
-                await odoo.execute_kw(
-                    "stock.quant", "action_apply_inventory",
-                    [[quant_id]],
-                )
-            except Exception as apply_err:
-                verify = await odoo.read(
-                    "stock.quant", [quant_id], ["quantity"]
-                )
-                if not (verify and abs(
-                    float(verify[0].get("quantity") or 0) - qty
-                ) < 0.01):
-                    raise apply_err
-            job["stock_written"] += 1
-        except Exception as e:
-            job["stock_errors"] += 1
-            err = f"isbn={t['barcode']}: {type(e).__name__}: {str(e)[:120]}"
-            job["errors"].append(err)
-        finally:
-            job["processed"] += 1
+async def _resolve_product_ids_batch(odoo: OdooClient,
+                                      template_ids: list[int]) -> dict[int, int]:
+    """
+    Una sola search_read por chunk: pid = {tmpl_id: product.product.id}.
+    De N llamadas individuales a N/SEARCH_CHUNK llamadas.
+    """
+    out: dict[int, int] = {}
+    unique = list(set(template_ids))
+    for chunk in _chunks(unique, SEARCH_CHUNK):
+        rows = await odoo.search_read(
+            "product.product",
+            [["product_tmpl_id", "in", chunk]],
+            ["id", "product_tmpl_id"],
+        )
+        for r in rows:
+            tmpl = r.get("product_tmpl_id")
+            tmpl_id = tmpl[0] if isinstance(tmpl, list) else tmpl
+            # Multiples variantes por tmpl → quedarnos con la primera
+            if tmpl_id not in out:
+                out[tmpl_id] = r["id"]
+    return out
+
+
+async def _resolve_quants_batch(odoo: OdooClient,
+                                 product_ids: list[int],
+                                 location_id: int) -> dict[int, int]:
+    """
+    Una sola search_read por chunk: {product_id: quant_id} para los que
+    YA existen en la location. Los que no aparecen → hay que crearlos.
+    """
+    out: dict[int, int] = {}
+    unique = list(set(product_ids))
+    for chunk in _chunks(unique, SEARCH_CHUNK):
+        rows = await odoo.search_read(
+            "stock.quant",
+            [["product_id", "in", chunk],
+             ["location_id", "=", location_id]],
+            ["id", "product_id"],
+        )
+        for r in rows:
+            pid = r.get("product_id")
+            pid_v = pid[0] if isinstance(pid, list) else pid
+            if pid_v not in out:
+                out[pid_v] = r["id"]
+    return out
 
 
 async def run_azeta_stock_push_only(test_isbn: str | None = None,
                                      max_books: int | None = None,
                                      concurrency: int | None = None) -> dict:
     """
-    Push SOLO de stock.quant en AZE01 (location 14). No toca template
-    ni categorias. Mucho mas rapido que run_azeta_push completo.
+    Push SOLO de stock.quant en AZE01 (location 14) — VERSION BATCH.
+
+    Estrategia: agrupar por valor de qty (cap 50 → solo 51 valores únicos
+    posibles), una sola write() por grupo. action_apply_inventory en lotes
+    de 500. Reduce llamadas de ~700k a ~1-2k (speed-up ~1000x).
 
     test_isbn: procesa solo 1 ISBN (validacion)
     max_books: tope total
-    concurrency: workers en paralelo (default PUSH_CONCURRENCY)
+    concurrency: ignorado en modo batch (lo dejamos para retrocompatibilidad)
     """
     global stock_push_job
-    conc = concurrency or PUSH_CONCURRENCY
     stock_push_job = {
         "status": "running",
         "started_at": datetime.now().isoformat(),
         "stage": "starting",
         "test_isbn": test_isbn,
-        "concurrency": conc,
+        "mode": "batch",
         "total_to_process": 0,
         "processed": 0,
         "stock_written": 0,
+        "stock_created": 0,
+        "stock_updated": 0,
+        "stock_applied": 0,
         "stock_errors": 0,
         "stock_no_product": 0,
+        "unique_qty_values": 0,
+        "calls_made": 0,
         "elapsed_s": 0,
+        "elapsed_load_s": 0,
+        "elapsed_resolve_s": 0,
+        "elapsed_write_s": 0,
+        "elapsed_apply_s": 0,
         "errors": [],
     }
     job = stock_push_job
     t_start = time.monotonic()
 
     try:
-        job["stage"] = "loading"
+        # ── 1. Cargar targets ─────────────────────────────────────────
+        job["stage"] = "loading_targets"
         targets = _read_stock_targets(test_isbn=test_isbn, max_books=max_books)
         job["total_to_process"] = len(targets)
-        print(f"[AzetaStockPush] {len(targets):,} libros AZETA a actualizar "
-              f"stock (concurrency={conc})")
+        job["elapsed_load_s"] = round(time.monotonic() - t_start, 2)
+        print(f"[AzetaBatch] {len(targets):,} libros AZETA a actualizar")
 
         if not targets:
             job["status"] = "completed"
             job["stage"] = "done"
             return job
 
-        job["stage"] = "pushing"
-        pid_cache: dict[int, int] = {}
-        sem = asyncio.Semaphore(conc)
-
         async with OdooClient() as odoo:
-            # Process en olas de 500 para no construir tareas para 236k
-            WAVE = 500
-            for wave_start in range(0, len(targets), WAVE):
+            # ── 2. Pre-resolver product_ids (batch) ──────────────────
+            t0 = time.monotonic()
+            job["stage"] = "resolving_product_ids"
+            template_ids = [t["odoo_id"] for t in targets]
+            pid_cache = await _resolve_product_ids_batch(odoo, template_ids)
+            job["calls_made"] += (len(set(template_ids)) // SEARCH_CHUNK) + 1
+            print(f"[AzetaBatch] product_ids resueltos: {len(pid_cache):,}/"
+                  f"{len(set(template_ids)):,} en {round(time.monotonic()-t0,2)}s")
+
+            # ── 3. Pre-resolver quants existentes en AZE01 ────────────
+            job["stage"] = "resolving_quants"
+            product_ids = list(pid_cache.values())
+            quant_cache = await _resolve_quants_batch(
+                odoo, product_ids, AZE01_LOCATION_ID
+            )
+            job["calls_made"] += (len(set(product_ids)) // SEARCH_CHUNK) + 1
+            job["elapsed_resolve_s"] = round(time.monotonic() - t0, 2)
+            print(f"[AzetaBatch] quants existentes: {len(quant_cache):,} "
+                  f"en {job['elapsed_resolve_s']}s")
+
+            # ── 4. Particionar: create vs update-by-qty ──────────────
+            job["stage"] = "partitioning"
+            to_create: list[dict] = []
+            to_update_by_qty: dict[int, list[int]] = {}
+
+            for t in targets:
+                pid = pid_cache.get(t["odoo_id"])
+                if not pid:
+                    job["stock_no_product"] += 1
+                    job["processed"] += 1
+                    continue
+                qty = t["qty"]
+                if pid in quant_cache:
+                    quant_id = quant_cache[pid]
+                    to_update_by_qty.setdefault(qty, []).append(quant_id)
+                else:
+                    to_create.append({
+                        "product_id": pid,
+                        "location_id": AZE01_LOCATION_ID,
+                        "inventory_quantity": qty,
+                    })
+                job["processed"] += 1
+
+            job["unique_qty_values"] = len(to_update_by_qty)
+            print(f"[AzetaBatch] particion: {len(to_create):,} crear, "
+                  f"{sum(len(v) for v in to_update_by_qty.values()):,} update "
+                  f"en {len(to_update_by_qty)} grupos de qty")
+
+            # ── 5. CREATE en lotes ────────────────────────────────────
+            t0 = time.monotonic()
+            job["stage"] = "creating_quants"
+            new_quant_ids: list[int] = []
+            for chunk in _chunks(to_create, CREATE_CHUNK):
                 if job["status"] != "running":
                     break
-                wave = targets[wave_start:wave_start + WAVE]
-                await asyncio.gather(*[
-                    _process_stock_target(odoo, t, pid_cache, job, sem)
-                    for t in wave
-                ])
-                if job["processed"] % 1000 < WAVE:
-                    print(f"[AzetaStockPush] {job['processed']:,}/"
-                          f"{job['total_to_process']:,} "
-                          f"ok:{job['stock_written']} err:{job['stock_errors']}")
+                try:
+                    res = await odoo.execute_kw(
+                        "stock.quant", "create", [chunk]
+                    )
+                    job["calls_made"] += 1
+                    if isinstance(res, list):
+                        new_quant_ids.extend(res)
+                    elif isinstance(res, int):
+                        new_quant_ids.append(res)
+                    job["stock_created"] += len(chunk)
+                except Exception as e:
+                    job["stock_errors"] += len(chunk)
+                    err = f"create chunk: {type(e).__name__}: {str(e)[:150]}"
+                    job["errors"].append(err)
+                    print(f"[AzetaBatch] {err}")
+
+            # ── 6. UPDATE agrupados por qty (1 llamada por valor) ─────
+            job["stage"] = "updating_quants"
+            for qty, quant_ids in to_update_by_qty.items():
+                if job["status"] != "running":
+                    break
+                # Sub-chunkar por seguridad (puede haber miles con qty=0)
+                for chunk in _chunks(quant_ids, WRITE_CHUNK):
+                    try:
+                        await odoo.write("stock.quant", chunk,
+                                         {"inventory_quantity": qty})
+                        job["calls_made"] += 1
+                        job["stock_updated"] += len(chunk)
+                    except Exception as e:
+                        job["stock_errors"] += len(chunk)
+                        err = f"update qty={qty}: {type(e).__name__}: {str(e)[:150]}"
+                        job["errors"].append(err)
+                        print(f"[AzetaBatch] {err}")
+            job["elapsed_write_s"] = round(time.monotonic() - t0, 2)
+
+            # ── 7. APPLY en lotes ─────────────────────────────────────
+            t0 = time.monotonic()
+            job["stage"] = "applying_inventory"
+            all_quant_ids = new_quant_ids + [
+                qid for qids in to_update_by_qty.values() for qid in qids
+            ]
+            print(f"[AzetaBatch] aplicando inventory a {len(all_quant_ids):,} quants")
+
+            for chunk in _chunks(all_quant_ids, WRITE_CHUNK):
+                if job["status"] != "running":
+                    break
+                try:
+                    await odoo.execute_kw(
+                        "stock.quant", "action_apply_inventory", [chunk]
+                    )
+                    job["calls_made"] += 1
+                except Exception as apply_err:
+                    # Workaround Fault: verificar releyendo
+                    try:
+                        verify = await odoo.read(
+                            "stock.quant", chunk, ["quantity", "inventory_quantity"]
+                        )
+                        # Si todos los quants tienen quantity == inventory_quantity, OK
+                        ok = all(
+                            abs(float(v.get("quantity") or 0)
+                                - float(v.get("inventory_quantity") or 0)) < 0.01
+                            for v in verify
+                        )
+                        if not ok:
+                            job["stock_errors"] += 1
+                            err = f"apply chunk: {type(apply_err).__name__}: {str(apply_err)[:150]}"
+                            job["errors"].append(err)
+                            print(f"[AzetaBatch] {err}")
+                    except Exception as verify_err:
+                        job["stock_errors"] += 1
+                        err = f"verify chunk: {type(verify_err).__name__}: {str(verify_err)[:150]}"
+                        job["errors"].append(err)
+                        print(f"[AzetaBatch] {err}")
+
+                job["stock_applied"] += len(chunk)
+                job["stock_written"] = job["stock_applied"]  # alias UI
+                print(f"[AzetaBatch] applied {job['stock_applied']:,}/{len(all_quant_ids):,}")
+
+            job["elapsed_apply_s"] = round(time.monotonic() - t0, 2)
 
         if job["status"] == "running":
             job["status"] = "completed"
