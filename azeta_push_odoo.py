@@ -30,9 +30,99 @@ from odoo_client import OdooClient, OdooError
 AZE01_LOCATION_ID = int(os.environ.get("AZETA_LOCATION_ID", "14"))
 STOCK_CAP = 50
 AZETA_PROVEEDOR_EMAIL = "info@azetadistribuciones.es"
+ENTIDAD_STOCK = "azeta_stock_to_odoo"  # key en sync_state para marker
 
 # Tope de libros por corrida (None = todos). Usar para tests con 1 libro.
 DEFAULT_BATCH_SIZE = 200
+
+
+def _get_azeta_marker():
+    """Lee el marker (stock_actualizado_en) del último ciclo. Naive."""
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        db.execute_query(cur,
+            "SELECT ultimo_timestamp FROM sync_state WHERE entidad = ?",
+            (ENTIDAD_STOCK,))
+        r = cur.fetchone()
+        if not r or r[0] is None:
+            return None
+        ts = r[0]
+        if hasattr(ts, "tzinfo") and ts.tzinfo is not None:
+            from datetime import timezone
+            ts = ts.astimezone(timezone.utc).replace(tzinfo=None)
+        return ts
+    finally:
+        conn.close()
+
+
+def _ensure_azeta_marker_row():
+    """Asegura que la fila exista en sync_state. Sin ella, no podemos marker."""
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        db.execute_query(cur,
+            "SELECT 1 FROM sync_state WHERE entidad = ?", (ENTIDAD_STOCK,))
+        if cur.fetchone():
+            return
+        if db.IS_POSTGRES:
+            db.execute_query(cur, """
+                INSERT INTO sync_state
+                    (entidad, ultimo_timestamp, ultima_ejecucion,
+                     ultima_ejecucion_ok, items_procesados, lock_activo)
+                VALUES (?, '1970-01-01 00:00:00+00', NULL, NULL, 0, false)
+                ON CONFLICT (entidad) DO NOTHING
+            """, (ENTIDAD_STOCK,))
+        else:
+            db.execute_query(cur, """
+                INSERT OR IGNORE INTO sync_state
+                    (entidad, ultimo_timestamp, items_procesados, lock_activo)
+                VALUES (?, '1970-01-01 00:00:00', 0, 0)
+            """, (ENTIDAD_STOCK,))
+        conn.commit()
+    except Exception as e:
+        print(f"[AzetaPush] ensure_marker_row FAIL: {e}")
+        try: conn.rollback()
+        except Exception: pass
+    finally:
+        conn.close()
+
+
+def _advance_azeta_marker(new_ts, items_count: int):
+    """Avanza marker tras corrida exitosa."""
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        db.execute_query(cur, """
+            UPDATE sync_state
+            SET ultimo_timestamp = ?,
+                ultima_ejecucion = NOW(),
+                ultima_ejecucion_ok = true,
+                items_procesados = ?
+            WHERE entidad = ?
+        """, (new_ts, items_count, ENTIDAD_STOCK))
+        conn.commit()
+    except Exception as e:
+        print(f"[AzetaPush] advance_marker FAIL: {e}")
+        try: conn.rollback()
+        except Exception: pass
+    finally:
+        conn.close()
+
+
+def _set_azeta_marker_to_now():
+    """Setea marker = NOW(). Usar tras backlog inicial para evitar reproceso."""
+    _ensure_azeta_marker_row()
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        db.execute_query(cur, """
+            UPDATE sync_state SET ultimo_timestamp = NOW()
+            WHERE entidad = ?
+        """, (ENTIDAD_STOCK,))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 # ── Estado del job ────────────────────────────────────────────────────
@@ -458,17 +548,21 @@ def stop_stock_push():
 
 
 def _read_stock_targets(test_isbn: str | None = None,
-                       max_books: int | None = None) -> list[dict]:
+                       max_books: int | None = None,
+                       only_since=None) -> list[dict]:
     """
-    Lee odoo_id + barcode + qty (cap 50) cruzando mirror con
-    libros_proveedor AZETA. Solo libros con odoo_id no nulo.
+    Lee odoo_id + barcode + qty + stock_actualizado_en cruzando mirror con
+    libros_proveedor AZETA.
+    only_since: si se pasa, filtra por stock_actualizado_en > only_since.
     """
     conn = db.get_connection()
     cur = conn.cursor()
     try:
         if test_isbn:
             sql = """
-                SELECT m.odoo_id, m.barcode, COALESCE(lp.stock_disponible, 0)
+                SELECT m.odoo_id, m.barcode,
+                       COALESCE(lp.stock_disponible, 0),
+                       lp.stock_actualizado_en
                 FROM odoo_books_mirror m
                 JOIN libros_proveedor lp ON lp.isbn = m.barcode
                 WHERE lp.proveedor_email = ?
@@ -477,9 +571,26 @@ def _read_stock_targets(test_isbn: str | None = None,
                 LIMIT 1
             """
             db.execute_query(cur, sql, (AZETA_PROVEEDOR_EMAIL, test_isbn))
+        elif only_since:
+            sql = """
+                SELECT m.odoo_id, m.barcode,
+                       COALESCE(lp.stock_disponible, 0),
+                       lp.stock_actualizado_en
+                FROM odoo_books_mirror m
+                JOIN libros_proveedor lp ON lp.isbn = m.barcode
+                WHERE lp.proveedor_email = ?
+                  AND m.odoo_id IS NOT NULL
+                  AND lp.stock_actualizado_en > ?
+                ORDER BY lp.stock_actualizado_en
+            """
+            if max_books:
+                sql += f"\n                LIMIT {int(max_books)}"
+            db.execute_query(cur, sql, (AZETA_PROVEEDOR_EMAIL, only_since))
         else:
             sql = """
-                SELECT m.odoo_id, m.barcode, COALESCE(lp.stock_disponible, 0)
+                SELECT m.odoo_id, m.barcode,
+                       COALESCE(lp.stock_disponible, 0),
+                       lp.stock_actualizado_en
                 FROM odoo_books_mirror m
                 JOIN libros_proveedor lp ON lp.isbn = m.barcode
                 WHERE lp.proveedor_email = ?
@@ -498,7 +609,12 @@ def _read_stock_targets(test_isbn: str | None = None,
         qty = int(r[2] or 0)
         if qty > STOCK_CAP:
             qty = STOCK_CAP
-        out.append({"odoo_id": r[0], "barcode": r[1], "qty": qty})
+        out.append({
+            "odoo_id": r[0],
+            "barcode": r[1],
+            "qty": qty,
+            "stock_actualizado_en": r[3],
+        })
     return out
 
 
@@ -565,7 +681,8 @@ async def _resolve_quants_batch(odoo: OdooClient,
 
 async def run_azeta_stock_push_only(test_isbn: str | None = None,
                                      max_books: int | None = None,
-                                     concurrency: int | None = None) -> dict:
+                                     concurrency: int | None = None,
+                                     use_marker: bool = False) -> dict:
     """
     Push SOLO de stock.quant en AZE01 (location 14) — VERSION BATCH.
 
@@ -576,14 +693,22 @@ async def run_azeta_stock_push_only(test_isbn: str | None = None,
     test_isbn: procesa solo 1 ISBN (validacion)
     max_books: tope total
     concurrency: ignorado en modo batch (lo dejamos para retrocompatibilidad)
+    use_marker: si True, solo procesa libros cuyo stock_actualizado_en >
+        marker (sync_state.entidad='azeta_stock_to_odoo'). Después avanza
+        marker. Use marker=True solo desde el cron (no manual full push).
     """
     global stock_push_job
+    marker = None
+    if use_marker and not test_isbn:
+        _ensure_azeta_marker_row()
+        marker = _get_azeta_marker()
     stock_push_job = {
         "status": "running",
         "started_at": datetime.now().isoformat(),
         "stage": "starting",
         "test_isbn": test_isbn,
-        "mode": "batch",
+        "mode": "batch-incremental" if use_marker else "batch",
+        "marker": str(marker) if marker else None,
         "total_to_process": 0,
         "processed": 0,
         "stock_written": 0,
@@ -603,14 +728,25 @@ async def run_azeta_stock_push_only(test_isbn: str | None = None,
     }
     job = stock_push_job
     t_start = time.monotonic()
+    max_ts_seen = marker  # para avanzar marker tras éxito
 
     try:
         # ── 1. Cargar targets ─────────────────────────────────────────
         job["stage"] = "loading_targets"
-        targets = _read_stock_targets(test_isbn=test_isbn, max_books=max_books)
+        targets = _read_stock_targets(
+            test_isbn=test_isbn, max_books=max_books,
+            only_since=marker if use_marker else None,
+        )
         job["total_to_process"] = len(targets)
+        # Calcular max timestamp para avanzar marker después
+        if targets:
+            for t in targets:
+                ts = t.get("stock_actualizado_en")
+                if ts and (max_ts_seen is None or ts > max_ts_seen):
+                    max_ts_seen = ts
         job["elapsed_load_s"] = round(time.monotonic() - t_start, 2)
-        print(f"[AzetaBatch] {len(targets):,} libros AZETA a actualizar")
+        print(f"[AzetaBatch] {len(targets):,} libros AZETA a actualizar "
+              f"(marker={marker})")
 
         if not targets:
             job["status"] = "completed"
@@ -755,6 +891,12 @@ async def run_azeta_stock_push_only(test_isbn: str | None = None,
 
         if job["status"] == "running":
             job["status"] = "completed"
+            # Avanzar marker si usó marker (modo cron) y no hubo errores graves
+            if use_marker and not test_isbn and max_ts_seen and \
+                    job["stock_errors"] == 0:
+                _advance_azeta_marker(max_ts_seen, job["processed"])
+                job["marker_advanced_to"] = str(max_ts_seen)
+                print(f"[AzetaBatch] Marker avanzado a {max_ts_seen}")
         job["stage"] = "done"
         job["elapsed_s"] = round(time.monotonic() - t_start, 2)
         print(f"[AzetaStockPush] DONE proc={job['processed']:,} "
@@ -823,7 +965,9 @@ async def run_full_stock_cycle() -> dict:
         return summary
 
     try:
-        push_res = await run_azeta_stock_push_only()
+        # Cron usa marker incremental: solo procesa libros cuyo stock cambió
+        # desde el último ciclo (típicamente <2k libros), evita reprocesos
+        push_res = await run_azeta_stock_push_only(use_marker=True)
         summary["push"] = {
             "status": push_res.get("status"),
             "processed": push_res.get("processed", 0),

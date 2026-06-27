@@ -1144,6 +1144,54 @@ async def azeta_stock_cron_status():
     return JSONResponse(content=azeta_push_odoo.get_cron_status())
 
 
+@app.post("/api/v1/azeta/stock-marker-to-now", tags=["AZETA"])
+async def azeta_stock_marker_to_now():
+    """
+    Setea el marker stock_actualizado_en a NOW(). Hacer DESPUES del push
+    inicial completo para que el cron solo procese cambios futuros.
+    """
+    import azeta_push_odoo
+    azeta_push_odoo._set_azeta_marker_to_now()
+    marker = azeta_push_odoo._get_azeta_marker()
+    return JSONResponse(content={"status": "ok", "marker": str(marker)})
+
+
+@app.get("/api/v1/azeta/stock-marker", tags=["AZETA"])
+async def azeta_stock_marker():
+    """Devuelve el marker actual + cuántos libros pendientes desde ese marker."""
+    import azeta_push_odoo
+    import db as dbmod
+    azeta_push_odoo._ensure_azeta_marker_row()
+    marker = azeta_push_odoo._get_azeta_marker()
+
+    conn = dbmod.get_connection()
+    cur = conn.cursor()
+    try:
+        if marker:
+            dbmod.execute_query(cur, """
+                SELECT COUNT(*) FROM libros_proveedor lp
+                JOIN odoo_books_mirror m ON m.barcode = lp.isbn
+                WHERE lp.proveedor_email = ?
+                  AND m.odoo_id IS NOT NULL
+                  AND lp.stock_actualizado_en > ?
+            """, (azeta_push_odoo.AZETA_PROVEEDOR_EMAIL, marker))
+        else:
+            dbmod.execute_query(cur, """
+                SELECT COUNT(*) FROM libros_proveedor lp
+                JOIN odoo_books_mirror m ON m.barcode = lp.isbn
+                WHERE lp.proveedor_email = ?
+                  AND m.odoo_id IS NOT NULL
+            """, (azeta_push_odoo.AZETA_PROVEEDOR_EMAIL,))
+        pending = int(cur.fetchone()[0])
+    finally:
+        conn.close()
+
+    return JSONResponse(content={
+        "marker": str(marker) if marker else None,
+        "pendientes_desde_marker": pending,
+    })
+
+
 # ─── SYNC STOCK SINLI → Odoo (proveedores no-AZETA) ──────────────────
 
 @app.post("/api/v1/sync-stock/run-once", tags=["SINLI Sync"])
