@@ -1156,6 +1156,74 @@ async def azeta_stock_marker_to_now():
     return JSONResponse(content={"status": "ok", "marker": str(marker)})
 
 
+# ─── Odoo Tags: clasificación Completo/Web/Foto/Stock/Bloqueado ──────
+
+@app.post("/api/v1/odoo/tags/classify", tags=["Odoo Tags"])
+async def odoo_tags_classify(
+    dry_run: bool = Query(False, description="Si True, no escribe en Odoo"),
+):
+    """
+    Clasifica los libros del mirror y asigna tags en Odoo:
+    Completo / Web / Foto / Stock. Respeta Bloqueado si esta puesto.
+    """
+    import threading
+    import sys
+    import odoo_tags
+
+    if odoo_tags.get_status().get("status") == "running":
+        return JSONResponse(status_code=409, content={
+            "status": "error", "message": "Tag job ya esta corriendo."
+        })
+
+    def _run_in_thread():
+        if sys.platform == 'win32':
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
+        try:
+            new_loop.run_until_complete(
+                odoo_tags.run_tag_classification(dry_run=dry_run)
+            )
+        finally:
+            new_loop.close()
+
+    t = threading.Thread(target=_run_in_thread, daemon=True)
+    t.start()
+    return JSONResponse(content={"status": "started", "dry_run": dry_run})
+
+
+@app.post("/api/v1/odoo/tags/classify-stop", tags=["Odoo Tags"])
+async def odoo_tags_classify_stop():
+    import odoo_tags
+    if odoo_tags.stop():
+        return JSONResponse(content={"status": "stopping"})
+    return JSONResponse(status_code=400, content={
+        "status": "error", "message": "No hay job corriendo."
+    })
+
+
+@app.get("/api/v1/odoo/tags/classify-status", tags=["Odoo Tags"])
+async def odoo_tags_classify_status():
+    import odoo_tags
+    return JSONResponse(content=odoo_tags.get_status())
+
+
+@app.get("/api/v1/odoo/tags/list", tags=["Odoo Tags"])
+async def odoo_tags_list():
+    """Lista todos los tags + conteo de libros por tag."""
+    from odoo_client import OdooClient
+    async with OdooClient() as odoo:
+        tags = await odoo.search_read("product.tag", [],
+            ["id", "name", "color"], order="id")
+        out = []
+        for t in tags:
+            n = await odoo.search_count("product.template",
+                [["product_tag_ids", "in", [t["id"]]]])
+            out.append({"id": t["id"], "name": t["name"],
+                        "color": t.get("color"), "books_count": n})
+    return JSONResponse(content={"tags": out})
+
+
 @app.get("/api/v1/azeta/stock-marker", tags=["AZETA"])
 async def azeta_stock_marker():
     """Devuelve el marker actual + cuántos libros pendientes desde ese marker."""

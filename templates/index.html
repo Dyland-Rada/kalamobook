@@ -1669,6 +1669,90 @@
             </div>
 
             <!-- ═══ SYNC STOCK SINLI → ODOO (delegado por Server A) ═══ -->
+            <!-- ═══ ODOO TAGS: Completo/Web/Foto/Stock/Bloqueado ═══ -->
+            <div class="card" style="border:2px solid rgba(155,89,182,0.55); background:rgba(155,89,182,0.04);">
+                <div class="card-title">
+                    🏷 Tags Odoo: clasificar libros (Completo / Web / Foto / Stock / Bloqueado)
+                    <span class="status-badge" id="tags-status-badge" style="font-size:0.7rem;">IDLE</span>
+                </div>
+                <p style="color:#888; font-size:0.88rem;">
+                    Lee el mirror y asigna tags en Odoo según qué datos tenga cada libro.
+                    <strong>Web</strong> recibe Completo+Web · <strong>Marketplaces</strong> reciben Completo+Web+Foto+Stock ·
+                    <strong>Bloqueado</strong> es manual (se respeta).
+                </p>
+                <p style="color:#888; font-size:0.82rem;">
+                    Reglas (V2):
+                    <code>Completo</code> = imagen+desc+peso+alto+ancho ·
+                    <code>Web</code> = imagen+desc (sin dim) ·
+                    <code>Foto</code> = SIN imagen pero CON desc ·
+                    <code>Stock</code> = SIN desc (con o sin imagen)
+                </p>
+                <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:12px;">
+                    <button class="btn btn-primary" onclick="tagsClassify(true)" style="background:#7f8c8d;">
+                        🔍 Dry run (sin escribir)
+                    </button>
+                    <button class="btn btn-success" onclick="tagsClassify(false)">▶ Clasificar y aplicar en Odoo</button>
+                    <button class="btn btn-danger" id="btn-tags-stop" onclick="tagsStop()" disabled>⏹ Detener</button>
+                    <button class="btn btn-primary" onclick="tagsListNow()" style="background:#3498db;">📋 Listar tags actuales</button>
+                    <span id="tags-stage" style="color:#888; font-size:0.85rem;"></span>
+                </div>
+                <div style="margin-top:14px; display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px;">
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#9b59b6" id="tags-stat-total">0</div>
+                        <div class="stat-label">Total mirror</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#27ae60" id="tags-stat-completo">0</div>
+                        <div class="stat-label">Completo</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#3498db" id="tags-stat-web">0</div>
+                        <div class="stat-label">Web</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#e67e22" id="tags-stat-foto">0</div>
+                        <div class="stat-label">Foto</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#f39c12" id="tags-stat-stock">0</div>
+                        <div class="stat-label">Stock</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#7f8c8d" id="tags-stat-bloq">0</div>
+                        <div class="stat-label">Bloqueado (skip)</div>
+                    </div>
+                </div>
+                <div style="margin-top:14px; display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px;">
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#16a085" id="tags-stat-written">0</div>
+                        <div class="stat-label">Escritos en Odoo</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#e74c3c" id="tags-stat-errors">0</div>
+                        <div class="stat-label">Errores</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#bbb; font-size:0.85rem;" id="tags-stat-elapsed">—</div>
+                        <div class="stat-label">Tiempo</div>
+                    </div>
+                </div>
+                <div id="tags-list-block" style="display:none; margin-top:14px;">
+                    <div class="section-label" style="color:#9b59b6;">Tags en Odoo (conteo libros)</div>
+                    <table style="width:100%; font-size:0.85rem; border-collapse:collapse;" id="tags-list-table">
+                        <thead><tr style="background:#1c1f2e;">
+                            <th style="text-align:left; padding:4px 8px; color:#bbb;">ID</th>
+                            <th style="text-align:left; padding:4px 8px; color:#bbb;">Nombre</th>
+                            <th style="text-align:right; padding:4px 8px; color:#bbb;">Libros</th>
+                        </tr></thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+                <div id="tags-errors" style="display:none; margin-top:10px;">
+                    <div class="section-label" style="color:#e94560;">Errores</div>
+                    <ul id="tags-errors-list" style="font-size:0.8rem; color:#e94560; padding-left:20px;"></ul>
+                </div>
+            </div>
+
             <div class="card" style="border:2px solid rgba(46,204,113,0.55); background:rgba(46,204,113,0.04);">
                 <div class="card-title">
                     📦 Sync stock SINLI → Odoo (ICARO/DISTRIFORMA/PUNXES/AKAL/ALFA OMEGA)
@@ -3516,6 +3600,100 @@
         }
 
         // ═══ STOCK DEBUG: buscador de ISBN ═══
+        // ═══ ODOO TAGS (Completo/Web/Foto/Stock/Bloqueado) ═══
+        let tagsPollTimer = null;
+
+        async function tagsClassify(dryRun) {
+            const msg = dryRun
+                ? 'Dry run de clasificación de tags?\n\nNo escribe en Odoo, solo calcula la partición.'
+                : 'APLICAR tags en Odoo?\n\nLee mirror, clasifica cada libro y escribe product_tag_ids ' +
+                  'en TODOS los libros (excepto los marcados como Bloqueado).\n\nIdempotente.';
+            if (!confirm(msg)) return;
+            try {
+                const r = await fetch('/api/v1/odoo/tags/classify?dry_run=' + (dryRun ? 'true' : 'false'),
+                    { method: 'POST' });
+                const d = await r.json();
+                if (d.status !== 'started') {
+                    alert('❌ ' + (d.message || 'No se pudo iniciar'));
+                    return;
+                }
+                document.getElementById('btn-tags-stop').disabled = false;
+                tagsStartPolling();
+                tagsPoll();
+            } catch (e) { alert('Error: ' + e.message); }
+        }
+
+        async function tagsStop() {
+            try { await fetch('/api/v1/odoo/tags/classify-stop', { method: 'POST' }); }
+            catch (e) {}
+        }
+
+        function tagsStartPolling() {
+            if (tagsPollTimer) return;
+            tagsPollTimer = setInterval(tagsPoll, 3000);
+        }
+        function tagsStopPolling() {
+            if (tagsPollTimer) { clearInterval(tagsPollTimer); tagsPollTimer = null; }
+        }
+
+        async function tagsPoll() {
+            try {
+                const r = await fetch('/api/v1/odoo/tags/classify-status');
+                const s = await r.json();
+                const badge = document.getElementById('tags-status-badge');
+                badge.textContent = (s.status || 'idle').toUpperCase();
+                badge.className = 'status-badge ' + (s.status || 'idle');
+
+                document.getElementById('tags-stage').textContent =
+                    s.stage ? `Etapa: ${s.stage}${s.dry_run ? ' · DRY RUN' : ''}` : '';
+                document.getElementById('tags-stat-total').textContent = (s.total_mirror || 0).toLocaleString();
+                const g = s.groups_after_skip || {};
+                document.getElementById('tags-stat-completo').textContent = (g.Completo || 0).toLocaleString();
+                document.getElementById('tags-stat-web').textContent = (g.Web || 0).toLocaleString();
+                document.getElementById('tags-stat-foto').textContent = (g.Foto || 0).toLocaleString();
+                document.getElementById('tags-stat-stock').textContent = (g.Stock || 0).toLocaleString();
+                document.getElementById('tags-stat-bloq').textContent = (s.bloqueados_skipped || 0).toLocaleString();
+                document.getElementById('tags-stat-written').textContent = (s.written || 0).toLocaleString();
+                document.getElementById('tags-stat-errors').textContent = (s.errors || []).length;
+                document.getElementById('tags-stat-elapsed').textContent = s.elapsed_s ? s.elapsed_s + 's' : '—';
+
+                if (s.errors && s.errors.length) {
+                    document.getElementById('tags-errors').style.display = 'block';
+                    const ul = document.getElementById('tags-errors-list');
+                    ul.innerHTML = '';
+                    s.errors.forEach(e => { const li = document.createElement('li'); li.textContent = e; ul.appendChild(li); });
+                } else {
+                    document.getElementById('tags-errors').style.display = 'none';
+                }
+
+                if (s.status === 'running') {
+                    document.getElementById('btn-tags-stop').disabled = false;
+                } else {
+                    document.getElementById('btn-tags-stop').disabled = true;
+                    if (['completed', 'error', 'stopped'].includes(s.status)) {
+                        tagsStopPolling();
+                    }
+                }
+            } catch (e) { console.error('tags poll:', e); }
+        }
+
+        async function tagsListNow() {
+            try {
+                const r = await fetch('/api/v1/odoo/tags/list');
+                const d = await r.json();
+                const tbody = document.querySelector('#tags-list-table tbody');
+                tbody.innerHTML = '';
+                (d.tags || []).forEach(t => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e;">${t.id}</td>` +
+                                   `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e;">${escapeHtml(t.name)}</td>` +
+                                   `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e; text-align:right; color:#16a085;">${(t.books_count || 0).toLocaleString()}</td>`;
+                    tbody.appendChild(tr);
+                });
+                document.getElementById('tags-list-block').style.display = 'block';
+            } catch (e) { alert('Error: ' + e.message); }
+        }
+
         async function stockDebugSearch() {
             const isbn = (document.getElementById('stock-debug-isbn').value || '').trim();
             if (!isbn) { alert('Pega un ISBN'); return; }
