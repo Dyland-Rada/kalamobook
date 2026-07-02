@@ -1753,46 +1753,39 @@ def export_csv_streaming(only_with_categories: bool = False):
     # m.gbooks_pages es INTEGER. Sin CAST a TEXT el query lanza
     # "UNION types numeric and text cannot be matched" antes del primer
     # yield -> CSV de 0 bytes y sin error visible.
+    # NOTA: quitamos el JOIN con `books` porque pg_statistic de esa tabla
+    # esta corrupta (DataCorrupted: missing chunk in pg_toast_2619) y no
+    # tenemos permisos superuser para arreglarlo. La data de books ya esta
+    # espejada en odoo_books_mirror.cdl_* asi que el fallback es redundante.
     try:
         db.execute_query(cur, f"""
             SELECT
                 m.odoo_id,
                 m.barcode,
-                COALESCE(NULLIF(m.name, ''), b.title, d.title) AS titulo,
-                COALESCE(NULLIF(m.cdl_author, ''), NULLIF(b.author, ''),
-                         NULLIF(d.author, '')) AS autor,
-                COALESCE(NULLIF(m.cdl_editorial, ''), NULLIF(b.editorial, ''),
+                COALESCE(NULLIF(m.name, ''), d.title) AS titulo,
+                COALESCE(NULLIF(m.cdl_author, ''), NULLIF(d.author, '')) AS autor,
+                COALESCE(NULLIF(m.cdl_editorial, ''),
                          NULLIF(d.editorial, ''), NULLIF(m.gbooks_publisher, '')) AS editorial,
                 COALESCE(NULLIF(m.cdl_price, ''), CAST(m.list_price AS TEXT),
-                         NULLIF(b.price, ''), CAST(d.price AS TEXT)) AS precio,
-                COALESCE(NULLIF(m.cdl_language, ''), NULLIF(b.language, ''),
+                         CAST(d.price AS TEXT)) AS precio,
+                COALESCE(NULLIF(m.cdl_language, ''),
                          NULLIF(d.language, ''), NULLIF(m.gbooks_language, '')) AS idioma,
                 COALESCE(m.inferred_categories, '') AS categorias,
                 COALESCE(m.inferred_source, '') AS fuente_categoria,
-                COALESCE(NULLIF(m.description, ''), NULLIF(b.description, ''),
-                         NULLIF(d.description, '')) AS descripcion,
-                COALESCE(NULLIF(m.cdl_pages, ''), NULLIF(b.pages, ''),
+                COALESCE(NULLIF(m.description, ''), NULLIF(d.description, '')) AS descripcion,
+                COALESCE(NULLIF(m.cdl_pages, ''),
                          NULLIF(d.pages, ''), CAST(m.gbooks_pages AS TEXT)) AS paginas,
-                COALESCE(NULLIF(m.cdl_binding, ''), NULLIF(b.binding, ''),
-                         NULLIF(d.binding, '')) AS encuadernacion,
-                COALESCE(NULLIF(m.cdl_translator, ''), NULLIF(b.translator, ''),
-                         NULLIF(d.translator, '')) AS traductor,
-                COALESCE(NULLIF(m.cdl_illustrator, ''), NULLIF(b.illustrator, ''),
-                         NULLIF(d.illustrator, '')) AS ilustrador,
-                COALESCE(NULLIF(m.cdl_weight, ''), NULLIF(b.weight, ''),
-                         NULLIF(d.weight, '')) AS peso,
-                COALESCE(NULLIF(m.cdl_height, ''), NULLIF(b.height, ''),
-                         NULLIF(d.height, '')) AS alto,
-                COALESCE(NULLIF(m.cdl_width, ''), NULLIF(b.width, ''),
-                         NULLIF(d.width, '')) AS ancho,
-                COALESCE(NULLIF(m.cdl_image_url, ''), NULLIF(b.image_url, ''),
+                COALESCE(NULLIF(m.cdl_binding, ''), NULLIF(d.binding, '')) AS encuadernacion,
+                COALESCE(NULLIF(m.cdl_translator, ''), NULLIF(d.translator, '')) AS traductor,
+                COALESCE(NULLIF(m.cdl_illustrator, ''), NULLIF(d.illustrator, '')) AS ilustrador,
+                COALESCE(NULLIF(m.cdl_weight, ''), NULLIF(d.weight, '')) AS peso,
+                COALESCE(NULLIF(m.cdl_height, ''), NULLIF(d.height, '')) AS alto,
+                COALESCE(NULLIF(m.cdl_width, ''), NULLIF(d.width, '')) AS ancho,
+                COALESCE(NULLIF(m.cdl_image_url, ''),
                          NULLIF(d.image_url, ''), NULLIF(m.gbooks_thumbnail, '')) AS imagen,
-                COALESCE(NULLIF(m.cdl_release_date, ''), NULLIF(b.release_date, ''),
-                         NULLIF(d.release_date, '')) AS fecha_publicacion,
-                COALESCE(NULLIF(m.cdl_collection, ''), NULLIF(b.collection, ''),
-                         NULLIF(d.collection, '')) AS coleccion,
-                COALESCE(NULLIF(m.cdl_url, ''), NULLIF(b.url, ''),
-                         NULLIF(d.url, '')) AS url_cdl,
+                COALESCE(NULLIF(m.cdl_release_date, ''), NULLIF(d.release_date, '')) AS fecha_publicacion,
+                COALESCE(NULLIF(m.cdl_collection, ''), NULLIF(d.collection, '')) AS coleccion,
+                COALESCE(NULLIF(m.cdl_url, ''), NULLIF(d.url, '')) AS url_cdl,
                 d.fuente AS distribuidor,
                 COALESCE(NULLIF(m.supplier_names, ''), '') AS proveedor_odoo,
                 m.supplier_count AS proveedores_odoo_count,
@@ -1800,7 +1793,6 @@ def export_csv_streaming(only_with_categories: bool = False):
                 m.categ_name AS odoo_categ_name,
                 m.synced_at
             FROM odoo_books_mirror m
-            LEFT JOIN books b ON m.barcode = b.isbn
             LEFT JOIN distributor_books d ON m.barcode = d.isbn
             {where_clause}
             ORDER BY m.odoo_id
