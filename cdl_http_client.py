@@ -205,42 +205,82 @@ async def fetch_book_by_url(
     return parse_book_html(html, isbn=isbn, source_url=url)
 
 
-async def fetch_book_by_isbn(
+# API JSON de busqueda de CDL (motor Empathy). Endpoint dedicado a ISBNs.
+# Descubierto en el bundle JS del sitio: cuando la query es numerica usa
+# /isbnsearch. Mucho mas fiable que parsear el HTML de busqueda (que es
+# una SPA Svelte y carga resultados via JS -> el HTML no los contiene).
+ISBNSEARCH_URL = "https://api.empathy.co/search/v1/query/cdl/isbnsearch"
+ISBNSEARCH_HEADERS = {
+    **DEFAULT_HEADERS,
+    "Origin": "https://www.casadellibro.com.co",
+    "Referer": "https://www.casadellibro.com.co/",
+    "Accept": "application/json",
+}
+
+
+async def isbnsearch(
     session: aiohttp.ClientSession, isbn: str,
-    timeout_s: float = 15.0,
+    timeout_s: float = 15.0, store: str = "CO",
 ) -> dict | None:
-    """Busca el ISBN en CDL search, sigue al primer resultado, retorna detalle."""
+    """
+    Consulta el API isbnsearch de Empathy. Devuelve el primer item del
+    catalog (dict con url, name, authors, editorial, description,
+    encuadernation, ean, price, yearPublication...) o None.
+    """
     isbn_clean = _normalize_isbn(isbn)
     if len(isbn_clean) not in (10, 13):
         return None
-
-    search_url = f"{BASE_URL}/?query={urllib.parse.quote(isbn_clean)}"
-
+    params = {"query": isbn_clean, "lang": "es", "store": store}
     try:
-        async with session.get(search_url, headers=DEFAULT_HEADERS,
+        async with session.get(ISBNSEARCH_URL, params=params,
+                                headers=ISBNSEARCH_HEADERS,
                                 timeout=aiohttp.ClientTimeout(total=timeout_s)) as resp:
             if resp.status in (429, 403):
-                raise CDLBlocked(f"search status={resp.status}")
+                raise CDLBlocked(f"isbnsearch status={resp.status}")
             if resp.status != 200:
                 return None
-            html = await resp.text()
+            data = await resp.json(content_type=None)
     except CDLBlocked:
         raise
     except Exception:
         return None
 
-    # Buscar el primer link al detalle con el ISBN en href
-    # CDL formato: /libro-xxx/<isbn>/<id>  o  /audiolibro-xxx/<isbn>/<id>  o  /ebook-xxx/<isbn>/<id>
-    m = re.search(
-        rf"(/[a-z]+-[a-z0-9\-]+/{re.escape(isbn_clean)}/\d+)",
-        html,
-        re.IGNORECASE,
-    )
-    if not m:
+    content = (data or {}).get("catalog", {}).get("content", [])
+    return content[0] if content else None
+
+
+async def fetch_book_by_isbn(
+    session: aiohttp.ClientSession, isbn: str,
+    timeout_s: float = 15.0,
+) -> dict | None:
+    """
+    Busca el ISBN via API isbnsearch (JSON), sigue a la URL del detalle
+    y retorna el parse completo (imagen, peso, dimensiones, categorias).
+    """
+    isbn_clean = _normalize_isbn(isbn)
+    if len(isbn_clean) not in (10, 13):
         return None
 
-    detail_url = BASE_URL + m.group(1)
-    return await fetch_book_by_url(session, detail_url, isbn=isbn_clean)
+    item = await isbnsearch(session, isbn_clean, timeout_s=timeout_s)
+    if not item or not item.get("url"):
+        return None
+
+    detail_url = item["url"]
+    data = await fetch_book_by_url(session, detail_url, isbn=isbn_clean)
+    if data:
+        return data
+
+    # Fallback: si el detalle no parsea, construir resultado minimo del API
+    return {
+        "title": item.get("name"),
+        "author": (item.get("authors") or [None])[0],
+        "editorial": item.get("editorial"),
+        "description": item.get("description"),
+        "binding": item.get("encuadernation"),
+        "isbn": isbn_clean,
+        "url": detail_url,
+        "release_date": str(item.get("yearPublication") or ""),
+    }
 
 
 async def fetch_book(
