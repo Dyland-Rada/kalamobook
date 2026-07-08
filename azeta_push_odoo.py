@@ -902,11 +902,31 @@ async def run_azeta_stock_push_only(test_isbn: str | None = None,
         print(f"[AzetaStockPush] DONE proc={job['processed']:,} "
               f"ok={job['stock_written']:,} err={job['stock_errors']:,} "
               f"en {job['elapsed_s']}s")
+        try:
+            import audit_log
+            audit_log.log_event(
+                "azeta_stock_push", "push_done",
+                f"Actualizados {job['stock_written']:,} quants en AZE01 "
+                f"({job['processed']:,} procesados, {job['stock_errors']} errores, "
+                f"{job['elapsed_s']}s, modo {job.get('mode')})",
+                detalle={k: job.get(k) for k in ("processed", "stock_written",
+                         "stock_created", "stock_updated", "stock_errors",
+                         "stock_no_product", "mode", "marker", "elapsed_s")},
+                nivel="error" if job["stock_errors"] > 0 else "info",
+            )
+        except Exception:
+            pass
     except Exception as e:
         job["status"] = "error"
         err = f"{type(e).__name__}: {e!r}"
         job["errors"].append(err[:300])
         print(f"[AzetaStockPush] Fatal: {err}")
+        try:
+            import audit_log
+            audit_log.log_event("azeta_stock_push", "push_error",
+                                err[:300], nivel="error")
+        except Exception:
+            pass
 
     return job
 
@@ -997,6 +1017,21 @@ async def _cron_loop():
             if res.get("error"):
                 _cron_state["errors"].append(f"run #{_cron_state['runs_total']}: {res['error']}")
             print(f"[StockCron] Run #{_cron_state['runs_total']} OK en {elapsed}s")
+            try:
+                import audit_log
+                f = res.get("fetcher") or {}
+                p = res.get("push") or {}
+                audit_log.log_event(
+                    "cron", "azeta_stock_cycle",
+                    f"Ciclo #{_cron_state['runs_total']}: recibidos "
+                    f"{f.get('isbns_unique', 0):,} ISBNs, "
+                    f"{f.get('updated_changed', 0)} cambiaron, "
+                    f"push {p.get('stock_written', 0):,} quants en {elapsed}s",
+                    detalle={"fetcher": f, "push": p, "elapsed_s": elapsed},
+                    nivel="error" if res.get("error") else "info",
+                )
+            except Exception:
+                pass
         except Exception as e:
             _cron_state["last_run_status"] = "error"
             err = f"{type(e).__name__}: {e!r}"

@@ -701,6 +701,27 @@ async def run_once(loop_until_empty: bool = False,
         print(f"[SinliSync] DONE status={job['status']} "
               f"proc={job['items_processed']:,} stk={job['stock_written']:,} "
               f"prc={job['price_written']:,} en {job['elapsed_s']}s")
+        try:
+            import audit_log
+            errs = (job.get("err_no_product", 0) + job.get("err_apply", 0)
+                    + job.get("err_price", 0) + job.get("err_other", 0)
+                    + job.get("err_no_warehouse", 0))
+            # Solo registrar si hubo trabajo real (evitar ruido de ciclos vacios)
+            if job["items_processed"] > 0 or errs > 0 or job["status"] == "error":
+                audit_log.log_event(
+                    "sinli_sync", f"sync_{job['status']}",
+                    f"Procesados {job['items_processed']:,} libros SINLI: "
+                    f"{job['stock_written']:,} stock, {job['price_written']:,} "
+                    f"precios, {errs} errores ({job['elapsed_s']}s, modo {job.get('mode')})",
+                    detalle={k: job.get(k) for k in ("items_processed",
+                             "stock_written", "price_written", "err_no_product",
+                             "err_apply", "err_price", "err_other",
+                             "err_no_warehouse", "mode", "solo_proveedor",
+                             "elapsed_s", "batches_done")},
+                    nivel="error" if (errs > 0 or job["status"] == "error") else "info",
+                )
+        except Exception:
+            pass
 
     return job
 

@@ -372,10 +372,29 @@ async def run_azeta_sync(batch_size: int = 500) -> dict:
             job["status"] = "completed"
         print(f"[AZETA] DONE: ins={job['inserted']} chg={job['updated_changed']} "
               f"same={job['updated_unchanged']} en {job['elapsed_total_s']}s")
+        try:
+            import audit_log
+            audit_log.log_event(
+                "azeta_stock_fetch", "csv_sync_done",
+                f"Recibidos {job['isbns_unique']:,} ISBNs ({job['stock_total']:,} unid): "
+                f"{job['inserted']} nuevos, {job['updated_changed']} cambiaron, "
+                f"{job['updated_unchanged']} sin cambio",
+                detalle={k: job[k] for k in ("isbns_unique", "stock_total",
+                         "inserted", "updated_changed", "updated_unchanged",
+                         "elapsed_total_s")},
+            )
+        except Exception:
+            pass
     except Exception as e:
         job["status"] = "error"
         err = f"{type(e).__name__}: {e!r}"
         job["errors"].append(err[:300])
         print(f"[AZETA] Fatal: {err}")
+        try:
+            import audit_log
+            audit_log.log_event("azeta_stock_fetch", "csv_sync_error",
+                                err[:300], nivel="error")
+        except Exception:
+            pass
 
     return job

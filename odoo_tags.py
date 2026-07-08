@@ -208,6 +208,22 @@ async def run_tag_classification(dry_run: bool = False) -> dict:
     job["elapsed_s"] = round(time.monotonic() - t_start, 2)
     print(f"[Tags] DONE written={job['written']:,} skipped={job.get('bloqueados_skipped',0):,} "
           f"en {job['elapsed_s']}s")
+    try:
+        import audit_log
+        g = job.get("groups_after_skip", {})
+        audit_log.log_event(
+            "tags", "classify_dry_run" if dry_run else "classify_applied",
+            f"{'DRY RUN: ' if dry_run else ''}Clasificados {job['total_mirror']:,} libros "
+            f"(Completo {g.get('Completo', 0):,}, Web {g.get('Web', 0):,}, "
+            f"Foto {g.get('Foto', 0):,}, Stock {g.get('Stock', 0):,}); "
+            f"escritos en Odoo: {job['written']:,}",
+            detalle={"groups": g, "written": job["written"],
+                     "bloqueados_skipped": job.get("bloqueados_skipped"),
+                     "dry_run": dry_run, "elapsed_s": job["elapsed_s"]},
+            nivel="error" if job["status"] == "error" else "info",
+        )
+    except Exception:
+        pass
     return job
 
 

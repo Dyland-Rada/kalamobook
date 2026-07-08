@@ -733,6 +733,7 @@
                     id="lib-count-badge"></span></button>
             <button class="tab-btn" onclick="switchTab('odoo')" id="tab-odoo">🔄 Odoo Sync</button>
             <button class="tab-btn" onclick="switchTab('catalog')" id="tab-catalog">📖 Catálogo Odoo</button>
+            <button class="tab-btn" onclick="switchTab('audit')" id="tab-audit">📋 Auditoría</button>
         </div>
 
         <!-- ═══ TAB 1: INDIVIDUAL SEARCH ═══ -->
@@ -2115,6 +2116,108 @@
                 </div>
             </div>
         </div>
+
+        <!-- ═══ TAB 6: AUDITORÍA ═══ -->
+        <div class="tab-content" id="content-audit">
+            <div class="card" style="border:2px solid rgba(52,152,219,0.5);">
+                <div class="card-title">
+                    📋 Auditoría — qué se recibió y qué se actualizó
+                    <label style="float:right; font-size:0.8rem; color:#888; font-weight:normal;">
+                        <input type="checkbox" id="audit-autorefresh" checked> auto-refresh (10s)
+                    </label>
+                </div>
+
+                <!-- Stats de hoy -->
+                <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px; margin-top:10px;">
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#16a085" id="audit-hoy-recibidos">0</div>
+                        <div class="stat-label">Libros recibidos HOY (BD)</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#3498db" id="audit-hoy-eventos">0</div>
+                        <div class="stat-label">Eventos/jobs HOY</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#e74c3c" id="audit-hoy-errores">0</div>
+                        <div class="stat-label">Errores HOY</div>
+                    </div>
+                </div>
+
+                <!-- Salud de crones: ultimo evento por categoria -->
+                <div class="section-label" style="color:#3498db; margin-top:18px;">
+                    💓 Última actividad por proceso (¿está vivo cada cron?)
+                </div>
+                <table style="width:100%; font-size:0.82rem; border-collapse:collapse; margin-top:6px;" id="audit-health-table">
+                    <thead><tr style="background:#1c1f2e;">
+                        <th style="text-align:left; padding:4px 8px; color:#bbb;">Proceso</th>
+                        <th style="text-align:left; padding:4px 8px; color:#bbb;">Último evento</th>
+                        <th style="text-align:left; padding:4px 8px; color:#bbb;">Cuándo</th>
+                        <th style="text-align:left; padding:4px 8px; color:#bbb;">Resumen</th>
+                    </tr></thead>
+                    <tbody><tr><td colspan="4" style="padding:8px; color:#888;">— cargando —</td></tr></tbody>
+                </table>
+
+                <!-- Recibidos por dia/proveedor -->
+                <div class="section-label" style="color:#16a085; margin-top:18px;">
+                    📥 Libros RECIBIDOS por día y proveedor (últimos 7 días)
+                </div>
+                <div style="max-height:260px; overflow-y:auto; border:1px solid #2c2f3e; border-radius:6px; margin-top:6px;">
+                    <table style="width:100%; font-size:0.82rem; border-collapse:collapse;" id="audit-recibidos-table">
+                        <thead style="position:sticky; top:0; background:#1c1f2e;">
+                            <tr>
+                                <th style="text-align:left; padding:4px 8px; color:#bbb;">Día</th>
+                                <th style="text-align:left; padding:4px 8px; color:#bbb;">Proveedor</th>
+                                <th style="text-align:right; padding:4px 8px; color:#bbb;">Libros</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+
+                <!-- Log de eventos -->
+                <div class="section-label" style="color:#3498db; margin-top:18px;">
+                    📜 Log de eventos (qué hizo cada job)
+                </div>
+                <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:6px;">
+                    <select id="audit-filter-cat" onchange="auditLoadEvents()"
+                            style="padding:8px 10px; background:#2c2f3e; color:#eee; border:1px solid #444; border-radius:6px;">
+                        <option value="">— Todas las categorías —</option>
+                        <option value="azeta_stock_fetch">AZETA fetch CSV</option>
+                        <option value="azeta_stock_push">AZETA push stock</option>
+                        <option value="azeta_catalog">AZETA catálogo</option>
+                        <option value="sinli_sync">SINLI sync</option>
+                        <option value="tags">Tags</option>
+                        <option value="cron">Crones</option>
+                        <option value="cdl_scrape">CDL scrape</option>
+                        <option value="odoo_create">Creación en Odoo</option>
+                    </select>
+                    <select id="audit-filter-nivel" onchange="auditLoadEvents()"
+                            style="padding:8px 10px; background:#2c2f3e; color:#eee; border:1px solid #444; border-radius:6px;">
+                        <option value="">— Todos los niveles —</option>
+                        <option value="info">info</option>
+                        <option value="error">error</option>
+                    </select>
+                    <button class="btn btn-primary" onclick="auditLoadAll()" style="background:#3498db;">🔄 Refrescar</button>
+                </div>
+                <div style="max-height:480px; overflow-y:auto; border:1px solid #2c2f3e; border-radius:6px; margin-top:8px;">
+                    <table style="width:100%; font-size:0.8rem; border-collapse:collapse;" id="audit-events-table">
+                        <thead style="position:sticky; top:0; background:#1c1f2e;">
+                            <tr>
+                                <th style="text-align:left; padding:4px 8px; color:#bbb; white-space:nowrap;">Cuándo</th>
+                                <th style="text-align:left; padding:4px 8px; color:#bbb;">Categoría</th>
+                                <th style="text-align:left; padding:4px 8px; color:#bbb;">Evento</th>
+                                <th style="text-align:left; padding:4px 8px; color:#bbb;">Resumen</th>
+                            </tr>
+                        </thead>
+                        <tbody><tr><td colspan="4" style="padding:8px; color:#888;">— sin eventos aún —</td></tr></tbody>
+                    </table>
+                </div>
+                <p style="color:#666; font-size:0.75rem; margin-top:6px;">
+                    Los eventos se registran en la tabla <code>event_log</code> de Postgres — sobreviven reinicios del servidor.
+                    Cada job (fetcher, push, sync, tags, cron) escribe qué recibió, qué actualizó y sus errores.
+                </p>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -2129,6 +2232,8 @@
             if (tab === 'bulk') loadCategories();
             if (tab === 'odoo') { odooPoll(); odooStartPolling(); isbnIndexPoll(); loadMirrorAndDistInitial(); startResumenAutoRefresh(); }
             if (tab === 'catalog') { catalogSearch(1); loadSuppliersDatalist(); }
+            if (tab === 'audit') { auditLoadAll(); auditStartAutoRefresh(); }
+            else { auditStopAutoRefresh(); }
             if (tab !== 'odoo') {
                 odooStopPolling(); mirrorStopPolling(); distStopPolling();
                 if (typeof gbf !== 'undefined') gbf.stopPolling();
@@ -3597,6 +3702,113 @@
                 document.getElementById('btn-sinli-cron-start').disabled = running;
                 document.getElementById('btn-sinli-cron-stop').disabled = !running;
             } catch (e) { console.error('sinli cron poll:', e); }
+        }
+
+        // ═══ AUDITORÍA ═══
+        let auditTimer = null;
+
+        function auditStartAutoRefresh() {
+            if (auditTimer) return;
+            auditTimer = setInterval(() => {
+                const cb = document.getElementById('audit-autorefresh');
+                if (cb && cb.checked) auditLoadAll();
+            }, 10000);
+        }
+        function auditStopAutoRefresh() {
+            if (auditTimer) { clearInterval(auditTimer); auditTimer = null; }
+        }
+
+        async function auditLoadAll() {
+            auditLoadSummary();
+            auditLoadEvents();
+        }
+
+        const AUDIT_CAT_COLORS = {
+            azeta_stock_fetch: '#d35400', azeta_stock_push: '#e67e22',
+            azeta_catalog: '#f39c12', sinli_sync: '#2ecc71',
+            tags: '#9b59b6', cron: '#3498db', cdl_scrape: '#1abc9c',
+            odoo_create: '#e94560',
+        };
+
+        async function auditLoadSummary() {
+            try {
+                const r = await fetch('/api/v1/audit/summary?days=7');
+                const s = await r.json();
+
+                const hoy = s.hoy || {};
+                document.getElementById('audit-hoy-recibidos').textContent = (hoy.recibidos || 0).toLocaleString();
+                document.getElementById('audit-hoy-eventos').textContent = (hoy.eventos || 0).toLocaleString();
+                document.getElementById('audit-hoy-errores').textContent = (hoy.errores || 0).toLocaleString();
+
+                // Salud por proceso
+                const tbodyH = document.querySelector('#audit-health-table tbody');
+                tbodyH.innerHTML = '';
+                const ultimos = s.ultimo_por_categoria || [];
+                if (ultimos.length) {
+                    ultimos.forEach(u => {
+                        const color = AUDIT_CAT_COLORS[u.categoria] || '#bbb';
+                        const ts = (u.ts || '').slice(0, 19).replace('T', ' ');
+                        const age = Date.now() - new Date(u.ts).getTime();
+                        const stale = age > 2 * 3600 * 1000;
+                        const tr = document.createElement('tr');
+                        tr.innerHTML =
+                            `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e;"><span style="color:${color}; font-weight:bold;">${escapeHtml(u.categoria)}</span></td>` +
+                            `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e;">${escapeHtml(u.evento)}</td>` +
+                            `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e; color:${stale ? '#e67e22' : '#27ae60'};">${ts}${stale ? ' ⚠' : ''}</td>` +
+                            `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e; color:#999;">${escapeHtml((u.resumen || '').slice(0, 110))}</td>`;
+                        tbodyH.appendChild(tr);
+                    });
+                } else {
+                    tbodyH.innerHTML = '<tr><td colspan="4" style="padding:8px; color:#888;">— sin eventos registrados aún —</td></tr>';
+                }
+
+                // Recibidos por dia
+                const tbodyR = document.querySelector('#audit-recibidos-table tbody');
+                tbodyR.innerHTML = '';
+                let lastDia = null;
+                (s.recibidos_por_dia || []).forEach(row => {
+                    const tr = document.createElement('tr');
+                    const diaShow = row.dia !== lastDia ? row.dia : '';
+                    lastDia = row.dia;
+                    tr.innerHTML =
+                        `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e; color:#bbb;">${diaShow}</td>` +
+                        `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e;">${escapeHtml(row.proveedor)}</td>` +
+                        `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e; text-align:right; color:#16a085;">${(row.libros || 0).toLocaleString()}</td>`;
+                    tbodyR.appendChild(tr);
+                });
+            } catch (e) { console.error('audit summary:', e); }
+        }
+
+        async function auditLoadEvents() {
+            try {
+                const cat = document.getElementById('audit-filter-cat').value;
+                const nivel = document.getElementById('audit-filter-nivel').value;
+                const params = new URLSearchParams({ limit: '150' });
+                if (cat) params.set('categoria', cat);
+                if (nivel) params.set('nivel', nivel);
+                const r = await fetch('/api/v1/audit/events?' + params.toString());
+                const d = await r.json();
+                const tbody = document.querySelector('#audit-events-table tbody');
+                tbody.innerHTML = '';
+                const events = d.events || [];
+                if (!events.length) {
+                    tbody.innerHTML = '<tr><td colspan="4" style="padding:8px; color:#888;">— sin eventos —</td></tr>';
+                    return;
+                }
+                events.forEach(ev => {
+                    const color = AUDIT_CAT_COLORS[ev.categoria] || '#bbb';
+                    const isErr = ev.nivel === 'error';
+                    const ts = (ev.ts || '').slice(0, 19).replace('T', ' ');
+                    const tr = document.createElement('tr');
+                    if (isErr) tr.style.background = 'rgba(233,69,96,0.08)';
+                    tr.innerHTML =
+                        `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e; color:#888; white-space:nowrap;">${ts}</td>` +
+                        `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e;"><span style="color:${color};">${escapeHtml(ev.categoria)}</span></td>` +
+                        `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e; color:${isErr ? '#e94560' : '#ddd'};">${escapeHtml(ev.evento)}</td>` +
+                        `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e; color:#bbb;">${escapeHtml((ev.resumen || '').slice(0, 160))}</td>`;
+                    tbody.appendChild(tr);
+                });
+            } catch (e) { console.error('audit events:', e); }
         }
 
         // ═══ STOCK DEBUG: buscador de ISBN ═══

@@ -1423,6 +1423,35 @@ async def sync_stock_marker_to_now():
                                   "marker": sync_stock_sinli.get_marker_info()})
 
 
+# ─── Auditoría: event_log + resumen para la tab Auditoría ───────────
+
+@app.get("/api/v1/audit/events", tags=["Auditoria"])
+async def audit_events(
+    categoria: str | None = Query(None),
+    nivel: str | None = Query(None, description="info | error"),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    """Eventos del event_log, mas reciente primero."""
+    import audit_log
+    audit_log.ensure_table()
+    return JSONResponse(content={
+        "events": audit_log.get_events(categoria=categoria, nivel=nivel,
+                                        limit=limit, offset=offset),
+    })
+
+
+@app.get("/api/v1/audit/summary", tags=["Auditoria"])
+async def audit_summary(days: int = Query(7, ge=1, le=30)):
+    """
+    Resumen para auditar: libros recibidos por dia/proveedor (BD),
+    eventos por categoria/dia, stats de hoy, ultimo evento por categoria.
+    """
+    import audit_log
+    audit_log.ensure_table()
+    return JSONResponse(content=audit_log.get_summary(days=days))
+
+
 # ─── Admin: schema info + forzar migraciones sin redeploy ────────────
 
 @app.get("/api/v1/admin/schema-info", tags=["Admin"])
