@@ -1423,6 +1423,65 @@ async def sync_stock_marker_to_now():
                                   "marker": sync_stock_sinli.get_marker_info()})
 
 
+@app.post("/api/v1/sync-stock/cegald-replace", tags=["SINLI Sync"])
+async def sync_stock_cegald_replace(
+    proveedor: str = Query(..., description="proveedor_email (ej. sinli@akal.com)"),
+    dry_run: bool = Query(True, description="True = solo calcular, sin escribir"),
+):
+    """
+    Reemplazo completo CEGALD para UN proveedor (spec Server A):
+    lo presente en el ultimo CEGALD queda a 1 (via sync normal); lo que
+    tiene stock en Odoo pero YA NO viene en el CEGALD se apaga (stock 0),
+    SOLO en el almacen de ese proveedor.
+
+    Salvaguardas: si presentes < 50% del stock actual, o el CEGALD tiene
+    mas de 48h, NO se apaga nada (solo reporta). Empezar SIEMPRE con
+    dry_run=true.
+    """
+    import threading
+    import sys
+    import sync_stock_sinli
+
+    if sync_stock_sinli.get_cegald_status().get("status") == "running":
+        return JSONResponse(status_code=409, content={
+            "status": "error", "message": "CEGALD replacement ya esta corriendo."
+        })
+
+    def _run_in_thread():
+        if sys.platform == 'win32':
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
+        try:
+            new_loop.run_until_complete(
+                sync_stock_sinli.run_cegald_replacement(
+                    proveedor, dry_run=dry_run)
+            )
+        finally:
+            new_loop.close()
+
+    t = threading.Thread(target=_run_in_thread, daemon=True)
+    t.start()
+    return JSONResponse(content={"status": "started",
+                                  "proveedor": proveedor, "dry_run": dry_run})
+
+
+@app.get("/api/v1/sync-stock/cegald-status", tags=["SINLI Sync"])
+async def sync_stock_cegald_status():
+    import sync_stock_sinli
+    return JSONResponse(content=sync_stock_sinli.get_cegald_status())
+
+
+@app.post("/api/v1/sync-stock/cegald-stop", tags=["SINLI Sync"])
+async def sync_stock_cegald_stop():
+    import sync_stock_sinli
+    if sync_stock_sinli.stop_cegald():
+        return JSONResponse(content={"status": "stopping"})
+    return JSONResponse(status_code=400, content={
+        "status": "error", "message": "No hay CEGALD job corriendo."
+    })
+
+
 # ─── Auditoría: event_log + resumen para la tab Auditoría ───────────
 
 @app.get("/api/v1/audit/events", tags=["Auditoria"])

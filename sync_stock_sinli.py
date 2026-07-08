@@ -858,9 +858,304 @@ def get_pending_count() -> int:
         conn.close()
 
 
+# ─────────────────────────────────────────────────────────────────────
+# REEMPLAZO COMPLETO CEGALD (spec Server A 2026-07-08)
+#
+# El CEGALD funciona por AUSENCIA: el proveedor solo lista lo disponible.
+# Lo que no viene → no disponible → stock 0 en SU almacén.
+#
+# Universo a apagar = quants con quantity > 0 en la location del proveedor
+# (leído de Odoo, la fuente de verdad de "qué está disponible ahora").
+# Presentes = ISBNs del proveedor en libros_proveedor cuyo
+# stock_actualizado_en pertenece a la última corrida CEGALD (ventana
+# alrededor del MAX del proveedor).
+#
+# SALVAGUARDA: si presentes < UMBRAL% del stock actual en Odoo, NO se
+# apaga nada (CEGALD probablemente parcial/truncado) — solo se avisa.
+# ─────────────────────────────────────────────────────────────────────
+
+CEGALD_UMBRAL_PCT = float(os.environ.get("CEGALD_UMBRAL_PCT", "50"))
+# Ventana: presentes = stock_actualizado_en >= max_ts - ventana.
+# Un CEGALD se procesa en minutos; 12h cubre corridas largas de n8n sin
+# arrastrar el CEGALD anterior (llegan ~1/día por proveedor).
+CEGALD_VENTANA_HORAS = float(os.environ.get("CEGALD_VENTANA_HORAS", "12"))
+# Frescura: si el ultimo CEGALD es mas viejo que esto, no hay nada nuevo
+# que reemplazar (evita apagar con datos rancios).
+CEGALD_FRESCURA_HORAS = float(os.environ.get("CEGALD_FRESCURA_HORAS", "48"))
+
+cegald_job: dict | None = None
+
+
+def get_cegald_status() -> dict:
+    job = dict(cegald_job) if cegald_job else {"status": "idle"}
+    if "errors" in job:
+        job["errors"] = job["errors"][-15:]
+    if "isbn_a_apagar_sample" in job:
+        job["isbn_a_apagar_sample"] = job["isbn_a_apagar_sample"][:50]
+    return job
+
+
+def stop_cegald():
+    global cegald_job
+    if cegald_job and cegald_job.get("status") == "running":
+        cegald_job["status"] = "stopped"
+        return True
+    return False
+
+
+def _cegald_presentes(proveedor_email: str) -> tuple[set[str], str | None]:
+    """
+    ISBNs de la última corrida CEGALD del proveedor + timestamp del máximo.
+    Presentes = stock_disponible > 0 y stock_actualizado_en dentro de la
+    ventana respecto al MAX del proveedor.
+    """
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        db.execute_query(cur, """
+            SELECT MAX(stock_actualizado_en) FROM libros_proveedor
+            WHERE proveedor_email = ?
+        """, (proveedor_email,))
+        r = cur.fetchone()
+        max_ts = r[0] if r else None
+        if not max_ts:
+            return set(), None
+        db.execute_query(cur, f"""
+            SELECT isbn FROM libros_proveedor
+            WHERE proveedor_email = ?
+              AND stock_disponible > 0
+              AND isbn IS NOT NULL
+              AND stock_actualizado_en >= (
+                  (SELECT MAX(stock_actualizado_en) FROM libros_proveedor
+                   WHERE proveedor_email = ?)
+                  - INTERVAL '{CEGALD_VENTANA_HORAS} hours'
+              )
+        """, (proveedor_email, proveedor_email))
+        return {r[0] for r in cur.fetchall()}, str(max_ts)
+    finally:
+        conn.close()
+
+
+async def _odoo_isbns_con_stock(odoo: OdooClient,
+                                 location_id: int) -> dict[str, list[int]]:
+    """
+    {isbn: [quant_ids]} de todos los quants con quantity > 0 en la location.
+    Resuelve product_id -> product_tmpl_id -> barcode en batch.
+    """
+    quants = await odoo.search_read(
+        "stock.quant",
+        [["location_id", "=", location_id], ["quantity", ">", 0]],
+        ["id", "product_id"], limit=0,
+    )
+    pid_to_quants: dict[int, list[int]] = {}
+    for q in quants:
+        pid = q["product_id"]
+        pid_v = pid[0] if isinstance(pid, list) else pid
+        pid_to_quants.setdefault(pid_v, []).append(q["id"])
+
+    out: dict[str, list[int]] = {}
+    pids = list(pid_to_quants.keys())
+    for i in range(0, len(pids), 1000):
+        chunk = pids[i:i + 1000]
+        prods = await odoo.search_read(
+            "product.product", [["id", "in", chunk]],
+            ["id", "product_tmpl_id"],
+        )
+        tmpl_to_pid = {}
+        for p in prods:
+            tmpl = p["product_tmpl_id"]
+            tmpl_v = tmpl[0] if isinstance(tmpl, list) else tmpl
+            tmpl_to_pid[tmpl_v] = p["id"]
+        if not tmpl_to_pid:
+            continue
+        tmpls = await odoo.search_read(
+            "product.template", [["id", "in", list(tmpl_to_pid.keys())]],
+            ["id", "barcode"],
+        )
+        for t in tmpls:
+            barcode = t.get("barcode")
+            if barcode:
+                pid_v = tmpl_to_pid[t["id"]]
+                out[barcode] = pid_to_quants.get(pid_v, [])
+    return out
+
+
+async def run_cegald_replacement(proveedor_email: str,
+                                  dry_run: bool = True) -> dict:
+    """
+    Reemplazo completo CEGALD para UN proveedor:
+    - presentes en el último CEGALD → (ya están a 1 vía sync normal)
+    - con stock en Odoo pero AUSENTES del CEGALD → stock 0
+
+    dry_run=True: calcula y reporta sin escribir (modo obligatorio de prueba).
+    """
+    global cegald_job
+    cegald_job = {
+        "status": "running",
+        "started_at": datetime.now().isoformat(),
+        "stage": "starting",
+        "proveedor": proveedor_email,
+        "dry_run": dry_run,
+        "cegald_max_ts": None,
+        "presentes": 0,
+        "con_stock_odoo": 0,
+        "a_apagar": 0,
+        "apagados": 0,
+        "salvaguarda_activada": False,
+        "salvaguarda_motivo": None,
+        "isbn_a_apagar_sample": [],
+        "errors": [],
+        "elapsed_s": 0,
+    }
+    job = cegald_job
+    t_start = time.monotonic()
+
+    try:
+        if proveedor_email == AZETA_EMAIL:
+            raise RuntimeError("AZETA esta excluido del reemplazo CEGALD")
+
+        # Resolver location del proveedor
+        job["stage"] = "resolving_location"
+        prov_to_wh = _load_provider_warehouse_map()
+        wh_code = prov_to_wh.get(proveedor_email)
+        if not wh_code:
+            raise RuntimeError(f"Proveedor sin mapping: {proveedor_email}")
+
+        async with OdooClient() as odoo:
+            wh_to_loc = await _load_warehouse_locations(odoo)
+            location_id = wh_to_loc.get(wh_code)
+            if not location_id:
+                raise RuntimeError(f"Warehouse {wh_code} sin location en Odoo")
+            if location_id == 14:
+                raise RuntimeError("Anti-colision: location 14 es de AZETA")
+            job["warehouse"] = wh_code
+            job["location_id"] = location_id
+
+            # 1. Presentes en el ultimo CEGALD
+            job["stage"] = "reading_cegald"
+            presentes, max_ts = _cegald_presentes(proveedor_email)
+            job["cegald_max_ts"] = max_ts
+            job["presentes"] = len(presentes)
+            if not presentes:
+                raise RuntimeError("Sin CEGALD: 0 presentes en libros_proveedor")
+
+            # Frescura: no reemplazar con un CEGALD viejo
+            from datetime import timedelta, timezone as _tz
+            max_dt = datetime.fromisoformat(max_ts)
+            if max_dt.tzinfo is not None:
+                max_dt = max_dt.astimezone(_tz.utc).replace(tzinfo=None)
+            age_h = (datetime.utcnow() - max_dt).total_seconds() / 3600
+            job["cegald_age_hours"] = round(age_h, 1)
+            if age_h > CEGALD_FRESCURA_HORAS:
+                job["salvaguarda_activada"] = True
+                job["salvaguarda_motivo"] = (
+                    f"CEGALD viejo ({age_h:.0f}h > {CEGALD_FRESCURA_HORAS:.0f}h). "
+                    "Sin datos frescos, apagado omitido."
+                )
+
+            # 2. Con stock en Odoo (universo a revisar)
+            job["stage"] = "reading_odoo_stock"
+            isbn_quants = await _odoo_isbns_con_stock(odoo, location_id)
+            job["con_stock_odoo"] = len(isbn_quants)
+
+            # 3. Diferencia
+            a_apagar = set(isbn_quants.keys()) - presentes
+            job["a_apagar"] = len(a_apagar)
+            job["isbn_a_apagar_sample"] = sorted(a_apagar)[:100]
+
+            # 4. SALVAGUARDA de tamaño (spec seccion 5)
+            if not job["salvaguarda_activada"] and job["con_stock_odoo"] > 0:
+                pct = 100 * len(presentes) / job["con_stock_odoo"]
+                job["presentes_vs_stock_pct"] = round(pct, 1)
+                if pct < CEGALD_UMBRAL_PCT:
+                    job["salvaguarda_activada"] = True
+                    job["salvaguarda_motivo"] = (
+                        f"CEGALD sospechosamente pequeño: {len(presentes):,} "
+                        f"presentes vs {job['con_stock_odoo']:,} con stock "
+                        f"({pct:.0f}% < {CEGALD_UMBRAL_PCT:.0f}%). Apagado omitido."
+                    )
+
+            # 5. Apagar (si no dry_run y sin salvaguarda)
+            if dry_run:
+                job["stage"] = "dry_run_done"
+            elif job["salvaguarda_activada"]:
+                job["stage"] = "skipped_by_safeguard"
+            else:
+                job["stage"] = "apagando"
+                quant_ids = [qid for isbn in a_apagar
+                             for qid in isbn_quants[isbn]]
+                CHUNK = 500
+                for i in range(0, len(quant_ids), CHUNK):
+                    if job["status"] != "running":
+                        break
+                    chunk = quant_ids[i:i + CHUNK]
+                    try:
+                        await odoo.write("stock.quant", chunk,
+                                         {"inventory_quantity": 0})
+                        try:
+                            await odoo.execute_kw(
+                                "stock.quant", "action_apply_inventory",
+                                [chunk])
+                        except Exception as apply_err:
+                            verify = await odoo.read(
+                                "stock.quant", chunk, ["quantity"])
+                            ok = all(abs(float(v.get("quantity") or 0)) < 0.01
+                                     for v in verify)
+                            if not ok:
+                                raise apply_err
+                        job["apagados"] += len(chunk)
+                    except Exception as e:
+                        err = f"apagar chunk@{i}: {type(e).__name__}: {str(e)[:150]}"
+                        job["errors"].append(err)
+                        print(f"[CEGALD] {err}")
+
+        if job["status"] == "running":
+            job["status"] = "completed"
+    except Exception as e:
+        job["status"] = "error"
+        job["errors"].append(f"{type(e).__name__}: {e!r}"[:300])
+        print(f"[CEGALD] Fatal: {e!r}")
+    finally:
+        job["elapsed_s"] = round(time.monotonic() - t_start, 2)
+        resumen = (
+            f"CEGALD {proveedor_email.split('@')[0]}"
+            f"{' [DRY RUN]' if dry_run else ''}: "
+            f"{job['presentes']:,} presentes, {job['con_stock_odoo']:,} con "
+            f"stock en {job.get('warehouse', '?')}, {job['a_apagar']:,} a apagar"
+            f"{', ' + str(job['apagados']) + ' apagados' if not dry_run else ''}. "
+            f"Salvaguarda: "
+            f"{job['salvaguarda_motivo'] if job['salvaguarda_activada'] else 'OK (tamaño normal)'}"
+        )
+        print(f"[CEGALD] {resumen}")
+        try:
+            import audit_log
+            audit_log.log_event(
+                "sinli_sync",
+                "cegald_dry_run" if dry_run else "cegald_replacement",
+                resumen,
+                detalle={k: job.get(k) for k in (
+                    "proveedor", "warehouse", "presentes", "con_stock_odoo",
+                    "a_apagar", "apagados", "salvaguarda_activada",
+                    "salvaguarda_motivo", "cegald_max_ts", "cegald_age_hours",
+                    "dry_run", "elapsed_s")},
+                nivel="error" if (job["status"] == "error"
+                                   or job["salvaguarda_activada"]) else "info",
+            )
+        except Exception:
+            pass
+
+    return job
+
+
 if __name__ == "__main__":
     # python sync_stock_sinli.py once     -> un lote
     # python sync_stock_sinli.py backlog  -> bucle hasta vaciar
+    # python sync_stock_sinli.py cegald <email> [--apply]  -> reemplazo CEGALD
     import sys
     mode = sys.argv[1] if len(sys.argv) > 1 else "once"
-    asyncio.run(run_once(loop_until_empty=(mode == "backlog")))
+    if mode == "cegald":
+        email = sys.argv[2]
+        dry = "--apply" not in sys.argv
+        asyncio.run(run_cegald_replacement(email, dry_run=dry))
+    else:
+        asyncio.run(run_once(loop_until_empty=(mode == "backlog")))

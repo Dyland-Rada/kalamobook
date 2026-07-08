@@ -1853,6 +1853,48 @@
                     </span>
                 </div>
 
+                <!-- Bloque 2b: reemplazo CEGALD -->
+                <div class="section-label" style="color:#e67e22; margin-top:18px;">
+                    ♻ Reemplazo completo CEGALD (apagar ausentes)
+                    <span class="status-badge" id="cegald-badge" style="font-size:0.7rem;">IDLE</span>
+                </div>
+                <p style="color:#888; font-size:0.82rem;">
+                    El CEGALD define el estado COMPLETO del proveedor: lo que no viene → stock 0 en SU almacén.
+                    Salvaguardas: no apaga si el CEGALD es &lt;50% del stock actual o tiene &gt;48h.
+                    <strong>Siempre dry-run primero.</strong>
+                </p>
+                <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:8px;">
+                    <select id="cegald-proveedor" style="padding:8px 10px; background:#2c2f3e; color:#eee; border:1px solid #444; border-radius:6px;">
+                        <option value="sinli@akal.com">AKAL (piloto, ~3.8k)</option>
+                        <option value="sinli@alfaomega.es">ALFA OMEGA</option>
+                        <option value="sinli@punxes.es">LES PUNXES</option>
+                        <option value="fandite@distriforma.es">DISTRIFORMA</option>
+                        <option value="sinli.icaro@zonalibros.com">ICARO</option>
+                    </select>
+                    <button class="btn btn-primary" onclick="cegaldRun(true)" style="background:#7f8c8d;">🔍 Dry run</button>
+                    <button class="btn btn-danger" onclick="cegaldRun(false)">♻ Aplicar apagado real</button>
+                    <span id="cegald-stage" style="color:#888; font-size:0.85rem;"></span>
+                </div>
+                <div style="margin-top:10px; display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px;">
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#2ecc71" id="cegald-presentes">—</div>
+                        <div class="stat-label">Presentes en CEGALD</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#3498db" id="cegald-constock">—</div>
+                        <div class="stat-label">Con stock en Odoo</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#e67e22" id="cegald-apagar">—</div>
+                        <div class="stat-label">A apagar (ausentes)</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number" style="color:#e74c3c" id="cegald-apagados">—</div>
+                        <div class="stat-label">Apagados (real)</div>
+                    </div>
+                </div>
+                <div id="cegald-detail" style="margin-top:8px; font-size:0.8rem; color:#888;"></div>
+
                 <!-- Bloque 3: cron 1h -->
                 <div class="section-label" style="color:#2ecc71; margin-top:18px;">
                     3. Cron automático (cada 1h)
@@ -3702,6 +3744,57 @@
                 document.getElementById('btn-sinli-cron-start').disabled = running;
                 document.getElementById('btn-sinli-cron-stop').disabled = !running;
             } catch (e) { console.error('sinli cron poll:', e); }
+        }
+
+        // ═══ CEGALD REPLACEMENT ═══
+        let cegaldTimer = null;
+
+        async function cegaldRun(dryRun) {
+            const prov = document.getElementById('cegald-proveedor').value;
+            const msg = dryRun
+                ? `DRY RUN de reemplazo CEGALD para ${prov}?\n\nSolo calcula cuántos se apagarían. NO escribe en Odoo.`
+                : `⚠️ APAGADO REAL para ${prov}?\n\nLos libros con stock en Odoo que NO estén en el último CEGALD ` +
+                  `pasarán a stock 0 en su almacén.\n\n¿Ya revisaste el dry-run y los números son razonables?`;
+            if (!confirm(msg)) return;
+            try {
+                const r = await fetch(`/api/v1/sync-stock/cegald-replace?proveedor=${encodeURIComponent(prov)}&dry_run=${dryRun}`,
+                    { method: 'POST' });
+                const d = await r.json();
+                if (d.status !== 'started') { alert('❌ ' + (d.message || 'No se pudo')); return; }
+                if (cegaldTimer) clearInterval(cegaldTimer);
+                cegaldTimer = setInterval(cegaldPoll, 2000);
+                cegaldPoll();
+            } catch (e) { alert('Error: ' + e.message); }
+        }
+
+        async function cegaldPoll() {
+            try {
+                const r = await fetch('/api/v1/sync-stock/cegald-status');
+                const s = await r.json();
+                const badge = document.getElementById('cegald-badge');
+                badge.textContent = (s.status || 'idle').toUpperCase() + (s.dry_run ? ' (DRY)' : '');
+                badge.className = 'status-badge ' + (s.status || 'idle');
+                document.getElementById('cegald-stage').textContent =
+                    s.stage ? `Etapa: ${s.stage} · ${s.proveedor || ''}` : '';
+                document.getElementById('cegald-presentes').textContent =
+                    s.presentes != null ? s.presentes.toLocaleString() : '—';
+                document.getElementById('cegald-constock').textContent =
+                    s.con_stock_odoo != null ? s.con_stock_odoo.toLocaleString() : '—';
+                document.getElementById('cegald-apagar').textContent =
+                    s.a_apagar != null ? s.a_apagar.toLocaleString() : '—';
+                document.getElementById('cegald-apagados').textContent =
+                    s.apagados != null ? s.apagados.toLocaleString() : '—';
+                const det = [];
+                if (s.cegald_max_ts) det.push(`último CEGALD: ${String(s.cegald_max_ts).slice(0,19)}`);
+                if (s.cegald_age_hours != null) det.push(`edad: ${s.cegald_age_hours}h`);
+                if (s.presentes_vs_stock_pct != null) det.push(`cobertura: ${s.presentes_vs_stock_pct}%`);
+                if (s.salvaguarda_activada) det.push(`🛡 SALVAGUARDA: ${s.salvaguarda_motivo}`);
+                if (s.errors && s.errors.length) det.push(`errores: ${s.errors.length}`);
+                document.getElementById('cegald-detail').textContent = det.join(' · ');
+                if (['completed','error','stopped'].includes(s.status)) {
+                    clearInterval(cegaldTimer); cegaldTimer = null;
+                }
+            } catch (e) { console.error('cegald poll:', e); }
         }
 
         // ═══ AUDITORÍA ═══
