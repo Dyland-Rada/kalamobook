@@ -905,13 +905,51 @@ def stop_cegald():
 
 def _cegald_presentes(proveedor_email: str) -> tuple[set[str], str | None]:
     """
-    ISBNs de la última corrida CEGALD del proveedor + timestamp del máximo.
-    Presentes = stock_disponible > 0 y stock_actualizado_en dentro de la
-    ventana respecto al MAX del proveedor.
+    ISBNs presentes en la última foto CEGALD del proveedor.
+
+    Fuente primaria: sinli_cegald_isbns (tabla poblada por el n8n del
+    Server A con los ISBNs de cada archivo CEGALD — acordado 2026-07-10).
+    Presentes = ISBNs registrados en la ventana del último archivo.
+
+    Fallback (si la tabla no existe o está vacía para el proveedor):
+    timestamps de libros_proveedor. OJO: el upsert del n8n solo toca
+    stock_actualizado_en cuando el stock cambia, así que este fallback
+    subestima brutalmente los presentes — la salvaguarda de tamaño
+    bloqueará el apagado, que es el comportamiento seguro.
     """
     conn = db.get_connection()
     cur = conn.cursor()
     try:
+        # ── Fuente primaria: sinli_cegald_isbns ──────────────────────
+        try:
+            db.execute_query(cur, """
+                SELECT MAX(registrado_en) FROM sinli_cegald_isbns
+                WHERE proveedor_email = ?
+            """, (proveedor_email,))
+            r = cur.fetchone()
+            max_reg = r[0] if r else None
+            if max_reg:
+                db.execute_query(cur, f"""
+                    SELECT DISTINCT isbn FROM sinli_cegald_isbns
+                    WHERE proveedor_email = ?
+                      AND isbn IS NOT NULL
+                      AND registrado_en >= (
+                          (SELECT MAX(registrado_en) FROM sinli_cegald_isbns
+                           WHERE proveedor_email = ?)
+                          - INTERVAL '{CEGALD_VENTANA_HORAS} hours'
+                      )
+                """, (proveedor_email, proveedor_email))
+                presentes = {row[0] for row in cur.fetchall()}
+                if presentes:
+                    print(f"[CEGALD] Presentes desde sinli_cegald_isbns: "
+                          f"{len(presentes):,} (foto {max_reg})")
+                    return presentes, str(max_reg)
+        except Exception:
+            # Tabla aún no existe — fallback silencioso
+            try: conn.rollback()
+            except Exception: pass
+
+        # ── Fallback: timestamps (subestima; la salvaguarda protege) ──
         db.execute_query(cur, """
             SELECT MAX(stock_actualizado_en) FROM libros_proveedor
             WHERE proveedor_email = ?
@@ -931,6 +969,8 @@ def _cegald_presentes(proveedor_email: str) -> tuple[set[str], str | None]:
                   - INTERVAL '{CEGALD_VENTANA_HORAS} hours'
               )
         """, (proveedor_email, proveedor_email))
+        print("[CEGALD] AVISO: usando fallback de timestamps "
+              "(sinli_cegald_isbns no disponible) — presentes subestimados")
         return {r[0] for r in cur.fetchall()}, str(max_ts)
     finally:
         conn.close()
