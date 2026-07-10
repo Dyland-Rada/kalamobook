@@ -117,68 +117,87 @@ def get_events(categoria: str | None = None, nivel: str | None = None,
         conn.close()
 
 
+# Mapeo nombre-proveedor de sinli_auditoria -> proveedor_email de
+# libros_proveedor (el n8n usa razon social, nosotros el buzon).
+_AUDITORIA_TO_EMAIL = {
+    "ICARO DISTRIBUIDORA, S.L.": "sinli.icaro@zonalibros.com",
+    "DISTRIFORMA, S.A.": "fandite@distriforma.es",
+    "LES PUNXES DISTRIBUIDORA S.L.": "sinli@punxes.es",
+    "DISTRIBUCIONES ALFAOMEGA, S.L.": "sinli@alfaomega.es",
+    "Ediciones Akal S.A.": "sinli@akal.com",
+    "DISBOOK, S.L.": "sinli.disbookbcn@zonalibros.com",
+    "DISTRIFER LIBROS, S.L.": "sinli.distrifer@zonalibros.com",
+}
+
+
 def get_cegald_overview() -> list[dict]:
     """
-    Auditoría CEGALD por proveedor (incluye AZETA como referencia):
-    - ultimo_evento: última escritura (goteo incluido)
-    - ultimo_cegald_completo: último día con una corrida GRANDE
-      (>= max(500, 20% del total con stock) escrituras ese día)
-    - libros_cegald: tamaño de esa corrida
-    - total_con_stock: filas con stock > 0 ahora
-    - fantasmas: stock > 0 con fecha ANTERIOR al último CEGALD completo
-      (libros que el proveedor ya no reporta pero siguen 'disponibles')
+    Auditoría CEGALD por proveedor.
+
+    Fuente primaria: sinli_auditoria (cada ARCHIVO CEGALD recibido por el
+    n8n del Server A, con su nº de registros). Es la verdad de "¿llegó el
+    CEGALD completo?" — los timestamps de libros_proveedor NO sirven para
+    esto porque el upsert del n8n solo toca stock_actualizado_en cuando el
+    stock cambia (un CEGALD de 45k libros sin cambios toca ~15 filas).
+
+    Se excluye KALAMO BOOKS (buzón propio, CEGALDs de 0 registros).
     """
     conn = db.get_connection()
     cur = conn.cursor()
+    out: list[dict] = []
     try:
+        # 1. Ultimo archivo CEGALD por proveedor (fuente cruda)
+        auditoria: dict[str, dict] = {}
+        try:
+            db.execute_query(cur, """
+                SELECT DISTINCT ON (proveedor)
+                       proveedor, procesado_en, registros
+                FROM sinli_auditoria
+                WHERE email_asunto ILIKE ?
+                  AND proveedor IS NOT NULL
+                  AND proveedor != 'KALAMO BOOKS'
+                ORDER BY proveedor, procesado_en DESC
+            """, ('%CEGALD%',))
+            for r in cur.fetchall():
+                email = _AUDITORIA_TO_EMAIL.get(r[0])
+                auditoria[email or r[0]] = {
+                    "nombre": r[0],
+                    "ultimo_cegald": str(r[1]),
+                    "registros": r[2],
+                }
+        except Exception as e:
+            print(f"[Audit] sinli_auditoria no accesible: {e}")
+            try: conn.rollback()
+            except Exception: pass
+
+        # 2. Estado en libros_proveedor por proveedor
         db.execute_query(cur, """
-            WITH stats AS (
-                SELECT proveedor_email,
-                       COUNT(*) FILTER (WHERE stock_disponible > 0) AS total_con_stock,
-                       MAX(stock_actualizado_en) AS ultimo_evento
-                FROM libros_proveedor
-                GROUP BY proveedor_email
-            ),
-            por_dia AS (
-                SELECT proveedor_email,
-                       DATE(stock_actualizado_en) AS dia,
-                       COUNT(*) AS n
-                FROM libros_proveedor
-                GROUP BY proveedor_email, DATE(stock_actualizado_en)
-            ),
-            ultimo_grande AS (
-                SELECT pd.proveedor_email,
-                       MAX(pd.dia) AS dia_cegald
-                FROM por_dia pd
-                JOIN stats s ON s.proveedor_email = pd.proveedor_email
-                WHERE pd.n >= GREATEST(500, s.total_con_stock * 0.2)
-                GROUP BY pd.proveedor_email
-            )
-            SELECT s.proveedor_email,
-                   s.total_con_stock,
-                   s.ultimo_evento,
-                   ug.dia_cegald,
-                   (SELECT n FROM por_dia pd
-                    WHERE pd.proveedor_email = s.proveedor_email
-                      AND pd.dia = ug.dia_cegald) AS libros_cegald,
-                   (SELECT COUNT(*) FROM libros_proveedor lp
-                    WHERE lp.proveedor_email = s.proveedor_email
-                      AND lp.stock_disponible > 0
-                      AND ug.dia_cegald IS NOT NULL
-                      AND lp.stock_actualizado_en::date < ug.dia_cegald) AS fantasmas
-            FROM stats s
-            LEFT JOIN ultimo_grande ug ON ug.proveedor_email = s.proveedor_email
-            ORDER BY s.total_con_stock DESC
+            SELECT proveedor_email,
+                   COUNT(*) FILTER (WHERE stock_disponible > 0),
+                   MAX(stock_actualizado_en)
+            FROM libros_proveedor
+            GROUP BY proveedor_email
+            ORDER BY 2 DESC
         """)
-        out = []
         for r in cur.fetchall():
+            email = r[0]
+            a = auditoria.get(email, {})
+            registros = a.get("registros")
+            total_con_stock = r[1]
+            # Fantasmas estimados: si el ultimo CEGALD trae N registros y
+            # en BD hay M con stock, sobran ~(M - N) que el proveedor ya
+            # no reporta. Solo estimable cuando hay dato de auditoria.
+            fantasmas_est = None
+            if registros is not None and total_con_stock is not None:
+                fantasmas_est = max(0, total_con_stock - registros)
             out.append({
-                "proveedor": r[0],
-                "total_con_stock": r[1],
+                "proveedor": email,
+                "nombre": a.get("nombre"),
+                "total_con_stock": total_con_stock,
                 "ultimo_evento": str(r[2]) if r[2] else None,
-                "ultimo_cegald_completo": str(r[3]) if r[3] else None,
-                "libros_cegald": r[4],
-                "fantasmas": r[5] or 0,
+                "ultimo_cegald_completo": a.get("ultimo_cegald"),
+                "libros_cegald": registros,
+                "fantasmas": fantasmas_est,
             })
         return out
     finally:
