@@ -2199,6 +2199,26 @@
                     <tbody><tr><td colspan="4" style="padding:8px; color:#888;">— cargando —</td></tr></tbody>
                 </table>
 
+                <!-- CEGALDs por proveedor -->
+                <div class="section-label" style="color:#e67e22; margin-top:18px;">
+                    📬 CEGALDs por proveedor (último completo, goteo y fantasmas)
+                </div>
+                <p style="color:#888; font-size:0.78rem; margin-top:2px;">
+                    <strong>CEGALD completo</strong> = corrida grande (≥ max(500, 20% del stock del proveedor) en un día).
+                    <strong>Fantasmas</strong> = libros con stock &gt; 0 que el proveedor no reporta desde su último CEGALD completo.
+                </p>
+                <table style="width:100%; font-size:0.82rem; border-collapse:collapse; margin-top:6px;" id="audit-cegald-table">
+                    <thead><tr style="background:#1c1f2e;">
+                        <th style="text-align:left; padding:4px 8px; color:#bbb;">Proveedor</th>
+                        <th style="text-align:left; padding:4px 8px; color:#bbb;">Último CEGALD completo</th>
+                        <th style="text-align:right; padding:4px 8px; color:#bbb;">Libros CEGALD</th>
+                        <th style="text-align:left; padding:4px 8px; color:#bbb;">Último evento (goteo)</th>
+                        <th style="text-align:right; padding:4px 8px; color:#bbb;">Con stock</th>
+                        <th style="text-align:right; padding:4px 8px; color:#bbb;">Fantasmas</th>
+                    </tr></thead>
+                    <tbody><tr><td colspan="6" style="padding:8px; color:#888;">— cargando —</td></tr></tbody>
+                </table>
+
                 <!-- Recibidos por dia/proveedor -->
                 <div class="section-label" style="color:#16a085; margin-top:18px;">
                     📥 Libros RECIBIDOS por día y proveedor (últimos 7 días)
@@ -3814,6 +3834,39 @@
         async function auditLoadAll() {
             auditLoadSummary();
             auditLoadEvents();
+            auditLoadCegalds();
+        }
+
+        async function auditLoadCegalds() {
+            try {
+                const r = await fetch('/api/v1/audit/cegalds');
+                const d = await r.json();
+                const tbody = document.querySelector('#audit-cegald-table tbody');
+                tbody.innerHTML = '';
+                (d.cegalds || []).forEach(c => {
+                    const prov = (c.proveedor || '').split('@')[0];
+                    const esAzeta = c.proveedor === 'info@azetadistribuciones.es';
+                    const cegald = c.ultimo_cegald_completo ? c.ultimo_cegald_completo.slice(0, 10) : '— nunca —';
+                    // Edad del CEGALD: alerta si > 3 dias
+                    let cegaldColor = '#27ae60';
+                    if (c.ultimo_cegald_completo) {
+                        const ageDays = (Date.now() - new Date(c.ultimo_cegald_completo).getTime()) / 86400000;
+                        cegaldColor = ageDays > 3 ? '#e67e22' : '#27ae60';
+                        if (ageDays > 7) cegaldColor = '#e74c3c';
+                    } else { cegaldColor = '#e74c3c'; }
+                    const fantasmasColor = (c.fantasmas || 0) > 1000 ? '#e74c3c'
+                        : (c.fantasmas || 0) > 100 ? '#e67e22' : '#27ae60';
+                    const tr = document.createElement('tr');
+                    tr.innerHTML =
+                        `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e;">${escapeHtml(prov)}${esAzeta ? ' <span style="color:#666;">(CSV HTTP)</span>' : ''}</td>` +
+                        `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e; color:${cegaldColor};">${cegald}</td>` +
+                        `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e; text-align:right;">${c.libros_cegald != null ? c.libros_cegald.toLocaleString() : '—'}</td>` +
+                        `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e; color:#888;">${c.ultimo_evento ? c.ultimo_evento.slice(0, 16) : '—'}</td>` +
+                        `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e; text-align:right; color:#3498db;">${(c.total_con_stock || 0).toLocaleString()}</td>` +
+                        `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e; text-align:right; color:${fantasmasColor}; font-weight:bold;">${(c.fantasmas || 0).toLocaleString()}</td>`;
+                    tbody.appendChild(tr);
+                });
+            } catch (e) { console.error('audit cegalds:', e); }
         }
 
         const AUDIT_CAT_COLORS = {

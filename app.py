@@ -1500,6 +1500,18 @@ async def audit_events(
     })
 
 
+@app.get("/api/v1/audit/cegalds", tags=["Auditoria"])
+async def audit_cegalds():
+    """
+    Auditoría CEGALD por proveedor: último evento (goteo incluido),
+    último CEGALD COMPLETO (corrida grande, >= max(500, 20% del stock)),
+    su tamaño, total con stock y fantasmas (stock > 0 no reportado desde
+    el último CEGALD completo).
+    """
+    import audit_log
+    return JSONResponse(content={"cegalds": audit_log.get_cegald_overview()})
+
+
 @app.get("/api/v1/audit/summary", tags=["Auditoria"])
 async def audit_summary(days: int = Query(7, ge=1, le=30)):
     """
