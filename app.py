@@ -1107,6 +1107,43 @@ async def azeta_stock_push_only_status():
     return JSONResponse(content=azeta_push_odoo.get_stock_push_status())
 
 
+@app.post("/api/v1/azeta/stock-cycle", tags=["AZETA"])
+async def azeta_stock_cycle():
+    """
+    Ciclo completo AZETA en UNA llamada: fetcher CSV -> libros_proveedor
+    -> push incremental a Odoo AZE01 (solo libros cuyo stock cambio desde
+    el ultimo ciclo, via marker) -> avanza marker.
+
+    Pensado para schedulers externos (n8n cada 1h). Idempotente. Si ya
+    hay un ciclo corriendo devuelve 409. El resultado queda en event_log
+    (tab Auditoria) y en /api/v1/azeta/stock-push-only-status.
+    """
+    import threading
+    import sys
+    import azeta_push_odoo
+    import azeta_stock
+
+    if (azeta_push_odoo.get_stock_push_status().get("status") == "running"
+            or azeta_stock.get_azeta_status().get("status") == "running"):
+        return JSONResponse(status_code=409, content={
+            "status": "error", "message": "Ciclo AZETA ya esta corriendo."
+        })
+
+    def _run_in_thread():
+        if sys.platform == 'win32':
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
+        try:
+            new_loop.run_until_complete(azeta_push_odoo.run_full_stock_cycle())
+        finally:
+            new_loop.close()
+
+    t = threading.Thread(target=_run_in_thread, daemon=True)
+    t.start()
+    return JSONResponse(content={"status": "started", "mode": "full_cycle"})
+
+
 @app.post("/api/v1/azeta/stock-cron/start", tags=["AZETA"])
 async def azeta_stock_cron_start():
     """
