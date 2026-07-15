@@ -41,11 +41,91 @@ def ensure_table():
         cur.execute("""
             CREATE INDEX IF NOT EXISTS idx_event_log_cat ON event_log(categoria)
         """)
+        # Registro de peticiones API entrantes (acciones POST): quien llamo
+        # que endpoint, con que payload y que respondio el servidor.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS api_request_log (
+                id BIGSERIAL PRIMARY KEY,
+                ts TIMESTAMPTZ DEFAULT NOW(),
+                method TEXT,
+                path TEXT,
+                query TEXT,
+                body TEXT,
+                status_code INTEGER,
+                duration_ms INTEGER,
+                client_ip TEXT,
+                username TEXT,
+                user_agent TEXT
+            )
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_api_req_ts ON api_request_log(ts DESC)
+        """)
         conn.commit()
     except Exception as e:
         print(f"[Audit] ensure_table FAIL: {e}")
         try: conn.rollback()
         except Exception: pass
+    finally:
+        conn.close()
+
+
+def log_api_request(method: str, path: str, query: str, body: str,
+                     status_code: int, duration_ms: int,
+                     client_ip: str, username: str, user_agent: str):
+    """Registra una peticion API entrante. Nunca lanza."""
+    conn = None
+    try:
+        conn = db.get_connection()
+        cur = conn.cursor()
+        db.execute_query(cur, """
+            INSERT INTO api_request_log
+                (method, path, query, body, status_code, duration_ms,
+                 client_ip, username, user_agent)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (method, path[:300], (query or "")[:1000], (body or "")[:2000],
+              status_code, duration_ms, (client_ip or "")[:60],
+              (username or "")[:60], (user_agent or "")[:200]))
+        conn.commit()
+    except Exception as e:
+        print(f"[Audit] log_api_request FAIL: {e}")
+        try:
+            if conn: conn.rollback()
+        except Exception:
+            pass
+    finally:
+        try:
+            if conn: conn.close()
+        except Exception:
+            pass
+
+
+def get_api_requests(limit: int = 100, path_like: str | None = None) -> list[dict]:
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        if path_like:
+            db.execute_query(cur, """
+                SELECT ts, method, path, query, body, status_code,
+                       duration_ms, client_ip, username, user_agent
+                FROM api_request_log
+                WHERE path LIKE ?
+                ORDER BY ts DESC LIMIT ?
+            """, (f"%{path_like}%", limit))
+        else:
+            db.execute_query(cur, """
+                SELECT ts, method, path, query, body, status_code,
+                       duration_ms, client_ip, username, user_agent
+                FROM api_request_log
+                ORDER BY ts DESC LIMIT ?
+            """, (limit,))
+        return [{
+            "ts": str(r[0]), "method": r[1], "path": r[2], "query": r[3],
+            "body": r[4], "status_code": r[5], "duration_ms": r[6],
+            "client_ip": r[7], "username": r[8], "user_agent": r[9],
+        } for r in cur.fetchall()]
+    except Exception:
+        return []
     finally:
         conn.close()
 

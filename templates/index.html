@@ -2219,6 +2219,36 @@
                     <tbody><tr><td colspan="6" style="padding:8px; color:#888;">— cargando —</td></tr></tbody>
                 </table>
 
+                <!-- Peticiones API entrantes -->
+                <div class="section-label" style="color:#1abc9c; margin-top:18px;">
+                    🌐 Peticiones API entrantes (n8n, UI, quien sea)
+                </div>
+                <p style="color:#888; font-size:0.78rem; margin-top:2px;">
+                    Cada acción POST recibida: cuándo, quién (IP/usuario), qué endpoint, con qué parámetros,
+                    qué respondió el servidor y cuánto tardó. Los GET de polling no se registran.
+                </p>
+                <div style="display:flex; gap:10px; align-items:center; margin-top:6px;">
+                    <input type="text" id="audit-req-filter" placeholder="filtro path (ej. stock-cycle)"
+                           style="padding:6px 10px; background:#2c2f3e; color:#eee; border:1px solid #444; border-radius:6px; min-width:220px;"
+                           onkeypress="if(event.key==='Enter')auditLoadRequests()">
+                    <button class="btn btn-primary" onclick="auditLoadRequests()" style="background:#1abc9c; padding:6px 14px;">Buscar</button>
+                </div>
+                <div style="max-height:300px; overflow-y:auto; border:1px solid #2c2f3e; border-radius:6px; margin-top:6px;">
+                    <table style="width:100%; font-size:0.78rem; border-collapse:collapse;" id="audit-req-table">
+                        <thead style="position:sticky; top:0; background:#1c1f2e;">
+                            <tr>
+                                <th style="text-align:left; padding:4px 8px; color:#bbb; white-space:nowrap;">Cuándo</th>
+                                <th style="text-align:left; padding:4px 8px; color:#bbb;">Endpoint</th>
+                                <th style="text-align:left; padding:4px 8px; color:#bbb;">Query/Body</th>
+                                <th style="text-align:left; padding:4px 8px; color:#bbb;">Quién</th>
+                                <th style="text-align:right; padding:4px 8px; color:#bbb;">Status</th>
+                                <th style="text-align:right; padding:4px 8px; color:#bbb;">ms</th>
+                            </tr>
+                        </thead>
+                        <tbody><tr><td colspan="6" style="padding:8px; color:#888;">— sin peticiones registradas aún —</td></tr></tbody>
+                    </table>
+                </div>
+
                 <!-- Recibidos por dia/proveedor -->
                 <div class="section-label" style="color:#16a085; margin-top:18px;">
                     📥 Libros RECIBIDOS por día y proveedor (últimos 7 días)
@@ -3835,6 +3865,41 @@
             auditLoadSummary();
             auditLoadEvents();
             auditLoadCegalds();
+            auditLoadRequests();
+        }
+
+        async function auditLoadRequests() {
+            try {
+                const f = (document.getElementById('audit-req-filter').value || '').trim();
+                const params = new URLSearchParams({ limit: '100' });
+                if (f) params.set('path_like', f);
+                const r = await fetch('/api/v1/audit/requests?' + params.toString());
+                const d = await r.json();
+                const tbody = document.querySelector('#audit-req-table tbody');
+                tbody.innerHTML = '';
+                const reqs = d.requests || [];
+                if (!reqs.length) {
+                    tbody.innerHTML = '<tr><td colspan="6" style="padding:8px; color:#888;">— sin peticiones registradas aún —</td></tr>';
+                    return;
+                }
+                reqs.forEach(q => {
+                    const ts = (q.ts || '').slice(0, 19).replace('T', ' ');
+                    const isN8n = /n8n|axios/i.test(q.user_agent || '');
+                    const quien = `${q.client_ip || '?'}${q.username ? ' · ' + q.username : ''}${isN8n ? ' · 🤖 n8n' : ''}`;
+                    const payload = [q.query, q.body].filter(Boolean).join(' | ');
+                    const okColor = (q.status_code >= 200 && q.status_code < 300) ? '#27ae60'
+                        : q.status_code === 409 ? '#e67e22' : '#e74c3c';
+                    const tr = document.createElement('tr');
+                    tr.innerHTML =
+                        `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e; color:#888; white-space:nowrap;">${ts}</td>` +
+                        `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e; color:#ddd;">${escapeHtml(q.method + ' ' + q.path)}</td>` +
+                        `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e; color:#999;">${escapeHtml(payload.slice(0, 90)) || '—'}</td>` +
+                        `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e; color:#3498db;">${escapeHtml(quien)}</td>` +
+                        `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e; text-align:right; color:${okColor}; font-weight:bold;">${q.status_code}</td>` +
+                        `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e; text-align:right; color:#888;">${q.duration_ms}</td>`;
+                    tbody.appendChild(tr);
+                });
+            } catch (e) { console.error('audit requests:', e); }
         }
 
         async function auditLoadCegalds() {

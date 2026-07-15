@@ -71,6 +71,57 @@ app = FastAPI(
 templates = Jinja2Templates(directory="templates")
 
 
+@app.middleware("http")
+async def api_request_logger(request: Request, call_next):
+    """
+    Registra en api_request_log cada POST a /api/ (las ACCIONES: syncs,
+    pushes, CEGALD, crones...). Los GET de polling no se registran (ruido).
+    Visible en la tab Auditoria -> Peticiones API.
+    """
+    import time as _time
+    is_action = request.method in ("POST", "DELETE", "PUT") and \
+        request.url.path.startswith("/api/")
+    body_snippet = ""
+    if is_action:
+        try:
+            body_bytes = await request.body()  # Starlette lo cachea para el handler
+            if body_bytes:
+                body_snippet = body_bytes[:2000].decode("utf-8", errors="replace")
+        except Exception:
+            pass
+    t0 = _time.monotonic()
+    response = await call_next(request)
+    if is_action:
+        try:
+            import base64
+            import audit_log
+            username = ""
+            auth = request.headers.get("authorization", "")
+            if auth.lower().startswith("basic "):
+                try:
+                    username = base64.b64decode(auth[6:]).decode(
+                        "utf-8", errors="replace").split(":", 1)[0]
+                except Exception:
+                    pass
+            client_ip = request.headers.get("x-forwarded-for",
+                                            request.client.host if request.client else "")
+            client_ip = client_ip.split(",")[0].strip()
+            audit_log.log_api_request(
+                method=request.method,
+                path=request.url.path,
+                query=str(request.url.query or ""),
+                body=body_snippet,
+                status_code=response.status_code,
+                duration_ms=int((_time.monotonic() - t0) * 1000),
+                client_ip=client_ip,
+                username=username,
+                user_agent=request.headers.get("user-agent", ""),
+            )
+        except Exception as e:
+            print(f"[ApiLog] middleware FAIL: {e}")
+    return response
+
+
 @app.on_event("startup")
 async def startup():
     init_db()
@@ -1534,6 +1585,23 @@ async def audit_events(
     return JSONResponse(content={
         "events": audit_log.get_events(categoria=categoria, nivel=nivel,
                                         limit=limit, offset=offset),
+    })
+
+
+@app.get("/api/v1/audit/requests", tags=["Auditoria"])
+async def audit_requests(
+    limit: int = Query(100, ge=1, le=500),
+    path_like: str | None = Query(None, description="filtro por path, ej. stock-cycle"),
+):
+    """
+    Peticiones API entrantes (acciones POST/PUT/DELETE): quien llamo que
+    endpoint (IP, usuario Basic, user-agent), con que query/body, status
+    y duracion. Los GET de polling no se registran.
+    """
+    import audit_log
+    audit_log.ensure_table()
+    return JSONResponse(content={
+        "requests": audit_log.get_api_requests(limit=limit, path_like=path_like),
     })
 
 
