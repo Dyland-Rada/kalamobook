@@ -305,6 +305,50 @@ def _fetch_batch(marker, limit: int = BATCH_SIZE,
     finally:
         conn.close()
 
+    # FIX marker-skip: los inserts masivos del n8n comparten actualizado_en
+    # exacto (miles de filas con el mismo timestamp). Si el LIMIT corta a
+    # mitad de un grupo de timestamps identicos, el proximo fetch con
+    # "> marker" saltaria las filas restantes de ese timestamp (perdida
+    # silenciosa: paso el 16/07 con DISBOOK/DISTRIFER, 17k saltados).
+    # Solucion: extender el lote con TODAS las filas que compartan el
+    # timestamp de la ultima fila.
+    if rows and len(rows) >= limit:
+        last_ts = rows[-1][4]
+        seen_isbn_prov = {(r[0], r[1]) for r in rows}
+        conn = db.get_connection()
+        cur = conn.cursor()
+        try:
+            if solo_proveedor:
+                db.execute_query(cur, """
+                    SELECT lp.isbn, lp.proveedor_email, lp.stock_disponible,
+                           lp.precio_con_iva, lp.actualizado_en,
+                           m.odoo_id, m.list_price
+                    FROM libros_proveedor lp
+                    JOIN odoo_books_mirror m ON m.barcode = lp.isbn
+                    WHERE lp.actualizado_en = ?
+                      AND lp.proveedor_email = ?
+                      AND lp.isbn IS NOT NULL AND m.odoo_id IS NOT NULL
+                """, (last_ts, solo_proveedor))
+            else:
+                db.execute_query(cur, """
+                    SELECT lp.isbn, lp.proveedor_email, lp.stock_disponible,
+                           lp.precio_con_iva, lp.actualizado_en,
+                           m.odoo_id, m.list_price
+                    FROM libros_proveedor lp
+                    JOIN odoo_books_mirror m ON m.barcode = lp.isbn
+                    WHERE lp.actualizado_en = ?
+                      AND lp.proveedor_email != ?
+                      AND lp.isbn IS NOT NULL AND m.odoo_id IS NOT NULL
+                """, (last_ts, AZETA_EMAIL))
+            extra = [r for r in cur.fetchall()
+                     if (r[0], r[1]) not in seen_isbn_prov]
+            if extra:
+                print(f"[SinliSync] lote extendido +{len(extra):,} filas "
+                      f"con mismo timestamp de frontera")
+                rows = list(rows) + extra
+        finally:
+            conn.close()
+
     return [{
         "isbn": r[0],
         "proveedor_email": r[1],
