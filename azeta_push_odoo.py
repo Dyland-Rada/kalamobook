@@ -932,6 +932,231 @@ async def run_azeta_stock_push_only(test_isbn: str | None = None,
 
 
 # ─────────────────────────────────────────────────────────────────────
+# APAGADO POR AUSENCIA AZETA (acordado con Server A 2026-07-16)
+#
+# El CSV de stock de AZETA es "solo-stock": si un ISBN esta, hay stock;
+# si NO viene, esta agotado. El fetcher (azeta_stock._upsert_batch) pone
+# stock_actualizado_en = NOW() SIEMPRE para TODOS los presentes del CSV
+# (cambien o no) — a diferencia del upsert n8n de SINLI. Por eso aqui SI
+# tenemos registro de presencia por identidad: presentes de la ultima
+# corrida = stock_actualizado_en dentro de la ventana de esa corrida.
+#
+# GUARDAS (todas abortan el apagado, nunca el ciclo):
+# 1. Frescura: ultima corrida > AZETA_ABS_FRESCURA_H horas -> abortar
+# 2. Completitud ABSOLUTA: presentes < AZETA_ABS_MIN_PRESENTES -> abortar
+#    (proteccion contra CSV truncado o fetch muerto a medias: el fetch
+#    del 14/07 murio al 82% — 214k de 262k; con esta guarda un apagado
+#    contra esa corrida habria abortado)
+# 3. Tope de apagado: ausentes > AZETA_ABS_MAX_APAGADO_PCT % del universo
+#    en Odoo -> abortar (algo huele mal, revisar a mano)
+# ─────────────────────────────────────────────────────────────────────
+
+AZETA_ABS_VENTANA_H = float(os.environ.get("AZETA_ABS_VENTANA_H", "3"))
+AZETA_ABS_FRESCURA_H = float(os.environ.get("AZETA_ABS_FRESCURA_H", "6"))
+AZETA_ABS_MIN_PRESENTES = int(os.environ.get("AZETA_ABS_MIN_PRESENTES", "250000"))
+AZETA_ABS_MAX_APAGADO_PCT = float(os.environ.get("AZETA_ABS_MAX_APAGADO_PCT", "15"))
+
+absence_job: dict | None = None
+
+
+def get_absence_status() -> dict:
+    job = dict(absence_job) if absence_job else {"status": "idle"}
+    if "errors" in job:
+        job["errors"] = job["errors"][-15:]
+    if "ausentes_sample" in job:
+        job["ausentes_sample"] = job["ausentes_sample"][:50]
+    return job
+
+
+def stop_absence():
+    global absence_job
+    if absence_job and absence_job.get("status") == "running":
+        absence_job["status"] = "stopped"
+        return True
+    return False
+
+
+def _azeta_presentes() -> tuple[set[str], str | None]:
+    """ISBNs del ultimo CSV completo (ventana respecto al MAX)."""
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        db.execute_query(cur, """
+            SELECT MAX(stock_actualizado_en) FROM libros_proveedor
+            WHERE proveedor_email = ?
+        """, (AZETA_PROVEEDOR_EMAIL,))
+        r = cur.fetchone()
+        max_ts = r[0] if r else None
+        if not max_ts:
+            return set(), None
+        db.execute_query(cur, f"""
+            SELECT isbn FROM libros_proveedor
+            WHERE proveedor_email = ?
+              AND isbn IS NOT NULL
+              AND stock_actualizado_en >= (
+                  (SELECT MAX(stock_actualizado_en) FROM libros_proveedor
+                   WHERE proveedor_email = ?)
+                  - INTERVAL '{AZETA_ABS_VENTANA_H} hours'
+              )
+        """, (AZETA_PROVEEDOR_EMAIL, AZETA_PROVEEDOR_EMAIL))
+        return {row[0] for row in cur.fetchall()}, str(max_ts)
+    finally:
+        conn.close()
+
+
+async def run_azeta_absence_shutdown(dry_run: bool = True) -> dict:
+    """
+    Apagado por ausencia AZETA: libros con stock > 0 en AZE01 (Odoo) que
+    NO vinieron en el ultimo CSV de stock -> inventory_quantity = 0.
+    Solo location 14. dry_run=True por defecto (obligatorio validar antes).
+    """
+    global absence_job
+    absence_job = {
+        "status": "running",
+        "started_at": datetime.now().isoformat(),
+        "stage": "starting",
+        "dry_run": dry_run,
+        "csv_max_ts": None,
+        "presentes": 0,
+        "con_stock_odoo": 0,
+        "ausentes": 0,
+        "apagados": 0,
+        "salvaguarda_activada": False,
+        "salvaguarda_motivo": None,
+        "ausentes_sample": [],
+        "errors": [],
+        "elapsed_s": 0,
+    }
+    job = absence_job
+    t_start = time.monotonic()
+
+    try:
+        # 1. Presentes del ultimo CSV
+        job["stage"] = "reading_csv_presence"
+        presentes, max_ts = _azeta_presentes()
+        job["csv_max_ts"] = max_ts
+        job["presentes"] = len(presentes)
+        if not presentes:
+            raise RuntimeError("Sin datos de presencia AZETA")
+
+        # GUARDA 1: frescura
+        from datetime import timezone as _tz
+        max_dt = datetime.fromisoformat(max_ts)
+        if max_dt.tzinfo is not None:
+            max_dt = max_dt.astimezone(_tz.utc).replace(tzinfo=None)
+        age_h = (datetime.utcnow() - max_dt).total_seconds() / 3600
+        job["csv_age_hours"] = round(age_h, 1)
+        if age_h > AZETA_ABS_FRESCURA_H:
+            job["salvaguarda_activada"] = True
+            job["salvaguarda_motivo"] = (
+                f"CSV viejo ({age_h:.0f}h > {AZETA_ABS_FRESCURA_H:.0f}h). "
+                "Apagado omitido.")
+
+        # GUARDA 2 (CRITICA): completitud absoluta
+        if not job["salvaguarda_activada"] and \
+                len(presentes) < AZETA_ABS_MIN_PRESENTES:
+            job["salvaguarda_activada"] = True
+            job["salvaguarda_motivo"] = (
+                f"CSV incompleto: {len(presentes):,} presentes < "
+                f"{AZETA_ABS_MIN_PRESENTES:,} (linea base ~262k). "
+                "Posible CSV truncado o fetch parcial. Apagado ABORTADO.")
+
+        # 2. Universo: quants con stock en AZE01
+        job["stage"] = "reading_odoo_stock"
+        from sync_stock_sinli import _odoo_isbns_con_stock
+        async with OdooClient() as odoo:
+            isbn_quants = await _odoo_isbns_con_stock(odoo, AZE01_LOCATION_ID)
+            job["con_stock_odoo"] = len(isbn_quants)
+
+            # 3. Ausentes
+            ausentes = set(isbn_quants.keys()) - presentes
+            job["ausentes"] = len(ausentes)
+            job["ausentes_sample"] = sorted(ausentes)[:100]
+
+            # GUARDA 3: tope de apagado
+            if not job["salvaguarda_activada"] and job["con_stock_odoo"] > 0:
+                pct = 100 * len(ausentes) / job["con_stock_odoo"]
+                job["ausentes_pct"] = round(pct, 1)
+                if pct > AZETA_ABS_MAX_APAGADO_PCT:
+                    job["salvaguarda_activada"] = True
+                    job["salvaguarda_motivo"] = (
+                        f"Apagado excesivo: {len(ausentes):,} ausentes = "
+                        f"{pct:.0f}% del stock en AZE01 (tope "
+                        f"{AZETA_ABS_MAX_APAGADO_PCT:.0f}%). Revisar a mano.")
+
+            # 4. Apagar
+            if dry_run:
+                job["stage"] = "dry_run_done"
+            elif job["salvaguarda_activada"]:
+                job["stage"] = "skipped_by_safeguard"
+            else:
+                job["stage"] = "apagando"
+                quant_ids = [qid for isbn in ausentes
+                             for qid in isbn_quants[isbn]]
+                CHUNK = 500
+                for i in range(0, len(quant_ids), CHUNK):
+                    if job["status"] != "running":
+                        break
+                    chunk = quant_ids[i:i + CHUNK]
+                    try:
+                        await odoo.write("stock.quant", chunk,
+                                         {"inventory_quantity": 0})
+                        try:
+                            await odoo.execute_kw(
+                                "stock.quant", "action_apply_inventory",
+                                [chunk])
+                        except Exception as apply_err:
+                            verify = await odoo.read(
+                                "stock.quant", chunk, ["quantity"])
+                            ok = all(abs(float(v.get("quantity") or 0)) < 0.01
+                                     for v in verify)
+                            if not ok:
+                                raise apply_err
+                        job["apagados"] += len(chunk)
+                    except Exception as e:
+                        err = f"apagar chunk@{i}: {type(e).__name__}: {str(e)[:150]}"
+                        job["errors"].append(err)
+                        print(f"[AzetaAbs] {err}")
+
+        if job["status"] == "running":
+            job["status"] = "completed"
+    except Exception as e:
+        job["status"] = "error"
+        job["errors"].append(f"{type(e).__name__}: {e!r}"[:300])
+        print(f"[AzetaAbs] Fatal: {e!r}")
+    finally:
+        job["elapsed_s"] = round(time.monotonic() - t_start, 2)
+        resumen = (
+            f"Apagado AZETA{' [DRY RUN]' if dry_run else ''}: "
+            f"{job['presentes']:,} presentes en CSV, "
+            f"{job['con_stock_odoo']:,} con stock en AZE01, "
+            f"{job['ausentes']:,} ausentes"
+            f"{', ' + str(job['apagados']) + ' apagados' if not dry_run else ''}. "
+            f"Salvaguarda: "
+            f"{job['salvaguarda_motivo'] if job['salvaguarda_activada'] else 'OK'}"
+        )
+        print(f"[AzetaAbs] {resumen}")
+        try:
+            import audit_log
+            audit_log.log_event(
+                "azeta_stock_push",
+                "absence_dry_run" if dry_run else "absence_shutdown",
+                resumen,
+                detalle={k: job.get(k) for k in (
+                    "presentes", "con_stock_odoo", "ausentes", "apagados",
+                    "ausentes_pct", "salvaguarda_activada",
+                    "salvaguarda_motivo", "csv_max_ts", "csv_age_hours",
+                    "dry_run", "elapsed_s")},
+                nivel="error" if (job["status"] == "error"
+                                   or job["salvaguarda_activada"]) else "info",
+            )
+        except Exception:
+            pass
+
+    return job
+
+
+# ─────────────────────────────────────────────────────────────────────
 # CRON: fetcher CSV AZETA -> libros_proveedor -> push stock a Odoo
 # ─────────────────────────────────────────────────────────────────────
 

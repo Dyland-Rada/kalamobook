@@ -76,15 +76,28 @@ def get_cron_status() -> dict:
 
 
 # ─── Lock + marcapáginas ──────────────────────────────────────────────
+# Un lock mas viejo que esto se considera huerfano (proceso muerto a
+# mitad de run, p.ej. por un re-deploy) y se roba automaticamente.
+LOCK_TTL_MIN = int(os.environ.get("SYNC_STOCK_LOCK_TTL_MIN", "30"))
+
+
 def _acquire_lock() -> bool:
-    """Adquiere lock atómicamente. Devuelve False si ya estaba locked."""
+    """
+    Adquiere lock atomicamente. Devuelve False si ya esta tomado por un
+    proceso vivo. Los locks huerfanos (mas viejos que LOCK_TTL_MIN) se
+    roban: sin esto, un deploy que mata un run a mitad deja el sync
+    bloqueado para siempre en silencio (paso el 14/07: lock huerfano
+    2 dias, 21k libros sin sincronizar y n8n devolviendo 'started').
+    """
     conn = db.get_connection()
     cur = conn.cursor()
     try:
-        db.execute_query(cur, """
+        db.execute_query(cur, f"""
             UPDATE sync_state
             SET lock_activo = true, lock_desde = NOW()
-            WHERE entidad = ? AND lock_activo = false
+            WHERE entidad = ?
+              AND (lock_activo = false
+                   OR lock_desde < NOW() - INTERVAL '{LOCK_TTL_MIN} minutes')
         """, (ENTIDAD,))
         affected = cur.rowcount
         conn.commit()

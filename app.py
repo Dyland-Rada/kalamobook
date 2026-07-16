@@ -1195,6 +1195,47 @@ async def azeta_stock_cycle():
     return JSONResponse(content={"status": "started", "mode": "full_cycle"})
 
 
+@app.post("/api/v1/azeta/absence-shutdown", tags=["AZETA"])
+async def azeta_absence_shutdown(
+    dry_run: bool = Query(True, description="True = solo calcular, sin escribir"),
+):
+    """
+    Apagado por ausencia AZETA: libros con stock en AZE01 que NO vinieron
+    en el ultimo CSV de stock -> stock 0. Guardas: frescura <6h,
+    completitud >=250k presentes (CSV truncado aborta), tope 15% apagado.
+    SIEMPRE dry_run primero.
+    """
+    import threading
+    import sys
+    import azeta_push_odoo
+
+    if azeta_push_odoo.get_absence_status().get("status") == "running":
+        return JSONResponse(status_code=409, content={
+            "status": "error", "message": "Apagado AZETA ya esta corriendo."
+        })
+
+    def _run_in_thread():
+        if sys.platform == 'win32':
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
+        try:
+            new_loop.run_until_complete(
+                azeta_push_odoo.run_azeta_absence_shutdown(dry_run=dry_run))
+        finally:
+            new_loop.close()
+
+    t = threading.Thread(target=_run_in_thread, daemon=True)
+    t.start()
+    return JSONResponse(content={"status": "started", "dry_run": dry_run})
+
+
+@app.get("/api/v1/azeta/absence-status", tags=["AZETA"])
+async def azeta_absence_status():
+    import azeta_push_odoo
+    return JSONResponse(content=azeta_push_odoo.get_absence_status())
+
+
 @app.post("/api/v1/azeta/stock-cron/start", tags=["AZETA"])
 async def azeta_stock_cron_start():
     """
