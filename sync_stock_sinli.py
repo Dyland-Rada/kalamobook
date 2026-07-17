@@ -964,8 +964,10 @@ def _cegald_presentes(proveedor_email: str) -> tuple[set[str], str | None]:
     """
     ISBNs presentes en la última foto CEGALD del proveedor.
 
-    Fuente primaria: sinli_cegald_isbns (tabla poblada por el n8n del
-    Server A con los ISBNs de cada archivo CEGALD — acordado 2026-07-10).
+    Fuente primaria: cegald_isbns_v2 (migrada 2026-07-17: la tabla
+    original sinli_cegald_isbns quedó con la secuencia corrupta tras un
+    rebuild que cortó Postgres a media escritura — 'cache lookup failed
+    for sequence'. La v2 es identica en columnas, con IDENTITY limpia).
     Presentes = ISBNs registrados en la ventana del último archivo.
 
     Fallback (si la tabla no existe o está vacía para el proveedor):
@@ -977,28 +979,28 @@ def _cegald_presentes(proveedor_email: str) -> tuple[set[str], str | None]:
     conn = db.get_connection()
     cur = conn.cursor()
     try:
-        # ── Fuente primaria: sinli_cegald_isbns ──────────────────────
+        # ── Fuente primaria: cegald_isbns_v2 ─────────────────────────
         try:
             db.execute_query(cur, """
-                SELECT MAX(registrado_en) FROM sinli_cegald_isbns
+                SELECT MAX(registrado_en) FROM cegald_isbns_v2
                 WHERE proveedor_email = ?
             """, (proveedor_email,))
             r = cur.fetchone()
             max_reg = r[0] if r else None
             if max_reg:
                 db.execute_query(cur, f"""
-                    SELECT DISTINCT isbn FROM sinli_cegald_isbns
+                    SELECT DISTINCT isbn FROM cegald_isbns_v2
                     WHERE proveedor_email = ?
                       AND isbn IS NOT NULL
                       AND registrado_en >= (
-                          (SELECT MAX(registrado_en) FROM sinli_cegald_isbns
+                          (SELECT MAX(registrado_en) FROM cegald_isbns_v2
                            WHERE proveedor_email = ?)
                           - INTERVAL '{CEGALD_VENTANA_HORAS} hours'
                       )
                 """, (proveedor_email, proveedor_email))
                 presentes = {row[0] for row in cur.fetchall()}
                 if presentes:
-                    print(f"[CEGALD] Presentes desde sinli_cegald_isbns: "
+                    print(f"[CEGALD] Presentes desde cegald_isbns_v2: "
                           f"{len(presentes):,} (foto {max_reg})")
                     return presentes, str(max_reg)
         except Exception:
