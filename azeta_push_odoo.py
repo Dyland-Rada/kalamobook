@@ -572,16 +572,24 @@ def _read_stock_targets(test_isbn: str | None = None,
             """
             db.execute_query(cur, sql, (AZETA_PROVEEDOR_EMAIL, test_isbn))
         elif only_since:
+            # OJO: filtrar por actualizado_en (solo cambia cuando el stock
+            # CAMBIA de verdad), NO por stock_actualizado_en (el fetcher lo
+            # refresca para TODOS los presentes del CSV cada hora como señal
+            # de presencia -> filtrar por el haria "incremental" = todo el
+            # catalogo, 238k quants/ciclo de 30-60 min. Detectado 17/07:
+            # 19 ciclos empujando 238k cada hora en vez de ~2k cambiados).
+            # El mismo patron de frontera que el fix marker-skip de SINLI:
+            # devolvemos actualizado_en como cursor.
             sql = """
                 SELECT m.odoo_id, m.barcode,
                        COALESCE(lp.stock_disponible, 0),
-                       lp.stock_actualizado_en
+                       lp.actualizado_en
                 FROM odoo_books_mirror m
                 JOIN libros_proveedor lp ON lp.isbn = m.barcode
                 WHERE lp.proveedor_email = ?
                   AND m.odoo_id IS NOT NULL
-                  AND lp.stock_actualizado_en > ?
-                ORDER BY lp.stock_actualizado_en
+                  AND lp.actualizado_en > ?
+                ORDER BY lp.actualizado_en
             """
             if max_books:
                 sql += f"\n                LIMIT {int(max_books)}"
