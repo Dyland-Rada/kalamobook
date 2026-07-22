@@ -17,6 +17,7 @@ estos cambios y los lleva a Odoo AZE01 (lot_stock_id 14).
 Cap a 50: si AZETA tiene >50 unidades, devuelve 50. El sync lo refleja como
 50 en stock.quant; documentado en el contrato.
 """
+import asyncio
 import os
 import time
 from datetime import datetime
@@ -201,11 +202,16 @@ def _upsert_batch(rows: list[tuple[str, int]]) -> dict:
         # el stock; stock_actualizado_en siempre se mueve a NOW (refleja
         # que fetcher confirmo el stock).
         # Usamos xmax = 0 para distinguir INSERT vs UPDATE.
+        # execute_values: UN solo round-trip por lote (antes era cur.execute
+        # por fila = 257k round-trips → ~2.5h y bloqueo del event loop cuando
+        # la BD tiene latencia de red. Con execute_values la latencia deja de
+        # importar: el lote entero viaja en una llamada).
+        from psycopg2.extras import execute_values
         sql = """
             INSERT INTO libros_proveedor
                 (isbn, proveedor_email, stock_disponible,
                  stock_actualizado_en, actualizado_en)
-            VALUES (%s, %s, %s, NOW(), NOW())
+            VALUES %s
             ON CONFLICT (isbn, proveedor_email) DO UPDATE
             SET stock_disponible = EXCLUDED.stock_disponible,
                 stock_actualizado_en = NOW(),
@@ -217,18 +223,18 @@ def _upsert_batch(rows: list[tuple[str, int]]) -> dict:
             RETURNING (xmax = 0) AS was_insert,
                       (stock_actualizado_en = actualizado_en) AS stock_changed
         """
+        template = "(%s, %s, %s, NOW(), NOW())"
+        args = [(isbn, AZETA_PROVEEDOR_EMAIL, qty) for isbn, qty in rows]
         try:
-            for isbn, qty in rows:
-                cur.execute(sql, (isbn, AZETA_PROVEEDOR_EMAIL, qty))
-                row = cur.fetchone()
-                if row:
-                    was_insert, stock_changed = row[0], row[1]
-                    if was_insert:
-                        inserted += 1
-                    elif stock_changed:
-                        updated_changed += 1
-                    else:
-                        updated_unchanged += 1
+            results = execute_values(cur, sql, args, template=template,
+                                     page_size=len(args), fetch=True)
+            for was_insert, stock_changed in results:
+                if was_insert:
+                    inserted += 1
+                elif stock_changed:
+                    updated_changed += 1
+                else:
+                    updated_unchanged += 1
             conn.commit()
         except Exception as e:
             try: conn.rollback()
@@ -364,6 +370,10 @@ async def run_azeta_sync(batch_size: int = 500) -> dict:
             if done % 5000 == 0 or done == len(rows):
                 print(f"[AZETA] UPSERT {done:,}/{len(rows):,} "
                       f"(ins:{job['inserted']} chg:{job['updated_changed']} same:{job['updated_unchanged']})")
+            # Ceder el control al event loop entre lotes: _upsert_batch es
+            # sincrono/bloqueante, sin esto uvicorn no atiende HTTP mientras
+            # corre el sync (n8n y la web se cuelgan).
+            await asyncio.sleep(0)
 
         job["elapsed_upsert_s"] = round(time.monotonic() - t1, 2)
         job["elapsed_total_s"] = round(time.monotonic() - t_start, 2)
