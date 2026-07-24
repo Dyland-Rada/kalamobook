@@ -1041,11 +1041,21 @@ async def _odoo_isbns_con_stock(odoo: OdooClient,
     {isbn: [quant_ids]} de todos los quants con quantity > 0 en la location.
     Resuelve product_id -> product_tmpl_id -> barcode en batch.
     """
-    quants = await odoo.search_read(
-        "stock.quant",
-        [["location_id", "=", location_id], ["quantity", ">", 0]],
-        ["id", "product_id"], limit=0,
-    )
+    # Paginado: leer 253k+ quants de una sola llamada revienta Odoo
+    # ("Odoo Server Error"). Traer en páginas ordenadas por id.
+    quants: list[dict] = []
+    PAGE = 40000
+    offset = 0
+    while True:
+        page = await odoo.search_read(
+            "stock.quant",
+            [["location_id", "=", location_id], ["quantity", ">", 0]],
+            ["id", "product_id"], offset=offset, limit=PAGE, order="id",
+        )
+        quants.extend(page)
+        if len(page) < PAGE:
+            break
+        offset += PAGE
     pid_to_quants: dict[int, list[int]] = {}
     for q in quants:
         pid = q["product_id"]

@@ -1231,6 +1231,24 @@ async def run_full_stock_cycle() -> dict:
     except Exception as e:
         summary["error"] = f"Push: {type(e).__name__}: {e!r}"
 
+    # Apagado por ausencia: libros con stock en AZE01 que ya NO vienen en el
+    # CSV fresco -> inventory_quantity = 0. Va al final del ciclo (mismo
+    # proceso, secuencial tras el push = sin choques de concurrencia) y con
+    # el CSV recién descargado (pasa la guarda de frescura). Guardas internas
+    # (frescura, min presentes, tope %) lo hacen seguro. Toggle por env.
+    if os.environ.get("AZETA_ABSENCE_IN_CYCLE", "1") == "1":
+        try:
+            abs_res = await run_azeta_absence_shutdown(dry_run=False)
+            summary["shutdown"] = {
+                "status": abs_res.get("status"),
+                "ausentes": abs_res.get("ausentes", 0),
+                "apagados": abs_res.get("apagados", 0),
+                "salvaguarda": abs_res.get("salvaguarda_motivo"),
+                "elapsed_s": abs_res.get("elapsed_s", 0),
+            }
+        except Exception as e:
+            summary["shutdown_error"] = f"{type(e).__name__}: {e!r}"
+
     return summary
 
 
@@ -1254,13 +1272,19 @@ async def _cron_loop():
                 import audit_log
                 f = res.get("fetcher") or {}
                 p = res.get("push") or {}
+                s = res.get("shutdown") or {}
+                sd_txt = (f", apagados {s.get('apagados', 0):,}"
+                          if s and not s.get("salvaguarda")
+                          else (f", apagado omitido (salvaguarda)"
+                                if s.get("salvaguarda") else ""))
                 audit_log.log_event(
                     "cron", "azeta_stock_cycle",
                     f"Ciclo #{_cron_state['runs_total']}: recibidos "
                     f"{f.get('isbns_unique', 0):,} ISBNs, "
                     f"{f.get('updated_changed', 0)} cambiaron, "
-                    f"push {p.get('stock_written', 0):,} quants en {elapsed}s",
-                    detalle={"fetcher": f, "push": p, "elapsed_s": elapsed},
+                    f"push {p.get('stock_written', 0):,} quants{sd_txt} en {elapsed}s",
+                    detalle={"fetcher": f, "push": p, "shutdown": s,
+                             "elapsed_s": elapsed},
                     nivel="error" if res.get("error") else "info",
                 )
             except Exception:
