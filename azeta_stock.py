@@ -31,6 +31,7 @@ AZETA_URL = "http://www.azetadistribuciones.es/servicios_web/stock.php"
 AZETA_USER = os.environ.get("AZETA_USER", "120153")
 AZETA_PASS = os.environ.get("AZETA_PASS", "jalta4b")
 AZETA_PROVEEDOR_EMAIL = "info@azetadistribuciones.es"
+AZETA_PROVEEDOR_ID = 1  # id en tabla proveedores (AZETA DISTRIBUCIONES)
 
 # Estado del job en memoria (se resetea con redeploy — el estado real esta
 # en la BD via stock_actualizado_en)
@@ -209,11 +210,12 @@ def _upsert_batch(rows: list[tuple[str, int]]) -> dict:
         from psycopg2.extras import execute_values
         sql = """
             INSERT INTO libros_proveedor
-                (isbn, proveedor_email, stock_disponible,
+                (isbn, proveedor_email, proveedor_id, stock_disponible,
                  stock_actualizado_en, actualizado_en)
             VALUES %s
             ON CONFLICT (isbn, proveedor_email) DO UPDATE
             SET stock_disponible = EXCLUDED.stock_disponible,
+                proveedor_id = COALESCE(libros_proveedor.proveedor_id, EXCLUDED.proveedor_id),
                 stock_actualizado_en = NOW(),
                 actualizado_en = CASE
                     WHEN libros_proveedor.stock_disponible IS DISTINCT FROM EXCLUDED.stock_disponible
@@ -223,8 +225,9 @@ def _upsert_batch(rows: list[tuple[str, int]]) -> dict:
             RETURNING (xmax = 0) AS was_insert,
                       (stock_actualizado_en = actualizado_en) AS stock_changed
         """
-        template = "(%s, %s, %s, NOW(), NOW())"
-        args = [(isbn, AZETA_PROVEEDOR_EMAIL, qty) for isbn, qty in rows]
+        template = "(%s, %s, %s, %s, NOW(), NOW())"
+        args = [(isbn, AZETA_PROVEEDOR_EMAIL, AZETA_PROVEEDOR_ID, qty)
+                for isbn, qty in rows]
         try:
             results = execute_values(cur, sql, args, template=template,
                                      page_size=len(args), fetch=True)
