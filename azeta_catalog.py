@@ -289,6 +289,29 @@ def upsert_to_mirror_batch(rows: list[dict]) -> dict:
                 updated += 1
             else:
                 skipped += 1
+
+        # Ademas del mirror, reflejar el precio del catalogo en
+        # libros_proveedor para AZETA (proveedor_id=1), asi el stock de
+        # AZETA nunca vuelve a salir "sin precio". Batch en una sola llamada
+        # (execute_values). NO tocamos actualizado_en: el precio de AZETA
+        # llega a Odoo via el mirror, no via este cursor de sync.
+        if db.IS_POSTGRES:
+            price_rows = [
+                (r["isbn"], r["price_eur"], r.get("price_no_iva"), r.get("iva"))
+                for r in rows if r.get("price_eur") and r["price_eur"] > 0
+            ]
+            if price_rows:
+                from psycopg2.extras import execute_values
+                execute_values(cur, """
+                    UPDATE libros_proveedor a SET
+                        precio_con_iva = v.p, precio_sin_iva = v.ps,
+                        pct_iva = v.iva, fecha_precio = NOW()
+                    FROM (VALUES %s) AS v(isbn, p, ps, iva)
+                    WHERE a.proveedor_id = 1 AND a.isbn = v.isbn
+                      AND a.precio_con_iva IS DISTINCT FROM v.p
+                """, price_rows, template="(%s,%s,%s,%s)",
+                    page_size=len(price_rows))
+
         conn.commit()
     except Exception as e:
         try: conn.rollback()
