@@ -4,8 +4,10 @@ if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 from fastapi import FastAPI, Request, Form, Query, BackgroundTasks, Depends, HTTPException, Header, UploadFile, File, status
-from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from starlette.middleware.sessions import SessionMiddleware
+from starlette.exceptions import HTTPException as StarletteHTTPException
 import secrets
 import os
 import pandas as pd
@@ -31,10 +33,23 @@ security = HTTPBasic(auto_error=False)
 APP_USERNAME = os.environ.get("APP_USERNAME", "admin")
 APP_PASSWORD = os.environ.get("APP_PASSWORD", "admin123")
 
-# Paths que son publicos (sin HTTP Basic). El webhook de Telegram va aqui
-# porque Telegram no manda credenciales — lo aseguramos con chat_id check
-# + (opcionalmente) secret_token en el header.
-_PUBLIC_PATHS = {"/api/v1/notify/telegram-webhook"}
+# Paths que son publicos (sin auth). El webhook de Telegram va aqui porque
+# Telegram no manda credenciales; /login y /logout para poder autenticarse.
+_PUBLIC_PATHS = {
+    "/api/v1/notify/telegram-webhook",
+    "/login",
+    "/logout",
+}
+
+
+def _basic_ok(credentials: HTTPBasicCredentials | None) -> bool:
+    if not credentials:
+        return False
+    u = secrets.compare_digest(credentials.username.encode("utf8"),
+                               APP_USERNAME.encode("utf8"))
+    p = secrets.compare_digest(credentials.password.encode("utf8"),
+                               APP_PASSWORD.encode("utf8"))
+    return bool(u and p)
 
 
 def verify_credentials(
@@ -43,29 +58,52 @@ def verify_credentials(
 ):
     if request.url.path in _PUBLIC_PATHS:
         return "public"
-    if not credentials:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing credentials",
-            headers={"WWW-Authenticate": "Basic"},
-        )
-    correct_username = secrets.compare_digest(credentials.username.encode("utf8"), APP_USERNAME.encode("utf8"))
-    correct_password = secrets.compare_digest(credentials.password.encode("utf8"), APP_PASSWORD.encode("utf8"))
-    if not (correct_username and correct_password):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
-            headers={"WWW-Authenticate": "Basic"},
-        )
-    return credentials.username
+    # 1) Sesion de navegador (login web)
+    try:
+        user = request.session.get("user")
+    except Exception:
+        user = None
+    if user:
+        return user
+    # 2) HTTP Basic (n8n / API) — sin cambios, para no romper integraciones
+    if _basic_ok(credentials):
+        return credentials.username
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Missing or incorrect credentials",
+        headers={"WWW-Authenticate": "Basic"},
+    )
 
 app = FastAPI(
-    title="Buscador de Libros API",
-    description="API para buscar información de libros en La Casa del Libro Colombia. "
-                "Soporta búsqueda por ISBN o nombre del libro.",
+    title="Kalamo — Panel de Operaciones",
+    description="Panel de sincronización de stock y catálogo de Kalamo.",
     version="2.0.0",
     dependencies=[Depends(verify_credentials)],
 )
+
+# Sesion firmada para el login web (cookie). El Basic de /api sigue intacto.
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=os.environ.get("SESSION_SECRET", APP_PASSWORD + "-kalamo-session"),
+    max_age=60 * 60 * 12,  # 12h
+    same_site="lax",
+    https_only=False,
+)
+
+
+@app.exception_handler(StarletteHTTPException)
+async def _auth_redirect(request: Request, exc: StarletteHTTPException):
+    """401 en navegacion HTML -> redirige al login (en vez del popup feo).
+    En /api mantiene el 401 JSON para que n8n reciba el error normal."""
+    if exc.status_code == 401:
+        accept = request.headers.get("accept", "")
+        if "text/html" in accept and not request.url.path.startswith("/api"):
+            return RedirectResponse("/login", status_code=302)
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+        headers=getattr(exc, "headers", None) or {},
+    )
 
 # Setup templates for the web interface
 templates = Jinja2Templates(directory="templates")
@@ -169,6 +207,34 @@ async def startup():
 
 
 # ─── Web Interface (HTML) ────────────────────────────────────────────
+
+@app.get("/login", response_class=HTMLResponse, include_in_schema=False)
+async def login_page(request: Request):
+    """Pantalla de login (publica). Si ya hay sesion, va al panel."""
+    if request.session.get("user"):
+        return RedirectResponse("/", status_code=302)
+    return templates.TemplateResponse(request, "login.html", {"error": None})
+
+
+@app.post("/login", response_class=HTMLResponse, include_in_schema=False)
+async def login_submit(request: Request,
+                       username: str = Form(...), password: str = Form(...)):
+    """Valida credenciales y abre sesion de navegador."""
+    u = secrets.compare_digest(username.encode("utf8"), APP_USERNAME.encode("utf8"))
+    p = secrets.compare_digest(password.encode("utf8"), APP_PASSWORD.encode("utf8"))
+    if u and p:
+        request.session["user"] = username
+        return RedirectResponse("/", status_code=302)
+    return templates.TemplateResponse(
+        request, "login.html",
+        {"error": "Usuario o contraseña incorrectos."}, status_code=401)
+
+
+@app.get("/logout", include_in_schema=False)
+async def logout(request: Request):
+    request.session.clear()
+    return RedirectResponse("/login", status_code=302)
+
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
 async def read_root(request: Request):

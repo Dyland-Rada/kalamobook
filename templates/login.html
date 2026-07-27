@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kalamo — Acceso</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-0: #0b0f1a;
+            --bg-1: #111827;
+            --panel: rgba(255, 255, 255, .04);
+            --border: rgba(255, 255, 255, .09);
+            --text: #e8ecf4;
+            --muted: #8b93a7;
+            --accent: #6366f1;
+            --accent-2: #22d3ee;
+            --danger: #f87171;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'Inter', system-ui, sans-serif;
+            min-height: 100vh;
+            color: var(--text);
+            background:
+                radial-gradient(1200px 600px at 80% -10%, rgba(99,102,241,.18), transparent 60%),
+                radial-gradient(900px 500px at -10% 110%, rgba(34,211,238,.12), transparent 55%),
+                linear-gradient(160deg, var(--bg-0), var(--bg-1));
+            display: flex; align-items: center; justify-content: center;
+            padding: 24px;
+        }
+        .card {
+            width: 100%; max-width: 400px;
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 18px;
+            padding: 40px 34px 34px;
+            backdrop-filter: blur(14px);
+            box-shadow: 0 30px 80px -20px rgba(0,0,0,.6);
+        }
+        .brand {
+            display: flex; align-items: center; gap: 12px; margin-bottom: 6px;
+        }
+        .logo {
+            width: 42px; height: 42px; border-radius: 12px;
+            background: linear-gradient(135deg, var(--accent), var(--accent-2));
+            display: grid; place-items: center;
+            font-weight: 800; font-size: 22px; color: #0b0f1a;
+        }
+        .brand h1 { font-size: 24px; font-weight: 800; letter-spacing: -.02em; }
+        .subtitle { color: var(--muted); font-size: 13.5px; margin: 4px 0 28px; }
+        label { display: block; font-size: 12.5px; color: var(--muted); margin-bottom: 7px; font-weight: 500; }
+        .field { margin-bottom: 18px; }
+        input {
+            width: 100%; padding: 13px 15px;
+            background: rgba(255,255,255,.03);
+            border: 1px solid var(--border);
+            border-radius: 11px; color: var(--text); font-size: 15px;
+            transition: border-color .15s, box-shadow .15s;
+        }
+        input:focus {
+            outline: none; border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(99,102,241,.18);
+        }
+        button {
+            width: 100%; margin-top: 8px; padding: 13px;
+            background: linear-gradient(135deg, var(--accent), #4f46e5);
+            color: #fff; border: none; border-radius: 11px;
+            font-size: 15px; font-weight: 600; cursor: pointer;
+            transition: transform .08s, filter .15s;
+        }
+        button:hover { filter: brightness(1.08); }
+        button:active { transform: translateY(1px); }
+        .error {
+            background: rgba(248,113,113,.12);
+            border: 1px solid rgba(248,113,113,.3);
+            color: var(--danger);
+            padding: 10px 13px; border-radius: 10px;
+            font-size: 13px; margin-bottom: 18px;
+        }
+        .foot { text-align: center; color: var(--muted); font-size: 11.5px; margin-top: 26px; }
+    </style>
+</head>
+<body>
+    <form class="card" method="post" action="/login">
+        <div class="brand">
+            <div class="logo">K</div>
+            <h1>Kalamo</h1>
+        </div>
+        <p class="subtitle">Panel de operaciones — acceso restringido</p>
+
+        {% if error %}
+        <div class="error">{{ error }}</div>
+        {% endif %}
+
+        <div class="field">
+            <label for="username">Usuario</label>
+            <input id="username" name="username" autocomplete="username" autofocus required>
+        </div>
+        <div class="field">
+            <label for="password">Contraseña</label>
+            <input id="password" name="password" type="password" autocomplete="current-password" required>
+        </div>
+        <button type="submit">Entrar</button>
+
+        <p class="foot">Kalamo · sincronización de stock y catálogo</p>
+    </form>
+</body>
+</html>
