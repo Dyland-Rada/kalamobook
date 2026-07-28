@@ -181,11 +181,11 @@ def parse_book_html(html: str, isbn: str = "", source_url: str = "") -> dict | N
 
 async def fetch_book_by_url(
     session: aiohttp.ClientSession, url: str, isbn: str = "",
-    timeout_s: float = 15.0,
+    timeout_s: float = 15.0, proxy: str | None = None,
 ) -> dict | None:
     """Baja la pagina detalle directo. Retorna dict o None."""
     try:
-        async with session.get(url, headers=DEFAULT_HEADERS,
+        async with session.get(url, headers=DEFAULT_HEADERS, proxy=proxy,
                                 timeout=aiohttp.ClientTimeout(total=timeout_s)) as resp:
             if resp.status in (429, 403):
                 body = ""
@@ -220,7 +220,7 @@ ISBNSEARCH_HEADERS = {
 
 async def isbnsearch(
     session: aiohttp.ClientSession, isbn: str,
-    timeout_s: float = 15.0, store: str = "CO",
+    timeout_s: float = 15.0, store: str = "CO", proxy: str | None = None,
 ) -> dict | None:
     """
     Consulta el API isbnsearch de Empathy. Devuelve el primer item del
@@ -233,7 +233,7 @@ async def isbnsearch(
     params = {"query": isbn_clean, "lang": "es", "store": store}
     try:
         async with session.get(ISBNSEARCH_URL, params=params,
-                                headers=ISBNSEARCH_HEADERS,
+                                headers=ISBNSEARCH_HEADERS, proxy=proxy,
                                 timeout=aiohttp.ClientTimeout(total=timeout_s)) as resp:
             if resp.status in (429, 403):
                 raise CDLBlocked(f"isbnsearch status={resp.status}")
@@ -251,7 +251,7 @@ async def isbnsearch(
 
 async def fetch_book_by_isbn(
     session: aiohttp.ClientSession, isbn: str,
-    timeout_s: float = 15.0,
+    timeout_s: float = 15.0, proxy: str | None = None,
 ) -> dict | None:
     """
     Busca el ISBN via API isbnsearch (JSON), sigue a la URL del detalle
@@ -261,12 +261,12 @@ async def fetch_book_by_isbn(
     if len(isbn_clean) not in (10, 13):
         return None
 
-    item = await isbnsearch(session, isbn_clean, timeout_s=timeout_s)
+    item = await isbnsearch(session, isbn_clean, timeout_s=timeout_s, proxy=proxy)
     if not item or not item.get("url"):
         return None
 
     detail_url = item["url"]
-    data = await fetch_book_by_url(session, detail_url, isbn=isbn_clean)
+    data = await fetch_book_by_url(session, detail_url, isbn=isbn_clean, proxy=proxy)
     if data:
         return data
 

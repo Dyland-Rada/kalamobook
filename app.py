@@ -1261,6 +1261,60 @@ async def azeta_stock_cycle():
     return JSONResponse(content={"status": "started", "mode": "full_cycle"})
 
 
+@app.post("/api/v1/auto-scrape/run", tags=["Auto-Scrape"])
+async def auto_scrape_run(
+    max_new: int | None = Query(None, ge=1, description="Tope de nuevos (test)"),
+):
+    """
+    Ciclo autonomo de libros nuevos: detecta ISBNs con stock que no estan en
+    Odoo -> enriquece via CDL -> crea + etiqueta -> genera reporte Excel ->
+    avisa a Server A por webhook (ellos envian el correo). 1x/dia via n8n.
+    409 si ya hay uno corriendo.
+    """
+    import threading
+    import sys
+    import auto_scrape
+
+    if auto_scrape.get_status().get("status") == "running":
+        return JSONResponse(status_code=409, content={
+            "status": "error", "message": "Auto-scrape ya esta corriendo."})
+
+    def _run_in_thread():
+        if sys.platform == 'win32':
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(auto_scrape.run_auto_scrape_cycle(max_new=max_new))
+        finally:
+            loop.close()
+
+    threading.Thread(target=_run_in_thread, daemon=True).start()
+    return JSONResponse(content={"status": "started", "max_new": max_new})
+
+
+@app.get("/api/v1/auto-scrape/status", tags=["Auto-Scrape"])
+async def auto_scrape_status():
+    import auto_scrape
+    return JSONResponse(content=auto_scrape.get_status())
+
+
+@app.get("/api/v1/reportes/{report_id}", tags=["Auto-Scrape"])
+async def get_reporte(report_id: str):
+    """Sirve el Excel de un reporte de auto-scrape. Protegido por el Basic
+    Auth global (Server A lo descarga con las credenciales de la API)."""
+    import re
+    import auto_scrape
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", report_id):
+        return JSONResponse(status_code=400, content={"error": "id invalido"})
+    path = os.path.join(auto_scrape.REPORTS_DIR, f"{report_id}.xlsx")
+    if not os.path.isfile(path):
+        return JSONResponse(status_code=404, content={"error": "reporte no encontrado"})
+    return FileResponse(
+        path, filename=f"{report_id}.xlsx",
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
 @app.post("/api/v1/azeta/absence-shutdown", tags=["AZETA"])
 async def azeta_absence_shutdown(
     dry_run: bool = Query(True, description="True = solo calcular, sin escribir"),
