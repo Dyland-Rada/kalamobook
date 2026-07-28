@@ -243,8 +243,33 @@ def _send_webhook(summary: dict, archivo_url: str, muestra: list[str]) -> dict:
         return {"sent": False, "reason": str(e)[:150]}
 
 
+def _sample_created(n: int) -> list[dict]:
+    """Muestra de libros ya creados (solo lectura) para probar el flujo de
+    reporte+webhook sin crear ni scrapear nada."""
+    conn = db.get_connection(); cur = conn.cursor()
+    cur.execute("""
+        SELECT m.barcode, m.name, b.author, b.editorial, m.cdl_image_url,
+               m.description, m.cdl_weight, m.cdl_height, m.cdl_width,
+               m.list_price
+        FROM odoo_books_mirror m
+        LEFT JOIN books b ON b.isbn = m.barcode
+        WHERE m.synced_at::date = CURRENT_DATE
+        LIMIT %s
+    """, (int(n),))
+    out = []
+    for r in cur.fetchall():
+        out.append({"isbn": r[0], "title": r[1], "author": r[2],
+                    "editorial": r[3], "image_url": r[4], "description": r[5],
+                    "weight": r[6], "height": r[7], "width": r[8],
+                    "precio": r[9], "proveedores": "",
+                    "tag": _classify(r[4], r[5], r[6], r[7], r[8])})
+    conn.close()
+    return out
+
+
 # ── Orquestador ──────────────────────────────────────────────────────
-async def run_auto_scrape_cycle(max_new: int | None = None) -> dict:
+async def run_auto_scrape_cycle(max_new: int | None = None,
+                                 test_sample: int | None = None) -> dict:
     global auto_scrape_job
     report_id = "autoscrape_" + uuid.uuid4().hex[:12]
     auto_scrape_job = {"status": "running", "stage": "detectando",
@@ -252,6 +277,21 @@ async def run_auto_scrape_cycle(max_new: int | None = None) -> dict:
                        "report_id": report_id, "creados": 0}
     t0 = time.monotonic()
     try:
+        # Modo prueba: reporte de una muestra ya creada + webhook (sin crear
+        # ni scrapear). Sirve para verificar email+adjunto de punta a punta.
+        if test_sample:
+            targets = _sample_created(test_sample)
+            con_titulo = sum(1 for t in targets if (t.get("title") or "").strip())
+            summary = {"total": len(targets), "scrapeados": con_titulo,
+                       "no_scrapeados": len(targets) - con_titulo}
+            _build_report(targets, report_id)
+            archivo_url = f"{PUBLIC_BASE}/api/v1/reportes/{report_id}"
+            wh = _send_webhook(summary, archivo_url,
+                               [t["isbn"] for t in targets if not (t.get("title") or "").strip()])
+            auto_scrape_job.update(status="completed", stage="test_done",
+                                   resumen=summary, webhook=wh, archivo_url=archivo_url,
+                                   elapsed_s=round(time.monotonic() - t0, 1))
+            return auto_scrape_job
         targets = _detect_new(limit=max_new)
         auto_scrape_job["total"] = len(targets)
         if not targets:

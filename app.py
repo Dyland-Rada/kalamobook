@@ -1264,6 +1264,8 @@ async def azeta_stock_cycle():
 @app.post("/api/v1/auto-scrape/run", tags=["Auto-Scrape"])
 async def auto_scrape_run(
     max_new: int | None = Query(None, ge=1, description="Tope de nuevos (test)"),
+    test_sample: int | None = Query(None, ge=1, le=5000,
+        description="Modo prueba: reporte de N ya creados + webhook, sin crear/scrapear"),
 ):
     """
     Ciclo autonomo de libros nuevos: detecta ISBNs con stock que no estan en
@@ -1285,12 +1287,14 @@ async def auto_scrape_run(
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
-            loop.run_until_complete(auto_scrape.run_auto_scrape_cycle(max_new=max_new))
+            loop.run_until_complete(auto_scrape.run_auto_scrape_cycle(
+                max_new=max_new, test_sample=test_sample))
         finally:
             loop.close()
 
     threading.Thread(target=_run_in_thread, daemon=True).start()
-    return JSONResponse(content={"status": "started", "max_new": max_new})
+    return JSONResponse(content={"status": "started", "max_new": max_new,
+                                 "test_sample": test_sample})
 
 
 @app.get("/api/v1/auto-scrape/status", tags=["Auto-Scrape"])
