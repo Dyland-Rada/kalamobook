@@ -1319,6 +1319,40 @@ async def get_reporte(report_id: str):
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
+@app.get("/api/v1/manual/dates", tags=["Relleno Manual"])
+async def manual_dates(tipo: str = Query("no_scrapeados")):
+    import manual_fill
+    if tipo not in ("no_scrapeados", "todos"):
+        return JSONResponse(status_code=400, content={"error": "tipo invalido"})
+    return JSONResponse(content={"tipo": tipo, "fechas": manual_fill.get_dates(tipo)})
+
+
+@app.get("/api/v1/manual/pending", tags=["Relleno Manual"])
+async def manual_pending(
+    tipo: str = Query("no_scrapeados"),
+    fecha: str = Query(...),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+):
+    import manual_fill
+    if tipo not in ("no_scrapeados", "todos"):
+        return JSONResponse(status_code=400, content={"error": "tipo invalido"})
+    return JSONResponse(content=manual_fill.get_pending(tipo, fecha, page, page_size))
+
+
+@app.post("/api/v1/manual/save", tags=["Relleno Manual"])
+async def manual_save(request: Request):
+    import manual_fill
+    data = await request.json()
+    if not data.get("isbn"):
+        return JSONResponse(status_code=400, content={"error": "isbn requerido"})
+    try:
+        res = await manual_fill.save_book(data)
+        return JSONResponse(content=res)
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": f"{type(e).__name__}: {str(e)[:200]}"})
+
+
 @app.post("/api/v1/azeta/absence-shutdown", tags=["AZETA"])
 async def azeta_absence_shutdown(
     dry_run: bool = Query(True, description="True = solo calcular, sin escribir"),

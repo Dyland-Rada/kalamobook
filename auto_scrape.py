@@ -144,14 +144,15 @@ def _mirror_upsert(items: list[dict]):
     execute_values(cur, """
         INSERT INTO odoo_books_mirror
             (odoo_id, barcode, name, list_price, cdl_image_url, description,
-             cdl_weight, cdl_height, cdl_width, synced_at)
+             cdl_weight, cdl_height, cdl_width, synced_at, nuevo_creado_en)
         VALUES %s
         ON CONFLICT (odoo_id) DO UPDATE SET
             barcode=EXCLUDED.barcode, name=EXCLUDED.name,
             list_price=EXCLUDED.list_price, cdl_image_url=EXCLUDED.cdl_image_url,
             description=EXCLUDED.description, cdl_weight=EXCLUDED.cdl_weight,
-            cdl_height=EXCLUDED.cdl_height, cdl_width=EXCLUDED.cdl_width, synced_at=NOW()
-    """, vals, template="(%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())", page_size=len(vals))
+            cdl_height=EXCLUDED.cdl_height, cdl_width=EXCLUDED.cdl_width, synced_at=NOW(),
+            nuevo_creado_en=COALESCE(odoo_books_mirror.nuevo_creado_en, NOW())
+    """, vals, template="(%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),NOW())", page_size=len(vals))
     conn.commit(); conn.close()
 
 

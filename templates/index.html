@@ -7,6 +7,8 @@
     <title>Kalamo — Panel de Operaciones</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <script type="module" src="https://cdn.jsdelivr.net/npm/ionicons@7.1.0/dist/ionicons/ionicons.esm.js"></script>
+    <script nomodule src="https://cdn.jsdelivr.net/npm/ionicons@7.1.0/dist/ionicons/ionicons.js"></script>
     <style>
         * {
             box-sizing: border-box;
@@ -115,6 +117,67 @@
             display: block;
             animation: fadeIn 0.3s ease;
         }
+
+        /* ── IONICONS ──────────────────────────────────────── */
+        ion-icon {
+            vertical-align: -2px;
+            font-size: 1.05em;
+            margin-right: 2px;
+        }
+
+        /* ── RELLENO MANUAL ────────────────────────────────── */
+        .subtabs { display: flex; gap: 6px; margin-bottom: 18px; }
+        .subtab-btn {
+            padding: 9px 16px; border: 1px solid rgba(255,255,255,.1);
+            background: rgba(255,255,255,.03); color: #8b93a7;
+            border-radius: 9px; cursor: pointer; font-family: inherit;
+            font-size: .88rem; font-weight: 600; transition: all .15s;
+        }
+        .subtab-btn.active {
+            background: linear-gradient(135deg, rgba(99,102,241,.25), rgba(34,211,238,.14));
+            color: #fff; border-color: rgba(99,102,241,.4);
+        }
+        .date-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+        .date-chip {
+            padding: 7px 13px; border-radius: 9px; cursor: pointer;
+            background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.09);
+            color: #cdd3e0; font-size: .82rem; transition: all .15s;
+        }
+        .date-chip.active { background: rgba(99,102,241,.22); border-color: rgba(99,102,241,.45); color: #fff; }
+        .date-chip .cnt { color: #8b93a7; margin-left: 6px; font-weight: 600; }
+        .mtable { width: 100%; border-collapse: collapse; font-size: .85rem; }
+        .mtable th {
+            text-align: left; padding: 9px 10px; color: #8b93a7;
+            font-weight: 600; border-bottom: 1px solid rgba(255,255,255,.08);
+            font-size: .78rem; text-transform: uppercase; letter-spacing: .03em;
+        }
+        .mtable td { padding: 9px 10px; border-bottom: 1px solid rgba(255,255,255,.05); }
+        .mtable tr:hover td { background: rgba(255,255,255,.02); }
+        .tag-badge {
+            padding: 2px 9px; border-radius: 6px; font-size: .72rem; font-weight: 600;
+        }
+        .tag-Completo { background: rgba(34,197,94,.18); color: #4ade80; }
+        .tag-Web { background: rgba(99,102,241,.2); color: #a5b4fc; }
+        .tag-Foto { background: rgba(234,179,8,.18); color: #fbbf24; }
+        .tag-Stock { background: rgba(148,163,184,.18); color: #cbd5e1; }
+        .btn-edit {
+            padding: 5px 12px; border-radius: 7px; cursor: pointer;
+            background: rgba(99,102,241,.15); border: 1px solid rgba(99,102,241,.3);
+            color: #a5b4fc; font-size: .78rem; font-family: inherit;
+        }
+        .btn-edit:hover { background: rgba(99,102,241,.28); }
+        .mform-grid {
+            display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px;
+            margin: 14px 0;
+        }
+        .mform-grid .full { grid-column: 1 / -1; }
+        .mform-grid label { display:block; font-size:.72rem; color:#8b93a7; margin-bottom:5px; }
+        .mform-grid input, .mform-grid textarea {
+            width: 100%; padding: 9px 11px; border-radius: 8px;
+            background: rgba(255,255,255,.03); border: 1px solid rgba(255,255,255,.1);
+            color: #e8ecf4; font-size: .85rem; font-family: inherit;
+        }
+        .mform-grid textarea { min-height: 70px; resize: vertical; }
 
         /* ── CARDS ─────────────────────────────────────────── */
         .card {
@@ -755,9 +818,10 @@
 
         <!-- ═══ TABS (solo operativo) ═══ -->
         <div class="tabs">
-            <button class="tab-btn active" onclick="switchTab('audit')" id="tab-audit">📋 Auditoría</button>
-            <button class="tab-btn" onclick="switchTab('catalog')" id="tab-catalog">📖 Catálogo Odoo</button>
-            <button class="tab-btn" onclick="switchTab('odoo')" id="tab-odoo">🔄 Odoo Sync</button>
+            <button class="tab-btn active" onclick="switchTab('audit')" id="tab-audit"><ion-icon name="document-text-outline"></ion-icon> Auditoría</button>
+            <button class="tab-btn" onclick="switchTab('catalog')" id="tab-catalog"><ion-icon name="library-outline"></ion-icon> Catálogo Odoo</button>
+            <button class="tab-btn" onclick="switchTab('odoo')" id="tab-odoo"><ion-icon name="sync-outline"></ion-icon> Odoo Sync</button>
+            <button class="tab-btn" onclick="switchTab('manual')" id="tab-manual"><ion-icon name="create-outline"></ion-icon> Relleno manual</button>
         </div>
 
         <!-- ═══ TAB 1: INDIVIDUAL SEARCH (interno, oculto) ═══ -->
@@ -767,7 +831,7 @@
                     <div class="search-row">
                         <input class="input-field" id="query" type="text" name="query"
                             placeholder="Ej: Rebelión en la Granja · 9788419599674" required>
-                        <button class="btn btn-primary" type="submit">🔍 Buscar</button>
+                        <button class="btn btn-primary" type="submit"><ion-icon name="search-outline"></ion-icon> Buscar</button>
                     </div>
                 </form>
             </div>
@@ -780,7 +844,7 @@
             {% if result %}
             <div id="result-section">
                 {% if result.error %}
-                <div class="error-box">⚠️ {{ result.error }}</div>
+                <div class="error-box"><ion-icon name="warning-outline"></ion-icon> {{ result.error }}</div>
                 {% else %}
                 <div class="result-card">
                     <div class="result-header">
@@ -788,7 +852,7 @@
                         <img class="book-cover-img" src="{{ result.image_url }}" alt="Portada de {{ result.title }}"
                             loading="lazy">
                         {% else %}
-                        <div class="book-cover-placeholder">📚</div>
+                        <div class="book-cover-placeholder"><ion-icon name="library-outline"></ion-icon></div>
                         {% endif %}
                         <div class="book-info">
                             <div class="book-title">{{ result.title }}</div>
@@ -817,7 +881,7 @@
                                 <span class="discount-badge">{{ result.discount }}</span>
                                 {% endif %}
                                 {% if result.origin %}
-                                <span class="origin-badge">📍 {{ result.origin }}</span>
+                                <span class="origin-badge"><ion-icon name="location-outline"></ion-icon> {{ result.origin }}</span>
                                 {% endif %}
                             </div>
                         </div>
@@ -904,7 +968,7 @@
         <!-- ═══ TAB 2: BULK SCRAPING ═══ -->
         <div class="tab-content" id="content-bulk">
             <div class="card">
-                <div class="card-title">🚀 Scraping Masivo por Categoría</div>
+                <div class="card-title"><ion-icon name="rocket-outline"></ion-icon> Scraping Masivo por Categoría</div>
                 <p style="color:#888; margin-bottom:20px; font-size:0.9rem;">
                     Selecciona una categoría y el scraper recorrerá todas las páginas extrayendo libros automáticamente.
                     Los libros que ya están en la base de datos se saltan.
@@ -935,12 +999,12 @@
                 <div class="card">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
                         <div class="card-title" style="margin-bottom:0;">
-                            📊 Progreso
+                            <ion-icon name="bar-chart-outline"></ion-icon> Progreso
                             <span class="status-badge running" id="bulk-status-badge">RUNNING</span>
                         </div>
                         <button class="btn btn-danger" id="btn-stop-bulk" onclick="stopBulkScrape()"
                             style="padding:10px 20px; font-size:0.85rem;">
-                            ⏹ Detener
+                            <ion-icon name="stop-circle-outline"></ion-icon> Detener
                         </button>
                     </div>
 
@@ -985,10 +1049,10 @@
             <div class="card">
                 <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
                     <div class="card-title" style="margin-bottom:0; display: flex; align-items: center; gap: 15px;">
-                        <span>📚 Biblioteca — <span id="lib-total">0</span> libros guardados</span>
+                        <span><ion-icon name="library-outline"></ion-icon> Biblioteca — <span id="lib-total">0</span> libros guardados</span>
                         <a href="/api/v1/library/export" class="btn btn-primary"
                             style="padding: 6px 12px; font-size: 0.85rem; text-decoration: none; display: inline-flex; align-items: center; gap: 5px; background: #27ae60;">
-                            📥 Descargar Excel
+                            <ion-icon name="download-outline"></ion-icon> Descargar Excel
                         </a>
                     </div>
                     <div class="search-row" style="max-width:350px;">
@@ -1000,7 +1064,7 @@
 
             <div id="library-content">
                 <div class="empty-state">
-                    <div class="emoji">📖</div>
+                    <div class="emoji"><ion-icon name="book-outline"></ion-icon></div>
                     <p>No hay libros guardados aún.</p>
                 </div>
             </div>
@@ -1017,7 +1081,7 @@
 
             <!-- ═══ RESUMEN GLOBAL DEL CATÁLOGO ═══ -->
             <div class="card">
-                <div class="card-title">📊 Resumen del catálogo local</div>
+                <div class="card-title"><ion-icon name="bar-chart-outline"></ion-icon> Resumen del catálogo local</div>
                 <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px; margin-top:8px;">
                     <div class="stat-box">
                         <div class="stat-number" style="color:#1abc9c" id="mirror-stat-local">0</div>
@@ -1047,14 +1111,14 @@
                 <div style="margin-top:16px; display:flex; gap:10px; flex-wrap:wrap;">
                     <a href="/api/v1/odoo/mirror/export.csv" class="btn btn-primary"
                        style="text-decoration:none; display:inline-flex; align-items:center; background:#16a085;">
-                        📤 Excel completo (todos los libros)
+                        <ion-icon name="share-outline"></ion-icon> Excel completo (todos los libros)
                     </a>
                     <a href="/api/v1/odoo/mirror/export.csv?only_with_categories=true" class="btn btn-primary"
                        style="text-decoration:none; display:inline-flex; align-items:center; background:#27ae60;">
-                        🏷 Excel solo con categorías
+                        <ion-icon name="pricetag-outline"></ion-icon> Excel solo con categorías
                     </a>
                     <button class="btn btn-primary" onclick="refreshAllStats()" style="background:#34495e;">
-                        🔁 Refrescar
+                        <ion-icon name="repeat-outline"></ion-icon> Refrescar
                     </button>
                 </div>
             </div>
@@ -1062,7 +1126,7 @@
             <!-- ═══ JOB 1 — ESPEJO ODOO → POSTGRES ═══ -->
             <div class="card">
                 <div class="card-title">
-                    📥 Espejo Odoo → Postgres
+                    <ion-icon name="download-outline"></ion-icon> Espejo Odoo → Postgres
                     <span class="status-badge" id="mirror-status-badge" style="font-size:0.7rem;">IDLE</span>
                 </div>
                 <p style="color:#888; font-size:0.88rem;">
@@ -1074,7 +1138,7 @@
                         Solo sin <code>description_sale</code>
                     </label>
                     <button class="btn btn-success" id="btn-mirror-start" onclick="mirrorStart()">▶ Iniciar</button>
-                    <button class="btn btn-danger" id="btn-mirror-stop" onclick="mirrorStop()" disabled>⏹ Detener</button>
+                    <button class="btn btn-danger" id="btn-mirror-stop" onclick="mirrorStop()" disabled><ion-icon name="stop-circle-outline"></ion-icon> Detener</button>
                 </div>
                 <div style="margin-top:14px;">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; font-size:0.85rem; color:#bbb;">
@@ -1095,7 +1159,7 @@
             <!-- ═══ JOB 2 — GOOGLE BOOKS FILL ═══ -->
             <div class="card">
                 <div class="card-title">
-                    📚 Enriquecimiento Google Books (rápido, async)
+                    <ion-icon name="library-outline"></ion-icon> Enriquecimiento Google Books (rápido, async)
                     <span class="status-badge" id="gbf-status-badge" style="font-size:0.7rem;">IDLE</span>
                 </div>
                 <p style="color:#888; font-size:0.88rem;">
@@ -1104,10 +1168,10 @@
                 </p>
                 <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:12px;">
                     <button class="btn btn-success" id="btn-gbf-start" onclick="gbfStart()">▶ Iniciar</button>
-                    <button class="btn btn-danger" id="btn-gbf-stop" onclick="gbfStop()" disabled>⏹ Detener</button>
+                    <button class="btn btn-danger" id="btn-gbf-stop" onclick="gbfStop()" disabled><ion-icon name="stop-circle-outline"></ion-icon> Detener</button>
                     <button class="btn btn-primary" onclick="gbfResetRecent()" style="background:#8e44ad;"
                             title="Si Google rate-limitó libros y los marcó como no-match, esto los reactiva para reintento">
-                        🔁 Reactivar últimos (rate-limit)
+                        <ion-icon name="repeat-outline"></ion-icon> Reactivar últimos (rate-limit)
                     </button>
                 </div>
                 <div style="margin-top:14px;">
@@ -1129,7 +1193,7 @@
             <!-- ═══ JOB 3 — CDL BULK VIA SITEMAP (fast path) ═══ -->
             <div class="card">
                 <div class="card-title">
-                    🕷 Casa del Libro — fast path (sitemap)
+                    <ion-icon name="bug-outline"></ion-icon> Casa del Libro — fast path (sitemap)
                     <span class="status-badge" id="cdl-status-badge" style="font-size:0.7rem;">IDLE</span>
                 </div>
                 <p style="color:#888; font-size:0.88rem;">
@@ -1138,9 +1202,9 @@
                 </p>
                 <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:12px;">
                     <button class="btn btn-success" id="btn-cdl-start" onclick="cdlStart()">▶ Iniciar</button>
-                    <button class="btn btn-danger" id="btn-cdl-stop" onclick="cdlStop()" disabled>⏹ Detener</button>
+                    <button class="btn btn-danger" id="btn-cdl-stop" onclick="cdlStop()" disabled><ion-icon name="stop-circle-outline"></ion-icon> Detener</button>
                     <button class="btn btn-primary" id="btn-build-isbn" onclick="buildIsbnIndex()" style="background:#9b59b6;">
-                        🛠 (Re)construir índice sitemap
+                        <ion-icon name="build-outline"></ion-icon> (Re)construir índice sitemap
                     </button>
                     <span style="font-size:0.85rem; color:#9b59b6;" id="isbn-index-count">— ISBNs indexados</span>
                 </div>
@@ -1164,7 +1228,7 @@
             <!-- ═══ JOB 5 — CDL HTTP (ultra-rápido, sin browser) ═══ -->
             <div class="card" style="border:2px solid rgba(46,204,113,0.4);">
                 <div class="card-title">
-                    ⚡ Casa del Libro — HTTP ultra-rápido (recomendado)
+                    <ion-icon name="flash-outline"></ion-icon> Casa del Libro — HTTP ultra-rápido (recomendado)
                     <span class="status-badge" id="cdlh-status-badge" style="font-size:0.7rem;">IDLE</span>
                 </div>
                 <p style="color:#888; font-size:0.88rem;">
@@ -1174,7 +1238,7 @@
                 </p>
                 <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:12px;">
                     <button class="btn btn-success" id="btn-cdlh-start" onclick="cdlhStart()">▶ Iniciar (concurrency 20)</button>
-                    <button class="btn btn-danger" id="btn-cdlh-stop" onclick="cdlhStop()" disabled>⏹ Detener</button>
+                    <button class="btn btn-danger" id="btn-cdlh-stop" onclick="cdlhStop()" disabled><ion-icon name="stop-circle-outline"></ion-icon> Detener</button>
                 </div>
                 <div style="margin-top:14px;">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; font-size:0.85rem; color:#bbb;">
@@ -1195,7 +1259,7 @@
             <!-- ═══ JOB 4 — CDL BULK VIA SEARCH (cobertura total) ═══ -->
             <div class="card">
                 <div class="card-title">
-                    🔎 Casa del Libro — búsqueda por ISBN (cobertura total)
+                    <ion-icon name="search-outline"></ion-icon> Casa del Libro — búsqueda por ISBN (cobertura total)
                     <span class="status-badge" id="cds-status-badge" style="font-size:0.7rem;">IDLE</span>
                 </div>
                 <p style="color:#888; font-size:0.88rem;">
@@ -1204,7 +1268,7 @@
                 </p>
                 <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:12px;">
                     <button class="btn btn-success" id="btn-cds-start" onclick="cdsStart()">▶ Iniciar</button>
-                    <button class="btn btn-danger" id="btn-cds-stop" onclick="cdsStop()" disabled>⏹ Detener</button>
+                    <button class="btn btn-danger" id="btn-cds-stop" onclick="cdsStop()" disabled><ion-icon name="stop-circle-outline"></ion-icon> Detener</button>
                 </div>
                 <div style="margin-top:14px;">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; font-size:0.85rem; color:#bbb;">
@@ -1225,7 +1289,7 @@
             <!-- ═══ AUDITORÍA: RESUMEN DE CATEGORÍAS + READINESS FASE 2 ═══ -->
             <div class="card" style="border:2px solid rgba(52,152,219,0.5); background:rgba(52,152,219,0.04);">
                 <div class="card-title">
-                    📊 Auditoría: categorías inferidas + readiness Fase 2
+                    <ion-icon name="bar-chart-outline"></ion-icon> Auditoría: categorías inferidas + readiness Fase 2
                 </div>
                 <p style="color:#888; font-size:0.88rem;">
                     Antes de crear categorías en Odoo o disparar el push de la Fase 2, revisa qué tenemos:
@@ -1234,11 +1298,11 @@
                 </p>
                 <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:10px;">
                     <button class="btn btn-primary" onclick="loadCategSummary()" style="background:#3498db;">
-                        🔄 Cargar / refrescar resumen
+                        <ion-icon name="sync-outline"></ion-icon> Cargar / refrescar resumen
                     </button>
                     <a href="/api/v1/admin/inferred-categories-summary?top_n=200" target="_blank"
                        class="btn btn-primary" style="background:#5d6d7e; text-decoration:none;">
-                        🔗 Ver JSON crudo (top_n=200)
+                        <ion-icon name="link-outline"></ion-icon> Ver JSON crudo (top_n=200)
                     </a>
                     <span id="categ-summary-loading" style="color:#888; font-size:0.85rem; display:none;">
                         Cargando…
@@ -1248,7 +1312,7 @@
                 <!-- Readiness para Odoo (8 stats) -->
                 <div id="categ-summary-readiness" style="display:none; margin-top:18px;">
                     <div class="section-label" style="color:#3498db; margin-bottom:8px;">
-                        🚀 Readiness para Fase 2 (libros AZETA con cada campo lleno)
+                        <ion-icon name="rocket-outline"></ion-icon> Readiness para Fase 2 (libros AZETA con cada campo lleno)
                     </div>
                     <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px;">
                         <div class="stat-box">
@@ -1289,7 +1353,7 @@
                 <!-- Cardinalidad de categorías -->
                 <div id="categ-summary-card" style="display:none; margin-top:18px;">
                     <div class="section-label" style="color:#3498db; margin-bottom:8px;">
-                        🏷 Cardinalidad de categorías inferidas
+                        <ion-icon name="pricetag-outline"></ion-icon> Cardinalidad de categorías inferidas
                     </div>
                     <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px;">
                         <div class="stat-box">
@@ -1331,7 +1395,7 @@
                 <div id="categ-summary-tops" style="display:none; margin-top:18px; display:grid; grid-template-columns:1fr 1fr; gap:18px;">
                     <div>
                         <div class="section-label" style="color:#3498db; margin-bottom:6px;">
-                            🥇 Top paths con más libros
+                            <ion-icon name="medal-outline"></ion-icon> Top paths con más libros
                         </div>
                         <div style="max-height:360px; overflow-y:auto; border:1px solid #2c2f3e; border-radius:6px;">
                             <table style="width:100%; font-size:0.8rem; border-collapse:collapse;" id="tbl-top-paths">
@@ -1348,7 +1412,7 @@
                     </div>
                     <div>
                         <div class="section-label" style="color:#3498db; margin-bottom:6px;">
-                            🏆 Top raíces (acumulado de libros bajo cada raíz)
+                            <ion-icon name="trophy-outline"></ion-icon> Top raíces (acumulado de libros bajo cada raíz)
                         </div>
                         <div style="max-height:360px; overflow-y:auto; border:1px solid #2c2f3e; border-radius:6px;">
                             <table style="width:100%; font-size:0.8rem; border-collapse:collapse;" id="tbl-top-roots">
@@ -1370,30 +1434,30 @@
 
             <!-- ═══ CATEGORÍAS ═══ -->
             <div class="card">
-                <div class="card-title">🏷 Categorías</div>
+                <div class="card-title"><ion-icon name="pricetag-outline"></ion-icon> Categorías</div>
                 <p style="color:#888; font-size:0.88rem;">
                     Inferir categorías cruzando con scrapes (CDL + distribuidores), crearlas en Odoo y asignarlas.
                 </p>
                 <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:12px;">
                     <button class="btn btn-primary" onclick="suppliersSyncStart()" style="background:#d35400;"
                             title="Pulla product.supplierinfo + res.partner desde Odoo. Espeja proveedores al mirror sin escribir nada en Odoo.">
-                        🏪 Sync proveedores Odoo
+                        <ion-icon name="storefront-outline"></ion-icon> Sync proveedores Odoo
                     </button>
                     <button class="btn btn-primary" onclick="mirrorSyncCategories()" style="background:#8e44ad;"
                             title="Pulla los nombres de las public_categ_ids de Odoo (si las tiene)">
-                        🏷 1. Sync desde Odoo
+                        <ion-icon name="pricetag-outline"></ion-icon> 1. Sync desde Odoo
                     </button>
                     <button class="btn btn-primary" onclick="mirrorInferCategories()" style="background:#e67e22;"
                             title="Llena categorías cruzando ISBN con books (CDL) y distributor_books (XLSX)">
-                        🧩 2. Inferir desde scrapes
+                        <ion-icon name="extension-puzzle-outline"></ion-icon> 2. Inferir desde scrapes
                     </button>
                     <button class="btn btn-primary" onclick="categoriesPush()" style="background:#27ae60;"
                             title="Crea las categorías inferidas EN Odoo (product.category)">
-                        🚀 3. Crear en Odoo
+                        <ion-icon name="rocket-outline"></ion-icon> 3. Crear en Odoo
                     </button>
                     <button class="btn btn-primary" onclick="categoriesAssign()" style="background:#2980b9;"
                             title="Asigna categ_id a cada libro en Odoo">
-                        🔗 4. Asignar a libros
+                        <ion-icon name="link-outline"></ion-icon> 4. Asignar a libros
                     </button>
                 </div>
             </div>
@@ -1401,7 +1465,7 @@
             <!-- ═══ ENRICHMENT LEGACY (cola enrichment_queue → push directo a Odoo) ═══ -->
             <div class="card">
                 <div class="card-title">
-                    🔄 Push directo a Odoo (cola enrichment_queue)
+                    <ion-icon name="sync-outline"></ion-icon> Push directo a Odoo (cola enrichment_queue)
                     <span class="status-badge" id="odoo-status-badge" style="font-size:0.7rem;">IDLE</span>
                 </div>
                 <p style="color:#888; font-size:0.88rem;">
@@ -1410,10 +1474,10 @@
                 </p>
                 <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:12px;">
                     <button class="btn btn-success" id="btn-odoo-start" onclick="odooStart()">▶ Iniciar</button>
-                    <button class="btn btn-danger" id="btn-odoo-stop" onclick="odooStop()" disabled>⏹ Detener</button>
+                    <button class="btn btn-danger" id="btn-odoo-stop" onclick="odooStop()" disabled><ion-icon name="stop-circle-outline"></ion-icon> Detener</button>
                     <a href="/api/v1/odoo/notfound/export" class="btn btn-primary"
                        style="text-decoration:none; display:inline-flex; align-items:center;">
-                        📥 Excel no encontrados
+                        <ion-icon name="download-outline"></ion-icon> Excel no encontrados
                     </a>
                 </div>
                 <div class="progress-stats" style="margin-top:14px;">
@@ -1463,7 +1527,7 @@
             <!-- ═══ AZETA CATÁLOGO COMPLETO (~1M libros con todo) ═══ -->
             <div class="card" style="border:2px solid rgba(211,84,0,0.6); background:rgba(211,84,0,0.05);">
                 <div class="card-title">
-                    📚 AZETA — Catálogo completo (descripción, precio EUR, peso, dimensiones)
+                    <ion-icon name="library-outline"></ion-icon> AZETA — Catálogo completo (descripción, precio EUR, peso, dimensiones)
                     <span class="status-badge" id="azetacat-status-badge" style="font-size:0.7rem;">IDLE</span>
                 </div>
                 <p style="color:#888; font-size:0.88rem;">
@@ -1477,7 +1541,7 @@
                 </p>
                 <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:12px;">
                     <button class="btn btn-success" id="btn-azetacat-start" onclick="azetacatStart()">▶ Cargar catálogo al mirror</button>
-                    <button class="btn btn-danger" id="btn-azetacat-stop" onclick="azetacatStop()" disabled>⏹ Detener</button>
+                    <button class="btn btn-danger" id="btn-azetacat-stop" onclick="azetacatStop()" disabled><ion-icon name="stop-circle-outline"></ion-icon> Detener</button>
                     <span id="azetacat-stage" style="color:#888; font-size:0.85rem;"></span>
                 </div>
 
@@ -1511,7 +1575,7 @@
             <!-- ═══ FASE 2: AZETA PUSH A ODOO ═══ -->
             <div class="card" style="border:2px solid rgba(155,89,182,0.7); background:rgba(155,89,182,0.06);">
                 <div class="card-title">
-                    🚀 AZETA → Push a Odoo (Fase 2)
+                    <ion-icon name="rocket-outline"></ion-icon> AZETA → Push a Odoo (Fase 2)
                     <span class="status-badge" id="azetapush-status-badge" style="font-size:0.7rem;">IDLE</span>
                 </div>
                 <p style="color:#888; font-size:0.88rem;">
@@ -1529,7 +1593,7 @@
                     <input type="number" id="azetapush-max-books" placeholder="max libros (opcional)" min="1"
                            style="padding:8px 10px; background:#2c2f3e; color:#eee; border:1px solid #444; border-radius:6px; min-width:140px;">
                     <button class="btn btn-success" id="btn-azetapush-start" onclick="azetapushStart()">▶ Push a Odoo</button>
-                    <button class="btn btn-danger" id="btn-azetapush-stop" onclick="azetapushStop()" disabled>⏹ Detener</button>
+                    <button class="btn btn-danger" id="btn-azetapush-stop" onclick="azetapushStop()" disabled><ion-icon name="stop-circle-outline"></ion-icon> Detener</button>
                     <span id="azetapush-stage" style="color:#888; font-size:0.85rem;"></span>
                 </div>
 
@@ -1567,7 +1631,7 @@
             <!-- ═══ AZETA STOCK (CSV HTTP — caso especial) ═══ -->
             <div class="card" style="border:2px solid rgba(211,84,0,0.4);">
                 <div class="card-title">
-                    🏪 AZETA — Stock: CSV → mirror → Odoo AZE01
+                    <ion-icon name="storefront-outline"></ion-icon> AZETA — Stock: CSV → mirror → Odoo AZE01
                     <span class="status-badge" id="azeta-status-badge" style="font-size:0.7rem;">IDLE</span>
                 </div>
                 <p style="color:#888; font-size:0.88rem;">
@@ -1580,7 +1644,7 @@
                 <div class="section-label" style="color:#d35400; margin-top:14px;">1. Fetcher CSV → libros_proveedor</div>
                 <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:8px;">
                     <button class="btn btn-success" id="btn-azeta-start" onclick="azetaStart()">▶ Sync CSV ahora</button>
-                    <button class="btn btn-danger" id="btn-azeta-stop" onclick="azetaStop()" disabled>⏹ Detener</button>
+                    <button class="btn btn-danger" id="btn-azeta-stop" onclick="azetaStop()" disabled><ion-icon name="stop-circle-outline"></ion-icon> Detener</button>
                     <span id="azeta-stage" style="color:#888; font-size:0.85rem;"></span>
                 </div>
 
@@ -1627,7 +1691,7 @@
                     <input type="number" id="azetasp-concurrency" placeholder="concurrency (default 8)" min="1" max="32"
                            style="padding:8px 10px; background:#2c2f3e; color:#eee; border:1px solid #444; border-radius:6px; min-width:160px;">
                     <button class="btn btn-success" id="btn-azetasp-start" onclick="azetaspStart()">▶ Push stock ahora</button>
-                    <button class="btn btn-danger" id="btn-azetasp-stop" onclick="azetaspStop()" disabled>⏹ Detener</button>
+                    <button class="btn btn-danger" id="btn-azetasp-stop" onclick="azetaspStop()" disabled><ion-icon name="stop-circle-outline"></ion-icon> Detener</button>
                     <span id="azetasp-stage" style="color:#888; font-size:0.85rem;"></span>
                 </div>
 
@@ -1668,7 +1732,7 @@
                 </p>
                 <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:8px;">
                     <button class="btn btn-success" id="btn-azetacron-start" onclick="azetacronStart()">▶ Activar cron 1h</button>
-                    <button class="btn btn-danger" id="btn-azetacron-stop" onclick="azetacronStop()" disabled>⏹ Detener cron</button>
+                    <button class="btn btn-danger" id="btn-azetacron-stop" onclick="azetacronStop()" disabled><ion-icon name="stop-circle-outline"></ion-icon> Detener cron</button>
                 </div>
 
                 <div style="margin-top:10px; display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px;">
@@ -1697,7 +1761,7 @@
             <!-- ═══ ODOO TAGS: Completo/Web/Foto/Stock/Bloqueado ═══ -->
             <div class="card" style="border:2px solid rgba(155,89,182,0.55); background:rgba(155,89,182,0.04);">
                 <div class="card-title">
-                    🏷 Tags Odoo: clasificar libros (Completo / Web / Foto / Stock / Bloqueado)
+                    <ion-icon name="pricetag-outline"></ion-icon> Tags Odoo: clasificar libros (Completo / Web / Foto / Stock / Bloqueado)
                     <span class="status-badge" id="tags-status-badge" style="font-size:0.7rem;">IDLE</span>
                 </div>
                 <p style="color:#888; font-size:0.88rem;">
@@ -1714,11 +1778,11 @@
                 </p>
                 <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:12px;">
                     <button class="btn btn-primary" onclick="tagsClassify(true)" style="background:#7f8c8d;">
-                        🔍 Dry run (sin escribir)
+                        <ion-icon name="search-outline"></ion-icon> Dry run (sin escribir)
                     </button>
                     <button class="btn btn-success" onclick="tagsClassify(false)">▶ Clasificar y aplicar en Odoo</button>
-                    <button class="btn btn-danger" id="btn-tags-stop" onclick="tagsStop()" disabled>⏹ Detener</button>
-                    <button class="btn btn-primary" onclick="tagsListNow()" style="background:#3498db;">📋 Listar tags actuales</button>
+                    <button class="btn btn-danger" id="btn-tags-stop" onclick="tagsStop()" disabled><ion-icon name="stop-circle-outline"></ion-icon> Detener</button>
+                    <button class="btn btn-primary" onclick="tagsListNow()" style="background:#3498db;"><ion-icon name="clipboard-outline"></ion-icon> Listar tags actuales</button>
                     <span id="tags-stage" style="color:#888; font-size:0.85rem;"></span>
                 </div>
                 <div style="margin-top:14px; display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px;">
@@ -1780,7 +1844,7 @@
 
             <div class="card" style="border:2px solid rgba(46,204,113,0.55); background:rgba(46,204,113,0.04);">
                 <div class="card-title">
-                    📦 Sync stock SINLI → Odoo (ICARO/DISTRIFORMA/PUNXES/AKAL/ALFA OMEGA)
+                    <ion-icon name="cube-outline"></ion-icon> Sync stock SINLI → Odoo (ICARO/DISTRIFORMA/PUNXES/AKAL/ALFA OMEGA)
                     <span class="status-badge" id="sinli-status-badge" style="font-size:0.7rem;">IDLE</span>
                 </div>
                 <p style="color:#888; font-size:0.88rem;">
@@ -1831,11 +1895,11 @@
                 <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:8px;">
                     <button class="btn btn-primary" id="btn-sinli-once" onclick="sinliRunOnce()" style="background:#3498db;">▶ Sync ahora (1 lote)</button>
                     <button class="btn btn-success" id="btn-sinli-backlog" onclick="sinliRunBacklog()">▶ Arrancar backlog (hasta vaciar)</button>
-                    <button class="btn btn-danger" id="btn-sinli-stop" onclick="sinliStop()" disabled>⏹ Detener</button>
+                    <button class="btn btn-danger" id="btn-sinli-stop" onclick="sinliStop()" disabled><ion-icon name="stop-circle-outline"></ion-icon> Detener</button>
                     <span id="sinli-stage" style="color:#888; font-size:0.85rem;"></span>
                 </div>
                 <p style="margin-top:6px; font-size:0.78rem; color:#888;">
-                    ⚠️ <strong>Filtro o max_books activos = modo validación</strong>: NO avanza el marcapáginas
+                    <ion-icon name="warning-outline"></ion-icon> <strong>Filtro o max_books activos = modo validación</strong>: NO avanza el marcapáginas
                     (puedes probar 10 libros sin "consumirlos" del backlog real).
                 </p>
 
@@ -1870,7 +1934,7 @@
                 </div>
                 <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:8px;">
                     <button class="btn btn-primary" onclick="sinliMarkerToNow()" style="background:#8e44ad;">
-                        🔖 Setear marker a NOW()
+                        <ion-icon name="bookmark-outline"></ion-icon> Setear marker a NOW()
                     </button>
                     <span style="color:#888; font-size:0.82rem;">
                         Evita reprocesar todo. Hacer SOLO después de terminar el backlog inicial completo.
@@ -1879,7 +1943,7 @@
 
                 <!-- Bloque 2b: reemplazo CEGALD -->
                 <div class="section-label" style="color:#e67e22; margin-top:18px;">
-                    ♻ Reemplazo completo CEGALD (apagar ausentes)
+                    <ion-icon name="refresh-outline"></ion-icon> Reemplazo completo CEGALD (apagar ausentes)
                     <span class="status-badge" id="cegald-badge" style="font-size:0.7rem;">IDLE</span>
                 </div>
                 <p style="color:#888; font-size:0.82rem;">
@@ -1895,8 +1959,8 @@
                         <option value="fandite@distriforma.es">DISTRIFORMA</option>
                         <option value="sinli.icaro@zonalibros.com">ICARO</option>
                     </select>
-                    <button class="btn btn-primary" onclick="cegaldRun(true)" style="background:#7f8c8d;">🔍 Dry run</button>
-                    <button class="btn btn-danger" onclick="cegaldRun(false)">♻ Aplicar apagado real</button>
+                    <button class="btn btn-primary" onclick="cegaldRun(true)" style="background:#7f8c8d;"><ion-icon name="search-outline"></ion-icon> Dry run</button>
+                    <button class="btn btn-danger" onclick="cegaldRun(false)"><ion-icon name="refresh-outline"></ion-icon> Aplicar apagado real</button>
                     <span id="cegald-stage" style="color:#888; font-size:0.85rem;"></span>
                 </div>
                 <div style="margin-top:10px; display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px;">
@@ -1930,7 +1994,7 @@
                 </p>
                 <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:8px;">
                     <button class="btn btn-success" id="btn-sinli-cron-start" onclick="sinliCronStart()">▶ Activar cron 1h</button>
-                    <button class="btn btn-danger" id="btn-sinli-cron-stop" onclick="sinliCronStop()" disabled>⏹ Detener cron</button>
+                    <button class="btn btn-danger" id="btn-sinli-cron-stop" onclick="sinliCronStop()" disabled><ion-icon name="stop-circle-outline"></ion-icon> Detener cron</button>
                 </div>
                 <div style="margin-top:10px; display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px;">
                     <div class="stat-box">
@@ -1954,7 +2018,7 @@
 
                 <!-- Bloque 4b: buscador de ISBN (debug stock) -->
                 <div class="section-label" style="color:#2ecc71; margin-top:18px;">
-                    🔍 Buscador de stock por ISBN (debug BD vs Odoo)
+                    <ion-icon name="search-outline"></ion-icon> Buscador de stock por ISBN (debug BD vs Odoo)
                 </div>
                 <p style="color:#888; font-size:0.82rem;">
                     Inspecciona cualquier ISBN: estado en libros_proveedor, mirror, y todos los quants
@@ -1965,7 +2029,7 @@
                            style="padding:8px 10px; background:#2c2f3e; color:#eee; border:1px solid #444; border-radius:6px; min-width:240px;"
                            onkeypress="if(event.key==='Enter')stockDebugSearch()">
                     <button class="btn btn-primary" onclick="stockDebugSearch()" style="background:#2ecc71;">
-                        🔍 Buscar
+                        <ion-icon name="search-outline"></ion-icon> Buscar
                     </button>
                     <span id="stock-debug-loading" style="color:#888; font-size:0.85rem; display:none;">Cargando...</span>
                 </div>
@@ -1992,7 +2056,7 @@
 
             <!-- ═══ CATÁLOGO DE DISTRIBUIDORES ═══ -->
             <div class="card">
-                <div class="card-title">📦 Catálogo de distribuidores (XLSX → Postgres)</div>
+                <div class="card-title"><ion-icon name="cube-outline"></ion-icon> Catálogo de distribuidores (XLSX → Postgres)</div>
                 <p style="color:#888; font-size:0.88rem;">
                     Sube los XLSX de ANAYA, PLANETA, PODIPRINT, etc. Upsert por ISBN a
                     <code>distributor_books</code>.
@@ -2003,7 +2067,7 @@
                     <input type="text" id="dist-fuente-input" placeholder="Fuente (auto)"
                            style="color:#fff; background:#2c2f3e; padding:8px 12px; border-radius:6px; border:1px solid #444; width:140px;">
                     <button class="btn btn-success" id="btn-dist-upload" onclick="distUpload()">▶ Subir e importar</button>
-                    <button class="btn btn-primary" onclick="distRefreshStats()" style="background:#34495e;">🔁 Stats</button>
+                    <button class="btn btn-primary" onclick="distRefreshStats()" style="background:#34495e;"><ion-icon name="repeat-outline"></ion-icon> Stats</button>
                 </div>
                 <div id="dist-status-block" style="margin-top:14px; display:none;">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
@@ -2036,48 +2100,48 @@
 
             <!-- ═══ HERRAMIENTAS ═══ -->
             <div class="card">
-                <div class="card-title">🛠 Herramientas</div>
+                <div class="card-title"><ion-icon name="build-outline"></ion-icon> Herramientas</div>
                 <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:12px;">
                     <button class="btn btn-primary" onclick="diagnose()" style="background:#16a085;"
                             title="Muestra el shard activo y por qué cada job tiene Target=0 o el numero que sea">
-                        🩺 Diagnóstico completo
+                        <ion-icon name="pulse-outline"></ion-icon> Diagnóstico completo
                     </button>
                     <button class="btn btn-primary" onclick="throughput()" style="background:#1abc9c;"
                             title="Velocidad REAL basada en timestamps de la BD (no counters en memoria)">
-                        ⏱ Velocidad real
+                        <ion-icon name="timer-outline"></ion-icon> Velocidad real
                     </button>
                     <button class="btn btn-primary" onclick="odooModules()" style="background:#2980b9;"
                             title="Verifica que módulos están instalados en tu Odoo (para decidir categ_id vs public_categ_ids)">
-                        📦 Módulos Odoo
+                        <ion-icon name="cube-outline"></ion-icon> Módulos Odoo
                     </button>
                     <button class="btn btn-primary" onclick="odooWarehouses()" style="background:#16a085;"
                             title="Lista almacenes de Odoo con su code y lot_stock_id (referencia para el sync SINLI)">
-                        🏭 Almacenes Odoo
+                        <ion-icon name="business-outline"></ion-icon> Almacenes Odoo
                     </button>
                     <button class="btn btn-primary" onclick="applyMigration()" style="background:#c0392b;"
                             title="Aplica los ALTER TABLE pendientes (anade cdl_author, cdl_editorial, etc. al mirror). Sin redeploy.">
-                        🔧 Aplicar migración BD
+                        <ion-icon name="construct-outline"></ion-icon> Aplicar migración BD
                     </button>
                     <button class="btn btn-primary" onclick="checkSchema()" style="background:#7f8c8d;"
                             title="Lista las columnas reales de odoo_books_mirror para confirmar que las cdl_* existen">
-                        🔍 Ver columnas BD
+                        <ion-icon name="search-outline"></ion-icon> Ver columnas BD
                     </button>
                     <button class="btn btn-primary" onclick="checkProxies()" style="background:#34495e;">
-                        🌐 Status proxies
+                        <ion-icon name="globe-outline"></ion-icon> Status proxies
                     </button>
                     <button class="btn btn-primary" onclick="proxyHealth()" style="background:#16a085;"
                             title="Estado de cada proxy: muertas, vivas, fallos consecutivos. Las muertas se saltean solas.">
-                        🏥 Health proxies
+                        <ion-icon name="medkit-outline"></ion-icon> Health proxies
                     </button>
                     <button class="btn btn-primary" onclick="proxyHealthReset()" style="background:#9b59b6;"
                             title="Marca TODAS las proxies como vivas otra vez. Util si Webshare las resucitó.">
-                        ♻ Reactivar proxies
+                        <ion-icon name="refresh-outline"></ion-icon> Reactivar proxies
                     </button>
                     <button class="btn btn-primary" onclick="testTelegram()" style="background:#0088cc;">
-                        📨 Probar Telegram
+                        <ion-icon name="mail-outline"></ion-icon> Probar Telegram
                     </button>
                     <button class="btn btn-primary" onclick="setupWebhook()" style="background:#0066aa;">
-                        🔗 Setup webhook Telegram
+                        <ion-icon name="link-outline"></ion-icon> Setup webhook Telegram
                     </button>
                 </div>
                 <div id="tools-result" style="margin-top:12px; font-size:0.85rem; color:#bbb; white-space:pre-wrap; font-family:monospace; max-height:300px; overflow:auto;"></div>
@@ -2088,7 +2152,7 @@
         <!-- ═══ TAB 5: CATÁLOGO ODOO (browser de odoo_books_mirror) ═══ -->
         <div class="tab-content" id="content-catalog">
             <div class="card">
-                <div class="card-title">📖 Catálogo Odoo — explorar el mirror</div>
+                <div class="card-title"><ion-icon name="book-outline"></ion-icon> Catálogo Odoo — explorar el mirror</div>
                 <p style="color:#888; font-size:0.88rem;">
                     Lista paginada de los libros en <code>odoo_books_mirror</code>. Filtra
                     para ver qué tiene categoría, descripción, proveedor o imagen.
@@ -2137,7 +2201,7 @@
                     </div>
                 </div>
                 <div style="display:flex; gap:10px; margin-top:14px; align-items:center;">
-                    <button class="btn btn-primary" onclick="catalogSearch(1)">🔍 Buscar</button>
+                    <button class="btn btn-primary" onclick="catalogSearch(1)"><ion-icon name="search-outline"></ion-icon> Buscar</button>
                     <button class="btn btn-primary" onclick="catalogReset()" style="background:#34495e;">↺ Limpiar</button>
                     <span id="cat-total" style="color:#888; font-size:0.9rem; margin-left:auto;"></span>
                 </div>
@@ -2187,7 +2251,7 @@
         <div class="tab-content active" id="content-audit">
             <div class="card" style="border:2px solid rgba(52,152,219,0.5);">
                 <div class="card-title">
-                    📋 Auditoría — qué se recibió y qué se actualizó
+                    <ion-icon name="clipboard-outline"></ion-icon> Auditoría — qué se recibió y qué se actualizó
                     <label style="float:right; font-size:0.8rem; color:#888; font-weight:normal;">
                         <input type="checkbox" id="audit-autorefresh" checked> auto-refresh (10s)
                     </label>
@@ -2211,7 +2275,7 @@
 
                 <!-- Salud de crones: ultimo evento por categoria -->
                 <div class="section-label" style="color:#3498db; margin-top:18px;">
-                    💓 Última actividad por proceso (¿está vivo cada cron?)
+                    <ion-icon name="heart-outline"></ion-icon> Última actividad por proceso (¿está vivo cada cron?)
                 </div>
                 <table style="width:100%; font-size:0.82rem; border-collapse:collapse; margin-top:6px;" id="audit-health-table">
                     <thead><tr style="background:#1c1f2e;">
@@ -2225,7 +2289,7 @@
 
                 <!-- CEGALDs por proveedor -->
                 <div class="section-label" style="color:#e67e22; margin-top:18px;">
-                    📬 CEGALDs por proveedor (último completo, goteo y fantasmas)
+                    <ion-icon name="mail-outline"></ion-icon> CEGALDs por proveedor (último completo, goteo y fantasmas)
                 </div>
                 <p style="color:#888; font-size:0.78rem; margin-top:2px;">
                     <strong>CEGALD completo</strong> = corrida grande (≥ max(500, 20% del stock del proveedor) en un día).
@@ -2245,7 +2309,7 @@
 
                 <!-- Peticiones API entrantes -->
                 <div class="section-label" style="color:#1abc9c; margin-top:18px;">
-                    🌐 Peticiones API entrantes (n8n, UI, quien sea)
+                    <ion-icon name="globe-outline"></ion-icon> Peticiones API entrantes (n8n, UI, quien sea)
                 </div>
                 <p style="color:#888; font-size:0.78rem; margin-top:2px;">
                     Cada acción POST recibida: cuándo, quién (IP/usuario), qué endpoint, con qué parámetros,
@@ -2275,7 +2339,7 @@
 
                 <!-- Recibidos por dia/proveedor -->
                 <div class="section-label" style="color:#16a085; margin-top:18px;">
-                    📥 Libros RECIBIDOS por día y proveedor (últimos 7 días)
+                    <ion-icon name="download-outline"></ion-icon> Libros RECIBIDOS por día y proveedor (últimos 7 días)
                 </div>
                 <div style="max-height:260px; overflow-y:auto; border:1px solid #2c2f3e; border-radius:6px; margin-top:6px;">
                     <table style="width:100%; font-size:0.82rem; border-collapse:collapse;" id="audit-recibidos-table">
@@ -2292,7 +2356,7 @@
 
                 <!-- Log de eventos -->
                 <div class="section-label" style="color:#3498db; margin-top:18px;">
-                    📜 Log de eventos (qué hizo cada job)
+                    <ion-icon name="document-text-outline"></ion-icon> Log de eventos (qué hizo cada job)
                 </div>
                 <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:6px;">
                     <select id="audit-filter-cat" onchange="auditLoadEvents()"
@@ -2313,7 +2377,7 @@
                         <option value="info">info</option>
                         <option value="error">error</option>
                     </select>
-                    <button class="btn btn-primary" onclick="auditLoadAll()" style="background:#3498db;">🔄 Refrescar</button>
+                    <button class="btn btn-primary" onclick="auditLoadAll()" style="background:#3498db;"><ion-icon name="sync-outline"></ion-icon> Refrescar</button>
                 </div>
                 <div style="max-height:480px; overflow-y:auto; border:1px solid #2c2f3e; border-radius:6px; margin-top:8px;">
                     <table style="width:100%; font-size:0.8rem; border-collapse:collapse;" id="audit-events-table">
@@ -2334,6 +2398,28 @@
                 </p>
             </div>
         </div>
+
+        <!-- ═══ TAB: RELLENO MANUAL ═══ -->
+        <div class="tab-content" id="content-manual">
+            <div class="card">
+                <div class="subtabs">
+                    <button class="subtab-btn active" id="msub-no_scrapeados" onclick="manualSub('no_scrapeados')">
+                        <ion-icon name="alert-circle-outline"></ion-icon> No scrapeados / pendientes</button>
+                    <button class="subtab-btn" id="msub-todos" onclick="manualSub('todos')">
+                        <ion-icon name="list-outline"></ion-icon> Todos los demás</button>
+                </div>
+                <p style="color:#8b93a7; font-size:.82rem; margin-bottom:14px;" id="manual-hint">
+                    Libros nuevos sin datos, por fecha de intento de scraping. Rellénalos y se publican en web.
+                </p>
+                <div class="date-chips" id="manual-dates"></div>
+                <div id="manual-table"></div>
+            </div>
+        </div>
+
+        <!-- Modal de edición del relleno manual -->
+        <div id="manual-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.6); backdrop-filter:blur(4px); z-index:1000; align-items:center; justify-content:center; padding:20px;">
+            <div id="manual-modal-box" style="background:#111827; border:1px solid rgba(255,255,255,.1); border-radius:16px; padding:26px; width:100%; max-width:720px; max-height:90vh; overflow:auto;"></div>
+        </div>
     </div>
 
     <script>
@@ -2348,6 +2434,7 @@
             if (tab === 'bulk') loadCategories();
             if (tab === 'odoo') { odooPoll(); odooStartPolling(); isbnIndexPoll(); loadMirrorAndDistInitial(); startResumenAutoRefresh(); }
             if (tab === 'catalog') { catalogSearch(1); loadSuppliersDatalist(); }
+            if (tab === 'manual') manualSub(manualTipo);
             if (tab === 'audit') { auditLoadAll(); auditStartAutoRefresh(); }
             else { auditStopAutoRefresh(); }
             if (tab !== 'odoo') {
@@ -2502,8 +2589,8 @@
                     }
 
                     document.getElementById('current-book-text').textContent =
-                        job.status === 'completed' ? '✅ Scraping completado' :
-                            job.status === 'stopped' ? '⏸ Scraping detenido' : '❌ Error';
+                        job.status === 'completed' ? '<ion-icon name="checkmark-circle-outline"></ion-icon> Scraping completado' :
+                            job.status === 'stopped' ? '<ion-icon name="pause-outline"></ion-icon> Scraping detenido' : '<ion-icon name="close-circle-outline"></ion-icon> Error';
 
                     // Refresh library count
                     loadLibCount();
@@ -2539,7 +2626,7 @@
                 if (!data.books || data.books.length === 0) {
                     container.innerHTML = `
                         <div class="empty-state">
-                            <div class="emoji">📖</div>
+                            <div class="emoji"><ion-icon name="book-outline"></ion-icon></div>
                             <p>${search ? 'No se encontraron resultados.' : 'No hay libros guardados aún. ¡Usa el scraping masivo para empezar!'}</p>
                         </div>`;
                     document.getElementById('lib-pagination').style.display = 'none';
@@ -2555,7 +2642,7 @@
                 data.books.forEach(b => {
                     const img = b.image_url
                         ? `<img class="table-thumb" src="${b.image_url}" alt="" loading="lazy">`
-                        : '<span style="font-size:1.3rem">📕</span>';
+                        : '<span style="font-size:1.3rem"><ion-icon name="book-outline"></ion-icon></span>';
                     html += `<tr>
                         <td>${img}</td>
                         <td>
@@ -2782,7 +2869,7 @@
                 const resp = await fetch('/api/v1/odoo/mirror/suppliers-sync', { method: 'POST' });
                 const data = await resp.json();
                 if (data.status !== 'started') {
-                    alert(`❌ ${data.message || 'No se pudo iniciar'}`);
+                    alert(`<ion-icon name="close-circle-outline"></ion-icon> ${data.message || 'No se pudo iniciar'}`);
                     return;
                 }
                 alert('▶ Sync proveedores arrancado. Polleo cada 5s.');
@@ -2794,14 +2881,14 @@
                             clearInterval(t);
                             if (s.status === 'completed') {
                                 alert(
-                                    `✅ Sync proveedores OK:\n` +
+                                    `<ion-icon name="checkmark-circle-outline"></ion-icon> Sync proveedores OK:\n` +
                                     `• ${(s.supplierinfo_rows || 0).toLocaleString()} filas product.supplierinfo\n` +
                                     `• ${(s.distinct_partners || 0).toLocaleString()} vendors distintos\n` +
                                     `• ${(s.products_updated || 0).toLocaleString()} libros actualizados\n` +
                                     `• ${(s.with_supplier_count || 0).toLocaleString()} libros con vendor en mirror`
                                 );
                             } else if (s.status === 'error') {
-                                alert(`❌ Sync fallo:\n${(s.errors || []).join('\n')}`);
+                                alert(`<ion-icon name="close-circle-outline"></ion-icon> Sync fallo:\n${(s.errors || []).join('\n')}`);
                             }
                         } else {
                             console.log(`[SuppSync] ${s.supplierinfo_rows} si · ${s.products_updated} updated`);
@@ -2817,10 +2904,10 @@
                 const resp = await fetch('/api/v1/odoo/mirror/sync-categories', { method: 'POST' });
                 const data = await resp.json();
                 if (data.status === 'ok') {
-                    alert(`✅ ${data.fetched_categories} categorías cacheadas. ${data.backfilled_mirror_rows} filas del mirror enriquecidas con nombres.`);
+                    alert(`<ion-icon name="checkmark-circle-outline"></ion-icon> ${data.fetched_categories} categorías cacheadas. ${data.backfilled_mirror_rows} filas del mirror enriquecidas con nombres.`);
                     mirrorPoll();
                 } else {
-                    alert(`❌ ${data.error || data.message || 'Error'}`);
+                    alert(`<ion-icon name="close-circle-outline"></ion-icon> ${data.error || data.message || 'Error'}`);
                 }
             } catch (e) { alert('Error: ' + e.message); }
         }
@@ -2842,7 +2929,7 @@
                                 clearInterval(t);
                                 if (s.status === 'completed') {
                                     alert(
-                                        `✅ Inferencia OK:\n` +
+                                        `<ion-icon name="checkmark-circle-outline"></ion-icon> Inferencia OK:\n` +
                                         `• ${(s.from_enrichment_queue || 0).toLocaleString()} desde enricher (Odoo Sync)\n` +
                                         `• ${(s.from_books || 0).toLocaleString()} desde scrapeo bulk (books)\n` +
                                         `• ${(s.from_distributors || 0).toLocaleString()} desde distribuidores\n` +
@@ -2853,7 +2940,7 @@
                         } catch (_) {}
                     }, 3000);
                 } else {
-                    alert(`❌ ${data.message || 'No se pudo iniciar'}`);
+                    alert(`<ion-icon name="close-circle-outline"></ion-icon> ${data.message || 'No se pudo iniciar'}`);
                 }
             } catch (e) { alert('Error: ' + e.message); }
         }
@@ -2960,7 +3047,7 @@
                 const resp = await fetch('/api/v1/odoo/categories/push', { method: 'POST' });
                 const data = await resp.json();
                 if (data.status !== 'started') {
-                    alert(`❌ ${data.message || 'No se pudo iniciar'}`);
+                    alert(`<ion-icon name="close-circle-outline"></ion-icon> ${data.message || 'No se pudo iniciar'}`);
                     return;
                 }
                 alert('▶ Push arrancado. Ve a Odoo → Inventario → Configuración → Categorías de Producto para verlas aparecer.');
@@ -2972,7 +3059,7 @@
                             clearInterval(t);
                             if (s.status === 'completed') {
                                 alert(
-                                    `✅ Push categorías OK:\n` +
+                                    `<ion-icon name="checkmark-circle-outline"></ion-icon> Push categorías OK:\n` +
                                     `• ${(s.distinct_paths || 0).toLocaleString()} paths únicos\n` +
                                     `• ${(s.created_or_found || 0).toLocaleString()} creadas/encontradas en Odoo\n` +
                                     `• ${(s.from_cache || 0).toLocaleString()} ya estaban en cache local\n` +
@@ -2980,7 +3067,7 @@
                                     `Ahora dale a "Asignar libros → categorías" para que cada libro tenga su categ_id.`
                                 );
                             } else if (s.status === 'error') {
-                                alert(`❌ Push falló:\n${(s.errors || []).join('\n')}`);
+                                alert(`<ion-icon name="close-circle-outline"></ion-icon> Push falló:\n${(s.errors || []).join('\n')}`);
                             }
                         }
                     } catch (_) {}
@@ -2996,7 +3083,7 @@
                 const resp = await fetch('/api/v1/odoo/categories/assign', { method: 'POST' });
                 const data = await resp.json();
                 if (data.status !== 'started') {
-                    alert(`❌ ${data.message || 'No se pudo iniciar'}`);
+                    alert(`<ion-icon name="close-circle-outline"></ion-icon> ${data.message || 'No se pudo iniciar'}`);
                     return;
                 }
                 alert('▶ Assign arrancado. Mira el progreso aquí o en Odoo (en cada libro verás "Categoría interna" llenada).');
@@ -3008,13 +3095,13 @@
                             clearInterval(t);
                             if (s.status === 'completed') {
                                 alert(
-                                    `✅ Assign OK:\n` +
+                                    `<ion-icon name="checkmark-circle-outline"></ion-icon> Assign OK:\n` +
                                     `• ${(s.to_assign || 0).toLocaleString()} libros a asignar\n` +
                                     `• ${(s.assigned || 0).toLocaleString()} asignados con exito\n` +
                                     `• ${(s.skipped_no_cache || 0).toLocaleString()} omitidos (path sin cache)`
                                 );
                             } else if (s.status === 'error') {
-                                alert(`❌ Assign falló:\n${(s.errors || []).join('\n')}`);
+                                alert(`<ion-icon name="close-circle-outline"></ion-icon> Assign falló:\n${(s.errors || []).join('\n')}`);
                             }
                         }
                     } catch (_) {}
@@ -3036,7 +3123,7 @@
                     const resp = await fetch(opts.startUrl, { method: 'POST' });
                     const data = await resp.json();
                     if (data.status !== 'started') {
-                        alert(`❌ ${opts.name}: ${data.message || 'No se pudo iniciar'}`);
+                        alert(`<ion-icon name="close-circle-outline"></ion-icon> ${opts.name}: ${data.message || 'No se pudo iniciar'}`);
                         document.getElementById(opts.btnStart).disabled = false;
                         return;
                     }
@@ -3177,7 +3264,7 @@
                 const resp = await fetch('/api/v1/azeta/catalog-sync', { method: 'POST' });
                 const data = await resp.json();
                 if (data.status !== 'started') {
-                    alert(`❌ ${data.message || 'No se pudo iniciar'}`);
+                    alert(`<ion-icon name="close-circle-outline"></ion-icon> ${data.message || 'No se pudo iniciar'}`);
                     document.getElementById('btn-azetacat-start').disabled = false;
                     return;
                 }
@@ -3279,7 +3366,7 @@
                 const resp = await fetch(url, { method: 'POST' });
                 const data = await resp.json();
                 if (data.status !== 'started') {
-                    alert(`❌ ${data.message || 'No se pudo iniciar'}`);
+                    alert(`<ion-icon name="close-circle-outline"></ion-icon> ${data.message || 'No se pudo iniciar'}`);
                     document.getElementById('btn-azetapush-start').disabled = false;
                     return;
                 }
@@ -3370,7 +3457,7 @@
                 const resp = await fetch('/api/v1/azeta/stock-sync', { method: 'POST' });
                 const data = await resp.json();
                 if (data.status !== 'started') {
-                    alert(`❌ ${data.message || 'No se pudo iniciar'}`);
+                    alert(`<ion-icon name="close-circle-outline"></ion-icon> ${data.message || 'No se pudo iniciar'}`);
                     document.getElementById('btn-azeta-start').disabled = false;
                     return;
                 }
@@ -3473,7 +3560,7 @@
                 const resp = await fetch(url, { method: 'POST' });
                 const data = await resp.json();
                 if (data.status !== 'started') {
-                    alert(`❌ ${data.message || 'No se pudo iniciar'}`);
+                    alert(`<ion-icon name="close-circle-outline"></ion-icon> ${data.message || 'No se pudo iniciar'}`);
                     document.getElementById('btn-azetasp-start').disabled = false;
                     return;
                 }
@@ -3552,7 +3639,7 @@
             try {
                 const r = await fetch('/api/v1/azeta/stock-cron/start', { method: 'POST' });
                 const d = await r.json();
-                if (d.status !== 'started') { alert('❌ ' + (d.message || 'No se pudo')); return; }
+                if (d.status !== 'started') { alert('<ion-icon name="close-circle-outline"></ion-icon> ' + (d.message || 'No se pudo')); return; }
                 azetacronStartPolling();
                 azetacronPoll();
             } catch (e) { alert('Error: ' + e.message); }
@@ -3627,7 +3714,7 @@
             const filtros = qs ? ` con filtros: ${qs}` : '';
             if (!confirm(`Ejecutar un lote del sync SINLI${filtros}?\n\n` +
                          'Procesa hasta 2000 libros (no-AZETA) cambiados desde el último timestamp.\n' +
-                         (qs ? '⚠️ Modo validación (filtros activos): NO avanza marcapáginas.\n' : '') +
+                         (qs ? '<ion-icon name="warning-outline"></ion-icon> Modo validación (filtros activos): NO avanza marcapáginas.\n' : '') +
                          'Idempotente.')) return;
             await sinliPost('/api/v1/sync-stock/run-once' + qs, 'once');
         }
@@ -3637,8 +3724,8 @@
             const filtros = qs ? ` con filtros: ${qs}` : '';
             if (!confirm(`Arrancar BACKLOG SINLI${filtros}?\n\n` +
                          'Bucle hasta vaciar todos los pendientes (~104k libros la primera vez).\n' +
-                         'Con concurrency=8 tarda ~3-6h. Idempotente. Puedes parar con ⏹ Detener.\n' +
-                         (qs ? '⚠️ Modo validación (filtros activos): NO avanza marcapáginas.\n' : ''))) return;
+                         'Con concurrency=8 tarda ~3-6h. Idempotente. Puedes parar con <ion-icon name="stop-circle-outline"></ion-icon> Detener.\n' +
+                         (qs ? '<ion-icon name="warning-outline"></ion-icon> Modo validación (filtros activos): NO avanza marcapáginas.\n' : ''))) return;
             await sinliPost('/api/v1/sync-stock/run-backlog' + qs, 'backlog');
         }
 
@@ -3649,7 +3736,7 @@
                 const r = await fetch(url, { method: 'POST' });
                 const d = await r.json();
                 if (d.status !== 'started') {
-                    alert('❌ ' + (d.message || 'No se pudo iniciar'));
+                    alert('<ion-icon name="close-circle-outline"></ion-icon> ' + (d.message || 'No se pudo iniciar'));
                     document.getElementById('btn-sinli-once').disabled = false;
                     document.getElementById('btn-sinli-backlog').disabled = false;
                     return;
@@ -3671,16 +3758,16 @@
 
         async function sinliMarkerToNow() {
             if (!confirm('Setear marker SINLI a NOW()?\n\n' +
-                         '⚠️ Hacer SOLO después de terminar el backlog inicial completo.\n' +
+                         '<ion-icon name="warning-outline"></ion-icon> Hacer SOLO después de terminar el backlog inicial completo.\n' +
                          'Si lo haces antes, saltarás todos los pendientes.')) return;
             try {
                 const r = await fetch('/api/v1/sync-stock/marker-to-now', { method: 'POST' });
                 const d = await r.json();
                 if (d.status === 'ok') {
-                    alert('✅ Marker actualizado a NOW(). El próximo cron solo procesará cambios desde ahora.');
+                    alert('<ion-icon name="checkmark-circle-outline"></ion-icon> Marker actualizado a NOW(). El próximo cron solo procesará cambios desde ahora.');
                     sinliPoll();
                 } else {
-                    alert('❌ ' + (d.message || 'No se pudo'));
+                    alert('<ion-icon name="close-circle-outline"></ion-icon> ' + (d.message || 'No se pudo'));
                 }
             } catch (e) { alert('Error: ' + e.message); }
         }
@@ -3712,7 +3799,7 @@
                 document.getElementById('sinli-last-run').textContent =
                     m.ultima_ejecucion ? m.ultima_ejecucion.slice(0, 19) : '—';
                 document.getElementById('sinli-lock').textContent =
-                    m.lock_activo ? '🔒 ACTIVO' : '✓ libre';
+                    m.lock_activo ? '<ion-icon name="lock-closed-outline"></ion-icon> ACTIVO' : '<ion-icon name="checkmark-outline"></ion-icon> libre';
 
                 document.getElementById('sinli-stat-total').textContent = (j.items_total_estimate || 0).toLocaleString();
                 document.getElementById('sinli-stat-proc').textContent  = (j.items_processed || 0).toLocaleString();
@@ -3770,7 +3857,7 @@
             try {
                 const r = await fetch('/api/v1/sync-stock/cron/start', { method: 'POST' });
                 const d = await r.json();
-                if (d.status !== 'started') { alert('❌ ' + (d.message || 'No se pudo')); return; }
+                if (d.status !== 'started') { alert('<ion-icon name="close-circle-outline"></ion-icon> ' + (d.message || 'No se pudo')); return; }
                 sinliCronStartPolling();
                 sinliCronPoll();
             } catch (e) { alert('Error: ' + e.message); }
@@ -3827,14 +3914,14 @@
             const prov = document.getElementById('cegald-proveedor').value;
             const msg = dryRun
                 ? `DRY RUN de reemplazo CEGALD para ${prov}?\n\nSolo calcula cuántos se apagarían. NO escribe en Odoo.`
-                : `⚠️ APAGADO REAL para ${prov}?\n\nLos libros con stock en Odoo que NO estén en el último CEGALD ` +
+                : `<ion-icon name="warning-outline"></ion-icon> APAGADO REAL para ${prov}?\n\nLos libros con stock en Odoo que NO estén en el último CEGALD ` +
                   `pasarán a stock 0 en su almacén.\n\n¿Ya revisaste el dry-run y los números son razonables?`;
             if (!confirm(msg)) return;
             try {
                 const r = await fetch(`/api/v1/sync-stock/cegald-replace?proveedor=${encodeURIComponent(prov)}&dry_run=${dryRun}`,
                     { method: 'POST' });
                 const d = await r.json();
-                if (d.status !== 'started') { alert('❌ ' + (d.message || 'No se pudo')); return; }
+                if (d.status !== 'started') { alert('<ion-icon name="close-circle-outline"></ion-icon> ' + (d.message || 'No se pudo')); return; }
                 if (cegaldTimer) clearInterval(cegaldTimer);
                 cegaldTimer = setInterval(cegaldPoll, 2000);
                 cegaldPoll();
@@ -3862,7 +3949,7 @@
                 if (s.cegald_max_ts) det.push(`último CEGALD: ${String(s.cegald_max_ts).slice(0,19)}`);
                 if (s.cegald_age_hours != null) det.push(`edad: ${s.cegald_age_hours}h`);
                 if (s.presentes_vs_stock_pct != null) det.push(`cobertura: ${s.presentes_vs_stock_pct}%`);
-                if (s.salvaguarda_activada) det.push(`🛡 SALVAGUARDA: ${s.salvaguarda_motivo}`);
+                if (s.salvaguarda_activada) det.push(`<ion-icon name="shield-outline"></ion-icon> SALVAGUARDA: ${s.salvaguarda_motivo}`);
                 if (s.errors && s.errors.length) det.push(`errores: ${s.errors.length}`);
                 document.getElementById('cegald-detail').textContent = det.join(' · ');
                 if (['completed','error','stopped'].includes(s.status)) {
@@ -3909,7 +3996,7 @@
                 reqs.forEach(q => {
                     const ts = (q.ts || '').slice(0, 19).replace('T', ' ');
                     const isN8n = /n8n|axios/i.test(q.user_agent || '');
-                    const quien = `${q.client_ip || '?'}${q.username ? ' · ' + q.username : ''}${isN8n ? ' · 🤖 n8n' : ''}`;
+                    const quien = `${q.client_ip || '?'}${q.username ? ' · ' + q.username : ''}${isN8n ? ' · <ion-icon name="hardware-chip-outline"></ion-icon> n8n' : ''}`;
                     const payload = [q.query, q.body].filter(Boolean).join(' | ');
                     const okColor = (q.status_code >= 200 && q.status_code < 300) ? '#27ae60'
                         : q.status_code === 409 ? '#e67e22' : '#e74c3c';
@@ -3989,7 +4076,7 @@
                         tr.innerHTML =
                             `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e;"><span style="color:${color}; font-weight:bold;">${escapeHtml(u.categoria)}</span></td>` +
                             `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e;">${escapeHtml(u.evento)}</td>` +
-                            `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e; color:${stale ? '#e67e22' : '#27ae60'};">${ts}${stale ? ' ⚠' : ''}</td>` +
+                            `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e; color:${stale ? '#e67e22' : '#27ae60'};">${ts}${stale ? ' <ion-icon name="warning-outline"></ion-icon>' : ''}</td>` +
                             `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e; color:#999;">${escapeHtml((u.resumen || '').slice(0, 110))}</td>`;
                         tbodyH.appendChild(tr);
                     });
@@ -4061,7 +4148,7 @@
                     { method: 'POST' });
                 const d = await r.json();
                 if (d.status !== 'started') {
-                    alert('❌ ' + (d.message || 'No se pudo iniciar'));
+                    alert('<ion-icon name="close-circle-outline"></ion-icon> ' + (d.message || 'No se pudo iniciar'));
                     return;
                 }
                 document.getElementById('btn-tags-stop').disabled = false;
@@ -4159,7 +4246,7 @@
                 let html = '';
 
                 // BD: libros_proveedor
-                html += '<div class="section-label" style="color:#2ecc71; margin-top:10px;">📦 libros_proveedor (BD)</div>';
+                html += '<div class="section-label" style="color:#2ecc71; margin-top:10px;"><ion-icon name="cube-outline"></ion-icon> libros_proveedor (BD)</div>';
                 if (d.libros_proveedor && d.libros_proveedor.length) {
                     html += '<table style="width:100%; font-size:0.82rem; border-collapse:collapse; margin-top:4px;"><thead><tr style="background:#1c1f2e;">';
                     html += '<th style="text-align:left; padding:4px 8px; color:#bbb;">Proveedor</th>';
@@ -4185,14 +4272,14 @@
 
                 // Mirror
                 if (d.mirror) {
-                    html += '<div class="section-label" style="color:#2ecc71; margin-top:14px;">🪞 odoo_books_mirror</div>';
+                    html += '<div class="section-label" style="color:#2ecc71; margin-top:14px;"><ion-icon name="scan-outline"></ion-icon> odoo_books_mirror</div>';
                     html += `<div style="font-size:0.85rem; color:#bbb;">odoo_id=<strong>${d.mirror.odoo_id}</strong> · list_price=<strong>${d.mirror.list_price}</strong> · azeta_price=${d.mirror.azeta_price_eur ?? '-'} · ${escapeHtml(d.mirror.name || '')}</div>`;
                 } else {
-                    html += '<div class="section-label" style="color:#e94560; margin-top:14px;">🪞 NO en mirror (libro no espejado)</div>';
+                    html += '<div class="section-label" style="color:#e94560; margin-top:14px;"><ion-icon name="scan-outline"></ion-icon> NO en mirror (libro no espejado)</div>';
                 }
 
                 // Odoo quants
-                html += '<div class="section-label" style="color:#2ecc71; margin-top:14px;">🏢 Odoo: stock.quant en cada location</div>';
+                html += '<div class="section-label" style="color:#2ecc71; margin-top:14px;"><ion-icon name="business-outline"></ion-icon> Odoo: stock.quant en cada location</div>';
                 if (d.odoo_templates && d.odoo_templates.length) {
                     d.odoo_templates.forEach(t => {
                         html += `<div style="font-size:0.85rem; color:#bbb; margin-top:6px;">template id=<strong>${t.id}</strong> · ${escapeHtml(t.name || '')} · list_price=${t.list_price} · qty_total=${t.qty_available_total} · weight=${t.weight}</div>`;
@@ -4216,7 +4303,7 @@
                                 html += `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e;">${escapeHtml(String(locStr))}</td>`;
                                 html += `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e; text-align:right;">${q.quantity}</td>`;
                                 html += `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e; text-align:right;">${q.inventory_quantity}</td>`;
-                                html += `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e; text-align:center; color:${okColor};">${q.synced ? '✓' : '⏳'}</td>`;
+                                html += `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e; text-align:center; color:${okColor};">${q.synced ? '<ion-icon name="checkmark-outline"></ion-icon>' : '<ion-icon name="hourglass-outline"></ion-icon>'}</td>`;
                                 html += `<td style="padding:4px 8px; border-bottom:1px solid #2c2f3e; color:#888;">${escapeHtml((q.write_date || '').slice(0,19))}</td>`;
                                 html += '</tr>';
                             });
@@ -4229,7 +4316,7 @@
 
                 // Errores
                 if (d.sync_errores && d.sync_errores.length) {
-                    html += '<div class="section-label" style="color:#e74c3c; margin-top:14px;">⚠️ Errores recientes</div>';
+                    html += '<div class="section-label" style="color:#e74c3c; margin-top:14px;"><ion-icon name="warning-outline"></ion-icon> Errores recientes</div>';
                     html += '<ul style="font-size:0.8rem; color:#e94560; padding-left:20px;">';
                     d.sync_errores.forEach(e => {
                         html += `<li>${escapeHtml(e.cuando.slice(0,19))} · ${escapeHtml(e.proveedor)} · ${escapeHtml(e.mensaje.slice(0,150))}</li>`;
@@ -4252,9 +4339,9 @@
                 const resp = await fetch(`/api/v1/odoo/mirror/gbooks-reset-recent?hours_back=${hours}`, { method: 'POST' });
                 const data = await resp.json();
                 if (data.reset !== undefined) {
-                    alert(`✅ ${data.reset.toLocaleString()} libros reactivados (últimas ${data.hours_back}h)`);
+                    alert(`<ion-icon name="checkmark-circle-outline"></ion-icon> ${data.reset.toLocaleString()} libros reactivados (últimas ${data.hours_back}h)`);
                 } else {
-                    alert(`❌ ${data.message || JSON.stringify(data)}`);
+                    alert(`<ion-icon name="close-circle-outline"></ion-icon> ${data.message || JSON.stringify(data)}`);
                 }
             } catch (e) { alert('Error: ' + e.message); }
         }
@@ -4284,7 +4371,7 @@
 
         async function proxyHealth() {
             const out = document.getElementById('tools-result');
-            out.textContent = '🏥 Consultando health...';
+            out.innerHTML = '<ion-icon name="medkit-outline"></ion-icon> Consultando health...';
             try {
                 const r = await fetch('/api/v1/proxies/health');
                 const j = await r.json();
@@ -4302,7 +4389,7 @@
                     msg += `Vivas: ${aliveCount}  ·  Muertas: ${deadCount}\n\n`;
                     keys.forEach(spec => {
                         const s = proxies[spec];
-                        const status = s.dead ? '💀 MUERTA' : '✅ viva';
+                        const status = s.dead ? '<ion-icon name="skull-outline"></ion-icon> MUERTA' : '<ion-icon name="checkmark-circle-outline"></ion-icon> viva';
                         msg += `${status}  ${s.spec_masked || spec}\n`;
                         msg += `   fallos consecutivos: ${s.consecutive_failures}\n`;
                         msg += `   total ok: ${s.total_successes}  fail: ${s.total_failures}\n`;
@@ -4315,7 +4402,7 @@
                 }
                 out.textContent = msg;
             } catch (e) {
-                out.textContent = '❌ Error: ' + e.message;
+                out.innerHTML = '<ion-icon name="close-circle-outline"></ion-icon> Error: ' + e.message;
             }
         }
 
@@ -4324,10 +4411,10 @@
             try {
                 const r = await fetch('/api/v1/proxies/health/reset', { method: 'POST' });
                 const j = await r.json();
-                alert('✅ ' + (j.status || 'reset'));
+                alert('<ion-icon name="checkmark-circle-outline"></ion-icon> ' + (j.status || 'reset'));
                 proxyHealth();
             } catch (e) {
-                alert('❌ Error: ' + e.message);
+                alert('<ion-icon name="close-circle-outline"></ion-icon> Error: ' + e.message);
             }
         }
 
@@ -4338,8 +4425,8 @@
                 const r = await fetch('/api/v1/proxies/status');
                 const j = await r.json();
                 const shardLine = (j.shard_count > 1)
-                    ? `🔀 Shard: ${j.shard_index}/${j.shard_count} → procesa odoo_id donde (id % ${j.shard_count} = ${j.shard_index})\n`
-                    : `🔀 Shard: SOLO (1 worker, sin sharding)\n`;
+                    ? `<ion-icon name="shuffle-outline"></ion-icon> Shard: ${j.shard_index}/${j.shard_count} → procesa odoo_id donde (id % ${j.shard_count} = ${j.shard_index})\n`
+                    : `<ion-icon name="shuffle-outline"></ion-icon> Shard: SOLO (1 worker, sin sharding)\n`;
                 out.textContent =
                     `Worker name: ${j.worker}\n` +
                     shardLine +
@@ -4355,39 +4442,39 @@
             if (!confirm('Esto va a aplicar los ALTER TABLE pendientes en odoo_books_mirror.\n\n' +
                          'Si las columnas cdl_author, cdl_editorial, etc. no existen aun, las crea.\n' +
                          'Idempotente — si ya existen, no hace nada. Sin redeploy.\n\n¿Continuar?')) return;
-            out.textContent = '🔧 Aplicando migración...';
+            out.innerHTML = '<ion-icon name="construct-outline"></ion-icon> Aplicando migración...';
             try {
                 const r = await fetch('/api/v1/admin/run-migrations', { method: 'POST' });
                 const j = await r.json();
                 if (j.error) {
-                    out.textContent = '❌ ERROR: ' + j.error;
+                    out.innerHTML = '<ion-icon name="close-circle-outline"></ion-icon> ERROR: ' + j.error;
                     return;
                 }
                 const missing = j.cdl_columns_missing || [];
                 const present = j.cdl_columns_present || [];
-                let msg = `✅ Migración aplicada.\n\n`;
+                let msg = `<ion-icon name="checkmark-circle-outline"></ion-icon> Migración aplicada.\n\n`;
                 msg += `Total columnas en odoo_books_mirror: ${j.total_columns}\n`;
                 msg += `Columnas cdl_* presentes: ${present.length}/15\n`;
                 if (missing.length === 0) {
-                    msg += `\n🎉 TODAS las columnas cdl_* están listas. Ya puedes ▶ los jobs CDL.\n`;
-                    msg += `Después de 30s presiona "🔁 Refrescar" arriba para ver el contador subir.`;
+                    msg += `\n<ion-icon name="sparkles-outline"></ion-icon> TODAS las columnas cdl_* están listas. Ya puedes ▶ los jobs CDL.\n`;
+                    msg += `Después de 30s presiona "<ion-icon name="repeat-outline"></ion-icon> Refrescar" arriba para ver el contador subir.`;
                 } else {
-                    msg += `\n⚠️ Aún faltan: ${missing.join(', ')}\n`;
+                    msg += `\n<ion-icon name="warning-outline"></ion-icon> Aún faltan: ${missing.join(', ')}\n`;
                     msg += `Esto significa que el ALTER TABLE falló. Revisa los logs del contenedor.`;
                 }
                 out.textContent = msg;
             } catch (e) {
-                out.textContent = '❌ Error de conexión: ' + e.message;
+                out.innerHTML = '<ion-icon name="close-circle-outline"></ion-icon> Error de conexión: ' + e.message;
             }
         }
 
         async function odooWarehouses() {
             const out = document.getElementById('tools-result');
-            out.textContent = '🏭 Consultando almacenes de Odoo...';
+            out.innerHTML = '<ion-icon name="business-outline"></ion-icon> Consultando almacenes de Odoo...';
             try {
                 const r = await fetch('/api/v1/admin/odoo-warehouses');
                 const j = await r.json();
-                if (j.error) { out.textContent = '❌ ' + j.error; return; }
+                if (j.error) { out.innerHTML = '<ion-icon name="close-circle-outline"></ion-icon> ' + j.error; return; }
                 let msg = `ALMACENES EN ODOO (${j.count})\n\n`;
                 msg += `code           nombre                          lot_stock_id\n`;
                 msg += `─────────────────────────────────────────────────────────────\n`;
@@ -4397,37 +4484,37 @@
                     const lot = w.lot_stock_id || '—';
                     msg += `${code} ${name}${lot}\n`;
                 });
-                msg += `\n💡 Útil para que el sync SINLI verifique los codigos en proveedor_almacen_odoo.`;
+                msg += `\n<ion-icon name="bulb-outline"></ion-icon> Útil para que el sync SINLI verifique los codigos en proveedor_almacen_odoo.`;
                 out.textContent = msg;
             } catch (e) {
-                out.textContent = '❌ Error: ' + e.message;
+                out.innerHTML = '<ion-icon name="close-circle-outline"></ion-icon> Error: ' + e.message;
             }
         }
 
         async function odooModules() {
             const out = document.getElementById('tools-result');
-            out.textContent = '📦 Consultando módulos de Odoo...';
+            out.innerHTML = '<ion-icon name="cube-outline"></ion-icon> Consultando módulos de Odoo...';
             try {
                 const r = await fetch('/api/v1/admin/odoo-modules');
                 const j = await r.json();
-                if (j.error) { out.textContent = '❌ ' + j.error; return; }
+                if (j.error) { out.innerHTML = '<ion-icon name="close-circle-outline"></ion-icon> ' + j.error; return; }
                 let msg = 'MÓDULOS ODOO\n\n';
                 const m = j.modules || {};
                 Object.keys(m).sort().forEach(name => {
                     const state = m[name];
-                    const icon = state === 'installed' ? '✅' : (state === 'uninstalled' ? '⚪' : '⚠️');
+                    const icon = state === 'installed' ? '<ion-icon name="checkmark-circle-outline"></ion-icon>' : (state === 'uninstalled' ? '<ion-icon name="ellipse-outline"></ion-icon>' : '<ion-icon name="warning-outline"></ion-icon>');
                     msg += `  ${icon} ${name}: ${state}\n`;
                 });
-                msg += `\n💡 ${j.interpretation}`;
+                msg += `\n<ion-icon name="bulb-outline"></ion-icon> ${j.interpretation}`;
                 out.textContent = msg;
             } catch (e) {
-                out.textContent = '❌ Error: ' + e.message;
+                out.innerHTML = '<ion-icon name="close-circle-outline"></ion-icon> Error: ' + e.message;
             }
         }
 
         async function throughput() {
             const out = document.getElementById('tools-result');
-            out.textContent = '⏱ Midiendo velocidad real...';
+            out.innerHTML = '<ion-icon name="timer-outline"></ion-icon> Midiendo velocidad real...';
             try {
                 const r = await fetch('/api/v1/admin/throughput');
                 const j = await r.json();
@@ -4457,76 +4544,76 @@
                     const days = (minutesFor1M / 60 / 24).toFixed(1);
                     msg += `Al ritmo de la última hora (${cdlPerMin}/min), 1M libros = ${days} días.\n`;
                 } else {
-                    msg += `⚠️ 0 libros procesados en la última hora — algo está bloqueado.\n`;
+                    msg += `<ion-icon name="warning-outline"></ion-icon> 0 libros procesados en la última hora — algo está bloqueado.\n`;
                 }
                 out.textContent = msg;
             } catch (e) {
-                out.textContent = '❌ Error: ' + e.message;
+                out.innerHTML = '<ion-icon name="close-circle-outline"></ion-icon> Error: ' + e.message;
             }
         }
 
         async function diagnose() {
             const out = document.getElementById('tools-result');
-            out.textContent = '🩺 Diagnosticando...';
+            out.innerHTML = '<ion-icon name="pulse-outline"></ion-icon> Diagnosticando...';
             try {
                 const r = await fetch('/api/v1/admin/diagnose');
                 const j = await r.json();
                 const s = j.shard;
                 const c = j.counts || {};
-                const fmt = (n) => n === null ? '❌ ERROR' : n.toLocaleString();
-                let msg = `🔀 SHARD\n`;
+                const fmt = (n) => n === null ? '<ion-icon name="close-circle-outline"></ion-icon> ERROR' : n.toLocaleString();
+                let msg = `<ion-icon name="shuffle-outline"></ion-icon> SHARD\n`;
                 msg += `  index: ${s.index}\n  count: ${s.count}\n  SQL: ${s.clause}\n\n`;
-                msg += `📊 CONTEOS (este shard)\n`;
+                msg += `<ion-icon name="bar-chart-outline"></ion-icon> CONTEOS (este shard)\n`;
                 msg += `  Total mirror (todos):        ${fmt(c.total_mirror)}\n`;
                 msg += `  Total mirror (este shard):   ${fmt(c.total_mirror_shard)}\n`;
                 msg += `  Con barcode:                 ${fmt(c.with_barcode_shard)}\n`;
                 msg += `  Sin categoría:               ${fmt(c.without_categ_shard)}\n`;
                 msg += `  Sin cdl_fetched_at:          ${fmt(c.not_cdl_fetched_shard)}\n`;
-                msg += `\n🎯 TARGETS por job\n`;
+                msg += `\n<ion-icon name="locate-outline"></ion-icon> TARGETS por job\n`;
                 msg += `  CDL sitemap target:          ${fmt(c.cdl_sitemap_target_shard)}\n`;
                 msg += `  CDL search target:           ${fmt(c.cdl_search_target_shard)}\n`;
                 msg += `  Google Books target:         ${fmt(c.gbooks_target_shard)}\n`;
                 msg += `  ISBN index (sitemap total):  ${fmt(c.isbn_index_total)}\n`;
-                msg += `\n🏪 PROVEEDORES desde Odoo (todos los shards)\n`;
+                msg += `\n<ion-icon name="storefront-outline"></ion-icon> PROVEEDORES desde Odoo (todos los shards)\n`;
                 msg += `  Libros con vendor asignado:  ${fmt(c.with_supplier_odoo)}\n`;
-                msg += `\n💶 PRECIOS desde Odoo (list_price, todos los shards)\n`;
+                msg += `\n<ion-icon name="cash-outline"></ion-icon> PRECIOS desde Odoo (list_price, todos los shards)\n`;
                 msg += `  Con precio (no NULL):        ${fmt(c.price_from_odoo_any)}\n`;
                 msg += `  Con precio > 0:              ${fmt(c.price_from_odoo_nonzero)}\n`;
                 msg += `  Precio promedio:             ${fmt(c.price_avg_odoo)}\n`;
                 msg += `  Mínimo:                      ${fmt(c.price_min_odoo)}\n`;
                 msg += `  Máximo:                      ${fmt(c.price_max_odoo)}\n`;
                 if (j.errors && j.errors.length > 0) {
-                    msg += `\n❌ ERRORES SQL\n`;
+                    msg += `\n<ion-icon name="close-circle-outline"></ion-icon> ERRORES SQL\n`;
                     j.errors.forEach(e => msg += `  · ${e}\n`);
                 }
                 // Diagnóstico humano
-                msg += `\n💡 INTERPRETACIÓN\n`;
+                msg += `\n<ion-icon name="bulb-outline"></ion-icon> INTERPRETACIÓN\n`;
                 if (c.total_mirror_shard === 0) {
-                    msg += `  ⚠️ Mirror vacío en este shard. ¿Las env vars WORKER_SHARD_* están bien?\n`;
+                    msg += `  <ion-icon name="warning-outline"></ion-icon> Mirror vacío en este shard. ¿Las env vars WORKER_SHARD_* están bien?\n`;
                 } else if (c.cdl_sitemap_target_shard === 0 && c.cdl_search_target_shard === 0) {
-                    msg += `  ⚠️ Ningún job tiene libros pendientes.\n`;
+                    msg += `  <ion-icon name="warning-outline"></ion-icon> Ningún job tiene libros pendientes.\n`;
                     if (c.not_cdl_fetched_shard === 0) {
                         msg += `  → Todos los libros del shard ya están cdl_fetched. Nada que hacer.\n`;
                     } else if (c.without_categ_shard === 0) {
                         msg += `  → Todos los libros del shard ya tienen categoría. Excelente.\n`;
                     }
                 } else {
-                    msg += `  ✅ Hay libros pendientes. Si los jobs siguen sin moverse, mira logs.\n`;
+                    msg += `  <ion-icon name="checkmark-circle-outline"></ion-icon> Hay libros pendientes. Si los jobs siguen sin moverse, mira logs.\n`;
                 }
                 out.textContent = msg;
             } catch (e) {
-                out.textContent = '❌ Error: ' + e.message;
+                out.innerHTML = '<ion-icon name="close-circle-outline"></ion-icon> Error: ' + e.message;
             }
         }
 
         async function checkSchema() {
             const out = document.getElementById('tools-result');
-            out.textContent = '🔍 Consultando columnas...';
+            out.innerHTML = '<ion-icon name="search-outline"></ion-icon> Consultando columnas...';
             try {
                 const r = await fetch('/api/v1/admin/schema-info?table=odoo_books_mirror');
                 const j = await r.json();
                 if (j.error) {
-                    out.textContent = '❌ ERROR: ' + j.error;
+                    out.innerHTML = '<ion-icon name="close-circle-outline"></ion-icon> ERROR: ' + j.error;
                     return;
                 }
                 const expected = [
@@ -4542,15 +4629,15 @@
                 msg += `Columnas cdl_* esperadas: 15\n`;
                 msg += `Presentes: ${expected.length - missing.length}\n`;
                 if (missing.length > 0) {
-                    msg += `\n❌ FALTAN: ${missing.join(', ')}\n\n`;
-                    msg += `→ Pulsa "🔧 Aplicar migración BD" para crearlas.`;
+                    msg += `\n<ion-icon name="close-circle-outline"></ion-icon> FALTAN: ${missing.join(', ')}\n\n`;
+                    msg += `→ Pulsa "<ion-icon name="construct-outline"></ion-icon> Aplicar migración BD" para crearlas.`;
                 } else {
-                    msg += `\n✅ TODAS presentes. El UPDATE de _cdl_save_one debe funcionar.\n\n`;
+                    msg += `\n<ion-icon name="checkmark-circle-outline"></ion-icon> TODAS presentes. El UPDATE de _cdl_save_one debe funcionar.\n\n`;
                     msg += `Lista completa:\n` + (j.columns || []).map(c => `  · ${c.name} (${c.type})`).join('\n');
                 }
                 out.textContent = msg;
             } catch (e) {
-                out.textContent = '❌ Error: ' + e.message;
+                out.innerHTML = '<ion-icon name="close-circle-outline"></ion-icon> Error: ' + e.message;
             }
         }
 
@@ -4758,9 +4845,9 @@
                 const resp = await fetch('/api/v1/notify/test', { method: 'POST' });
                 const data = await resp.json();
                 if (data.status === 'sent') {
-                    alert(`✅ Mensaje enviado al Telegram desde server ${data.worker}. Revisa tu celular.`);
+                    alert(`<ion-icon name="checkmark-circle-outline"></ion-icon> Mensaje enviado al Telegram desde server ${data.worker}. Revisa tu celular.`);
                 } else {
-                    alert(`❌ ${data.message || 'Error desconocido'}`);
+                    alert(`<ion-icon name="close-circle-outline"></ion-icon> ${data.message || 'Error desconocido'}`);
                 }
             } catch (e) { alert('Error: ' + e.message); }
         }
@@ -4773,9 +4860,9 @@
                 const data = await resp.json();
                 const tg = data.telegram_response || {};
                 if (tg.ok) {
-                    alert(`✅ Webhook configurado en server ${data.worker}\n\nURL: ${data.webhook_url}\n\nAhora desde Telegram mándale /status al bot.`);
+                    alert(`<ion-icon name="checkmark-circle-outline"></ion-icon> Webhook configurado en server ${data.worker}\n\nURL: ${data.webhook_url}\n\nAhora desde Telegram mándale /status al bot.`);
                 } else {
-                    alert(`❌ Telegram rechazó:\n${tg.description || JSON.stringify(tg)}`);
+                    alert(`<ion-icon name="close-circle-outline"></ion-icon> Telegram rechazó:\n${tg.description || JSON.stringify(tg)}`);
                 }
             } catch (e) { alert('Error: ' + e.message); }
         }
@@ -4877,13 +4964,13 @@
                     ? `<span style="color:#1abc9c; font-size:0.78rem;">${(r.categorias || '').slice(0, 40)}</span>`
                     : '<span style="color:#666;">—</span>';
                 const desc = r.tiene_desc
-                    ? '<span style="color:#27ae60;">✓</span>'
+                    ? '<span style="color:#27ae60;"><ion-icon name="checkmark-outline"></ion-icon></span>'
                     : '<span style="color:#666;">—</span>';
                 const prov = r.proveedor
                     ? `<span style="color:#d35400; font-size:0.78rem;">${(r.proveedor || '').slice(0, 30)}</span>`
                     : '<span style="color:#666;">—</span>';
-                const cdl = r.cdl_fetched_at ? '<span style="color:#3498db;">✓</span>' : '—';
-                const gb = r.gbooks_fetched_at ? '<span style="color:#9b59b6;">✓</span>' : '—';
+                const cdl = r.cdl_fetched_at ? '<span style="color:#3498db;"><ion-icon name="checkmark-outline"></ion-icon></span>' : '—';
+                const gb = r.gbooks_fetched_at ? '<span style="color:#9b59b6;"><ion-icon name="checkmark-outline"></ion-icon></span>' : '—';
                 tr.innerHTML = `
                     <td>${img}</td>
                     <td><span style="font-family:monospace; font-size:0.8rem;">${r.barcode || ''}</span></td>
@@ -4986,7 +5073,7 @@
                         <p style="color:#888; font-family:monospace;">ISBN: ${d.barcode || '—'}  ·  odoo_id: ${d.odoo_id}</p>
                         ${d.cdl_author ? `<p style="color:#e94560; font-weight:600;">${d.cdl_author}</p>` : ''}
                         ${d.inferred_categories ? `<p style="color:#1abc9c;">${d.inferred_categories}</p>` : ''}
-                        ${d.supplier_names ? `<p style="color:#d35400;">🏪 ${d.supplier_names}</p>` : ''}
+                        ${d.supplier_names ? `<p style="color:#d35400;"><ion-icon name="storefront-outline"></ion-icon> ${d.supplier_names}</p>` : ''}
                     </div>
                 </div>
                 <hr style="border:none; border-top:1px solid #333; margin:20px 0;"/>
@@ -5066,6 +5153,126 @@
         }
         function stopResumenAutoRefresh() {
             if (resumenAutoTimer) { clearInterval(resumenAutoTimer); resumenAutoTimer = null; }
+        }
+
+        // ═══ RELLENO MANUAL ═══
+        let manualTipo = 'no_scrapeados';
+        let manualFecha = null;
+        let manualItems = {};
+
+        function manualSub(tipo) {
+            manualTipo = tipo;
+            document.querySelectorAll('.subtab-btn').forEach(b => b.classList.remove('active'));
+            const b = document.getElementById('msub-' + tipo); if (b) b.classList.add('active');
+            document.getElementById('manual-hint').textContent = tipo === 'no_scrapeados'
+                ? 'Libros nuevos que no se pudieron scrapear, por fecha de intento. Rellénalos a mano y se publican en web.'
+                : 'Resto de libros nuevos (ya scrapeados), editables. Por fecha de llegada.';
+            manualLoadDates();
+        }
+
+        async function manualLoadDates() {
+            const el = document.getElementById('manual-dates');
+            el.innerHTML = '<span style="color:#8b93a7">Cargando fechas…</span>';
+            try {
+                const r = await fetch('/api/v1/manual/dates?tipo=' + manualTipo);
+                const d = await r.json();
+                if (!d.fechas || !d.fechas.length) {
+                    el.innerHTML = '<span style="color:#8b93a7">Sin pendientes en esta vista.</span>';
+                    document.getElementById('manual-table').innerHTML = ''; return;
+                }
+                el.innerHTML = d.fechas.map(f =>
+                    `<div class="date-chip" id="dchip-${f.fecha}" onclick="manualSelectDate('${f.fecha}')">${f.fecha}<span class="cnt">${f.count.toLocaleString()}</span></div>`).join('');
+                manualSelectDate(d.fechas[0].fecha);
+            } catch (e) { el.innerHTML = '<span style="color:#f87171">Error cargando fechas.</span>'; }
+        }
+
+        function manualSelectDate(fecha) {
+            manualFecha = fecha;
+            document.querySelectorAll('.date-chip').forEach(c => c.classList.remove('active'));
+            const c = document.getElementById('dchip-' + fecha); if (c) c.classList.add('active');
+            manualLoadPending(1);
+        }
+
+        async function manualLoadPending(page) {
+            const el = document.getElementById('manual-table');
+            el.innerHTML = '<p style="color:#8b93a7">Cargando…</p>';
+            try {
+                const r = await fetch(`/api/v1/manual/pending?tipo=${manualTipo}&fecha=${manualFecha}&page=${page}&page_size=50`);
+                const d = await r.json();
+                manualItems = {};
+                d.items.forEach(it => manualItems[it.isbn] = it);
+                if (!d.items.length) { el.innerHTML = '<p style="color:#8b93a7">Nada en esta fecha.</p>'; return; }
+                const rows = d.items.map(it => `
+                    <tr id="mrow-${it.isbn}">
+                      <td><code>${it.isbn}</code></td>
+                      <td>${it.title ? it.title : '<span style="color:#666">— sin título —</span>'}</td>
+                      <td><span class="tag-badge tag-${it.tag}">${it.tag}</span></td>
+                      <td style="color:#8b93a7">${it.proveedores || ''}</td>
+                      <td><button class="btn-edit" onclick="manualEdit('${it.isbn}')"><ion-icon name="create-outline"></ion-icon> Editar</button></td>
+                    </tr>`).join('');
+                const pages = Math.max(1, Math.ceil(d.total / d.page_size));
+                el.innerHTML = `
+                  <table class="mtable"><thead><tr><th>ISBN</th><th>Título</th><th>Etiqueta</th><th>Proveedor</th><th></th></tr></thead>
+                  <tbody>${rows}</tbody></table>
+                  <div style="margin-top:14px; display:flex; align-items:center; gap:10px; color:#8b93a7; font-size:.8rem;">
+                    <span>${d.total.toLocaleString()} pendientes · página ${page}/${pages}</span>
+                    ${page > 1 ? `<button class="btn-edit" onclick="manualLoadPending(${page - 1})">‹ Anterior</button>` : ''}
+                    ${page < pages ? `<button class="btn-edit" onclick="manualLoadPending(${page + 1})">Siguiente ›</button>` : ''}
+                  </div>`;
+            } catch (e) { el.innerHTML = '<p style="color:#f87171">Error cargando pendientes.</p>'; }
+        }
+
+        function manualEdit(isbn) {
+            const it = manualItems[isbn]; if (!it) return;
+            const f = (k) => (it[k] === undefined || it[k] === null) ? '' : String(it[k]).replace(/"/g, '&quot;');
+            const box = document.getElementById('manual-modal-box');
+            box.innerHTML = `
+                <h2 style="color:#fff; font-size:1.15rem; margin-bottom:4px;"><ion-icon name="create-outline"></ion-icon> Rellenar libro</h2>
+                <p style="color:#8b93a7; font-size:.8rem; margin-bottom:8px;">ISBN <code>${it.isbn}</code> · ${it.proveedores || ''}</p>
+                <div class="mform-grid">
+                    <div class="full"><label>Título</label><input id="mf-title" value="${f('title')}"></div>
+                    <div><label>Autor</label><input id="mf-author" value="${f('author')}"></div>
+                    <div><label>Editorial</label><input id="mf-editorial" value="${f('editorial')}"></div>
+                    <div><label>Precio (€)</label><input id="mf-precio" value="${f('precio')}"></div>
+                    <div class="full"><label>Imagen (URL de portada)</label><input id="mf-image_url" value="${f('image_url')}"></div>
+                    <div class="full"><label>Descripción</label><textarea id="mf-description">${(it.description || '')}</textarea></div>
+                    <div><label>Peso (g)</label><input id="mf-weight" value="${f('weight')}"></div>
+                    <div><label>Alto (mm)</label><input id="mf-height" value="${f('height')}"></div>
+                    <div><label>Ancho (mm)</label><input id="mf-width" value="${f('width')}"></div>
+                </div>
+                <p style="color:#8b93a7; font-size:.75rem; margin-bottom:12px;">
+                    Con imagen + descripción → <b>Web</b>. Añade peso/alto/ancho → <b>Completo</b>. Sin descripción → queda Stock (marketplace).</p>
+                <div id="mf-msg" style="min-height:20px; font-size:.82rem;"></div>
+                <div style="display:flex; gap:10px; justify-content:flex-end;">
+                    <button class="btn-edit" onclick="manualCloseModal()">Cancelar</button>
+                    <button class="btn btn-primary" style="padding:9px 20px;" onclick="manualSave('${it.isbn}')"><ion-icon name="save-outline"></ion-icon> Guardar y publicar</button>
+                </div>`;
+            document.getElementById('manual-modal').style.display = 'flex';
+        }
+
+        function manualCloseModal() { document.getElementById('manual-modal').style.display = 'none'; }
+
+        async function manualSave(isbn) {
+            const g = (k) => document.getElementById('mf-' + k).value.trim();
+            const data = {
+                isbn, title: g('title'), author: g('author'), editorial: g('editorial'),
+                precio: g('precio'), image_url: g('image_url'), description: g('description'),
+                weight: g('weight'), height: g('height'), width: g('width')
+            };
+            const msg = document.getElementById('mf-msg');
+            msg.innerHTML = '<span style="color:#8b93a7">Guardando en BD y Odoo…</span>';
+            try {
+                const r = await fetch('/api/v1/manual/save', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data)
+                });
+                const res = await r.json();
+                if (res.ok) {
+                    msg.innerHTML = `<span style="color:#4ade80">Guardado <ion-icon name="checkmark-outline"></ion-icon> Etiqueta: <b>${res.tag}</b></span>`;
+                    setTimeout(() => { manualCloseModal(); manualLoadDates(); }, 900);
+                } else {
+                    msg.innerHTML = `<span style="color:#f87171">Error: ${res.error || 'desconocido'}</span>`;
+                }
+            } catch (e) { msg.innerHTML = '<span style="color:#f87171">Error de red.</span>'; }
         }
 
         // ═══ INIT ═══
