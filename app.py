@@ -1353,6 +1353,43 @@ async def manual_save(request: Request):
         return JSONResponse(status_code=500, content={"error": f"{type(e).__name__}: {str(e)[:200]}"})
 
 
+@app.post("/api/v1/pricing/mass-update", tags=["Precios"])
+async def pricing_mass_update(
+    dry_run: bool = Query(True, description="True = solo calcular, sin escribir"),
+    limit: int | None = Query(None, ge=1, description="Tope (test)"),
+):
+    """
+    Motor de precios (API-15, Capa 1): aplica el suplemento por PVP bajo
+    sobre pvp_base y apaga (active=False) los < 2,90 y sin precio.
+    Idempotente. dry_run=True por defecto. 409 si ya corre.
+    """
+    import threading
+    import sys
+    import pricing_engine
+
+    if pricing_engine.get_status().get("status") == "running":
+        return JSONResponse(status_code=409, content={
+            "status": "error", "message": "Actualizacion de precios ya corriendo."})
+
+    def _run():
+        if sys.platform == 'win32':
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(pricing_engine.run_price_update(dry_run=dry_run, limit=limit))
+        finally:
+            loop.close()
+
+    threading.Thread(target=_run, daemon=True).start()
+    return JSONResponse(content={"status": "started", "dry_run": dry_run})
+
+
+@app.get("/api/v1/pricing/status", tags=["Precios"])
+async def pricing_status():
+    import pricing_engine
+    return JSONResponse(content=pricing_engine.get_status())
+
+
 @app.post("/api/v1/azeta/absence-shutdown", tags=["AZETA"])
 async def azeta_absence_shutdown(
     dry_run: bool = Query(True, description="True = solo calcular, sin escribir"),
