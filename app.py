@@ -1864,6 +1864,38 @@ async def audit_summary(days: int = Query(7, ge=1, le=30)):
     return JSONResponse(content=audit_log.get_summary(days=days))
 
 
+# Proveedor -> (location_id en Odoo, nombre corto)
+_STOCK_LOCS = [
+    (14, "AZETA"), (62, "LOGISTA"), (50, "ICARO"), (32, "DISTRIFORMA"),
+    (56, "PUNXES"), (44, "ANAYA"), (26, "DISTRIFER"), (20, "DISBOOK"),
+    (98, "ALFA"), (38, "AKAL"), (68, "MACHADO"), (74, "UDL"),
+]
+
+
+@app.get("/api/v1/audit/stock-proveedor", tags=["Auditoria"])
+async def audit_stock_proveedor():
+    """
+    Stock ENCENDIDO por proveedor (stock.quant con quantity>0 en su almacen).
+    Consulta Odoo en paralelo. Solo productos activos (los apagados por la
+    regla de precios no cuentan como publicables)."""
+    from odoo_client import OdooClient
+    async with OdooClient() as c:
+        async def cuenta(loc):
+            try:
+                on = await c.search_count(
+                    "stock.quant",
+                    [["location_id", "=", loc], ["quantity", ">", 0],
+                     ["product_id.product_tmpl_id.active", "=", True]])
+                return on
+            except Exception:
+                return None
+        counts = await asyncio.gather(*[cuenta(loc) for loc, _ in _STOCK_LOCS])
+    rows = [{"proveedor": name, "encendidos": n}
+            for (loc, name), n in zip(_STOCK_LOCS, counts)]
+    total = sum(r["encendidos"] for r in rows if r["encendidos"])
+    return JSONResponse(content={"proveedores": rows, "total": total})
+
+
 # ─── Admin: schema info + forzar migraciones sin redeploy ────────────
 
 @app.get("/api/v1/admin/schema-info", tags=["Admin"])
