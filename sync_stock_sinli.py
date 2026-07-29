@@ -545,15 +545,19 @@ async def _run_one_batch(odoo: OdooClient,
 
         loc_id = book["location_id"]
         qty = book["stock_disponible"]
-        key = (pid, loc_id)
-        if key in quant_cache:
-            to_update_by_loc_qty.setdefault((loc_id, qty), []).append(quant_cache[key])
-        else:
-            to_create.append({
-                "product_id": pid,
-                "location_id": loc_id,
-                "inventory_quantity": qty,
-            })
+        # No empujar stock a productos que la regla API-15 apaga (< 2,90 o
+        # sin precio): el producto esta archivado y la escritura fallaria.
+        # El bloque de precio de abajo SI corre (deactiva/reactiva + pvp_base).
+        if pricing_engine.web_price(book["precio_con_iva"]) is not None:
+            key = (pid, loc_id)
+            if key in quant_cache:
+                to_update_by_loc_qty.setdefault((loc_id, qty), []).append(quant_cache[key])
+            else:
+                to_create.append({
+                    "product_id": pid,
+                    "location_id": loc_id,
+                    "inventory_quantity": qty,
+                })
 
         # Precio condicional (motor API-15): comparamos el PVP crudo con
         # pvp_base (no con list_price, que ya es el precio web con suplemento).

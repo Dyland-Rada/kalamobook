@@ -567,6 +567,7 @@ def _read_stock_targets(test_isbn: str | None = None,
                 JOIN libros_proveedor lp ON lp.isbn = m.barcode
                 WHERE lp.proveedor_email = ?
                   AND m.odoo_id IS NOT NULL
+                  AND COALESCE(lp.precio_con_iva, 0) >= 2.90  -- API-15: no empujar stock a apagados (<2,90/sin precio)
                   AND m.barcode = ?
                 LIMIT 1
             """
@@ -588,6 +589,7 @@ def _read_stock_targets(test_isbn: str | None = None,
                 JOIN libros_proveedor lp ON lp.isbn = m.barcode
                 WHERE lp.proveedor_email = ?
                   AND m.odoo_id IS NOT NULL
+                  AND COALESCE(lp.precio_con_iva, 0) >= 2.90  -- API-15: no empujar stock a apagados (<2,90/sin precio)
                   AND lp.actualizado_en > ?
                 ORDER BY lp.actualizado_en
             """
@@ -603,6 +605,7 @@ def _read_stock_targets(test_isbn: str | None = None,
                 JOIN libros_proveedor lp ON lp.isbn = m.barcode
                 WHERE lp.proveedor_email = ?
                   AND m.odoo_id IS NOT NULL
+                  AND COALESCE(lp.precio_con_iva, 0) >= 2.90  -- API-15: no empujar stock a apagados (<2,90/sin precio)
                 ORDER BY m.odoo_id
             """
             if max_books:
