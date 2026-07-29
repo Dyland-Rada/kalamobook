@@ -11,6 +11,7 @@ Al guardar: actualiza books + odoo_books_mirror + el producto en Odoo
 (nombre/precio) y re-etiqueta (Completo/Web/Foto/Stock) a la vez.
 """
 import db
+import pricing_engine
 from odoo_client import OdooClient
 from odoo_tags import _classify, _resolve_tags, TAG_NAMES
 
@@ -93,13 +94,16 @@ def _save_db(data: dict):
     """, (isbn, *vals))
     name = (data.get("title") or "").strip() or isbn
     precio = float(data["precio"]) if str(data.get("precio") or "").strip() else None
+    wp = pricing_engine.web_price(precio)  # precio web con suplemento
     db.execute_query(cur, """
         UPDATE odoo_books_mirror SET
             name = ?, list_price = COALESCE(?, list_price),
+            pvp_base = COALESCE(?, pvp_base),
             cdl_image_url = ?, description = ?,
             cdl_weight = ?, cdl_height = ?, cdl_width = ?
         WHERE barcode = ?
-    """, (name, precio, data.get("image_url") or None, data.get("description") or None,
+    """, (name, wp if wp is not None else precio, precio,
+          data.get("image_url") or None, data.get("description") or None,
           data.get("weight") or None, data.get("height") or None,
           data.get("width") or None, isbn))
     db.execute_query(cur, "SELECT odoo_id FROM odoo_books_mirror WHERE barcode = ?", (isbn,))
@@ -120,7 +124,13 @@ async def save_book(data: dict) -> dict:
         tag_ids = await _resolve_tags(odoo)
         write_vals = {"name": name[:250]}
         if str(data.get("precio") or "").strip():
-            write_vals["list_price"] = float(data["precio"])
+            pvp = float(data["precio"])
+            wp = pricing_engine.web_price(pvp)  # aplica suplemento API-15
+            if wp is None:
+                write_vals["active"] = False    # < 2,90 -> apagar
+            else:
+                write_vals["list_price"] = wp
+                write_vals["active"] = True
         # Reemplazar los 4 tags de estado por el nuevo (preserva Bloqueado)
         ops = [(3, tag_ids[t]) for t in TAG_NAMES if t != "Bloqueado" and t in tag_ids]
         if tag_ids.get(tag):

@@ -23,6 +23,7 @@ import openpyxl
 
 import db
 import cdl_http_client as cdl
+import pricing_engine
 from odoo_client import OdooClient
 from odoo_tags import _classify, _resolve_tags
 
@@ -138,21 +139,27 @@ async def _scrape_missing(targets: list[dict]) -> int:
 def _mirror_upsert(items: list[dict]):
     from psycopg2.extras import execute_values
     conn = db.get_connection(); cur = conn.cursor()
-    vals = [(it["odoo_id"], it["isbn"], it.get("title"), it.get("precio"),
-             it.get("image_url"), it.get("description"),
-             it.get("weight"), it.get("height"), it.get("width")) for it in items]
+    vals = []
+    for it in items:
+        pvp = float(it["precio"]) if it.get("precio") else None
+        wp = pricing_engine.web_price(pvp)
+        vals.append((it["odoo_id"], it["isbn"], it.get("title"),
+                     wp if wp is not None else pvp, pvp,
+                     it.get("image_url"), it.get("description"),
+                     it.get("weight"), it.get("height"), it.get("width")))
     execute_values(cur, """
         INSERT INTO odoo_books_mirror
-            (odoo_id, barcode, name, list_price, cdl_image_url, description,
+            (odoo_id, barcode, name, list_price, pvp_base, cdl_image_url, description,
              cdl_weight, cdl_height, cdl_width, synced_at, nuevo_creado_en)
         VALUES %s
         ON CONFLICT (odoo_id) DO UPDATE SET
             barcode=EXCLUDED.barcode, name=EXCLUDED.name,
-            list_price=EXCLUDED.list_price, cdl_image_url=EXCLUDED.cdl_image_url,
+            list_price=EXCLUDED.list_price, pvp_base=EXCLUDED.pvp_base,
+            cdl_image_url=EXCLUDED.cdl_image_url,
             description=EXCLUDED.description, cdl_weight=EXCLUDED.cdl_weight,
             cdl_height=EXCLUDED.cdl_height, cdl_width=EXCLUDED.cdl_width, synced_at=NOW(),
             nuevo_creado_en=COALESCE(odoo_books_mirror.nuevo_creado_en, NOW())
-    """, vals, template="(%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),NOW())", page_size=len(vals))
+    """, vals, template="(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),NOW())", page_size=len(vals))
     conn.commit(); conn.close()
 
 
@@ -162,9 +169,12 @@ async def _create_and_tag(odoo, tag_ids, targets, chunk=200):
         vals = []
         for t in batch:
             name = (t.get("title") or "").strip() or t["isbn"]
+            pvp = float(t["precio"]) if t.get("precio") else None
+            wp = pricing_engine.web_price(pvp)  # None si < 2,90 o sin precio
             vals.append({
                 "name": name[:250], "barcode": t["isbn"], "default_code": t["isbn"],
-                "list_price": float(t["precio"]) if t.get("precio") else 0.0,
+                "list_price": wp if wp is not None else (pvp or 0.0),
+                "active": wp is not None,        # < 2,90 / sin precio -> apagado
                 "type": "consu", "sale_ok": True, "purchase_ok": True,
             })
         new_ids = await odoo.execute_kw("product.template", "create", [vals])

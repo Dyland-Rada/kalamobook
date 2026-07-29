@@ -109,7 +109,8 @@ async def run_price_update(dry_run: bool = True, limit: int | None = None) -> di
                 for i in range(0, len(ids), 500):
                     chunk = ids[i:i + 500]
                     try:
-                        await odoo.write("product.template", chunk, {"list_price": wp})
+                        await odoo.write("product.template", chunk,
+                                         {"list_price": wp, "active": True})
                         job["precio_actualizado"] += len(chunk)
                         job["calls"] += 1
                     except Exception as e:

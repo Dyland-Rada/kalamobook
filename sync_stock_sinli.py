@@ -29,6 +29,7 @@ from datetime import datetime
 from typing import Any
 
 import db
+import pricing_engine
 from odoo_client import OdooClient, OdooError
 
 ENTIDAD = "libros_proveedor_to_odoo"
@@ -276,7 +277,7 @@ def _fetch_batch(marker, limit: int = BATCH_SIZE,
             db.execute_query(cur, """
                 SELECT lp.isbn, lp.proveedor_email, lp.stock_disponible,
                        lp.precio_con_iva, lp.actualizado_en,
-                       m.odoo_id, m.list_price
+                       m.odoo_id, m.list_price, m.pvp_base
                 FROM libros_proveedor lp
                 JOIN odoo_books_mirror m ON m.barcode = lp.isbn
                 WHERE lp.actualizado_en > ?
@@ -291,7 +292,7 @@ def _fetch_batch(marker, limit: int = BATCH_SIZE,
             db.execute_query(cur, """
                 SELECT lp.isbn, lp.proveedor_email, lp.stock_disponible,
                        lp.precio_con_iva, lp.actualizado_en,
-                       m.odoo_id, m.list_price
+                       m.odoo_id, m.list_price, m.pvp_base
                 FROM libros_proveedor lp
                 JOIN odoo_books_mirror m ON m.barcode = lp.isbn
                 WHERE lp.actualizado_en > ?
@@ -322,7 +323,7 @@ def _fetch_batch(marker, limit: int = BATCH_SIZE,
                 db.execute_query(cur, """
                     SELECT lp.isbn, lp.proveedor_email, lp.stock_disponible,
                            lp.precio_con_iva, lp.actualizado_en,
-                           m.odoo_id, m.list_price
+                           m.odoo_id, m.list_price, m.pvp_base
                     FROM libros_proveedor lp
                     JOIN odoo_books_mirror m ON m.barcode = lp.isbn
                     WHERE lp.actualizado_en = ?
@@ -333,7 +334,7 @@ def _fetch_batch(marker, limit: int = BATCH_SIZE,
                 db.execute_query(cur, """
                     SELECT lp.isbn, lp.proveedor_email, lp.stock_disponible,
                            lp.precio_con_iva, lp.actualizado_en,
-                           m.odoo_id, m.list_price
+                           m.odoo_id, m.list_price, m.pvp_base
                     FROM libros_proveedor lp
                     JOIN odoo_books_mirror m ON m.barcode = lp.isbn
                     WHERE lp.actualizado_en = ?
@@ -357,6 +358,7 @@ def _fetch_batch(marker, limit: int = BATCH_SIZE,
         "actualizado_en": r[4],
         "odoo_id": r[5],
         "list_price_mirror": float(r[6]) if r[6] is not None else None,
+        "pvp_base": float(r[7]) if r[7] is not None else None,
     } for r in rows]
 
 
@@ -526,8 +528,10 @@ async def _run_one_batch(odoo: OdooClient,
     # ── 4. Particionar: create vs update por (location, qty) ────────
     to_create: list[dict] = []
     to_update_by_loc_qty: dict[tuple[int, int], list[int]] = {}
-    # Precio: agrupar por precio (1 write por valor único)
+    # Precio: agrupar por PRECIO WEB (pvp_base + suplemento API-15).
     prices_by_value: dict[float, list[int]] = {}
+    to_deactivate: list[int] = []        # PVP < 2,90 -> apagar
+    pvp_base_updates: list[tuple[int, float]] = []  # (odoo_id, pvp crudo)
 
     for book in valid_books:
         pid = pid_cache.get(book["odoo_id"])
@@ -551,13 +555,20 @@ async def _run_one_batch(odoo: OdooClient,
                 "inventory_quantity": qty,
             })
 
-        # Precio condicional
+        # Precio condicional (motor API-15): comparamos el PVP crudo con
+        # pvp_base (no con list_price, que ya es el precio web con suplemento).
+        # Si el PVP cambió, recalculamos precio web y actualizamos pvp_base.
         price = book["precio_con_iva"]
-        list_price_now = book["list_price_mirror"]
+        pvp_base_now = book["pvp_base"]
         if price is not None and (
-            list_price_now is None or abs(price - list_price_now) > 0.001
+            pvp_base_now is None or abs(price - pvp_base_now) > 0.001
         ):
-            prices_by_value.setdefault(price, []).append(book["odoo_id"])
+            wp = pricing_engine.web_price(price)
+            if wp is None:
+                to_deactivate.append(book["odoo_id"])   # PVP < 2,90 -> apagar
+            else:
+                prices_by_value.setdefault(wp, []).append(book["odoo_id"])
+            pvp_base_updates.append((book["odoo_id"], price))
 
         job["items_processed"] += 1
 
@@ -625,17 +636,41 @@ async def _run_one_batch(odoo: OdooClient,
                 err = f"verify chunk: {type(verify_err).__name__}: {str(verify_err)[:150]}"
                 job["errors"].append(err)
 
-    # ── 8. PRECIO: write por valor único ────────────────────────────
+    # ── 8. PRECIO WEB: write por valor único (pvp_base + suplemento) ──
     for price, tmpl_ids in prices_by_value.items():
         for chunk in _chunks(tmpl_ids, WRITE_CHUNK):
             try:
                 await odoo.write("product.template", chunk,
-                                 {"list_price": price})
+                                 {"list_price": price, "active": True})
                 job["price_written"] += len(chunk)
             except Exception as e:
                 job["err_price"] += len(chunk)
                 err = f"price={price}: {type(e).__name__}: {str(e)[:150]}"
                 job["errors"].append(err)
+
+    # ── 8b. APAGAR los de PVP < 2,90 (regla API-15) ─────────────────
+    for chunk in _chunks(to_deactivate, WRITE_CHUNK):
+        try:
+            await odoo.write("product.template", chunk, {"active": False})
+            job["price_written"] += len(chunk)
+        except Exception as e:
+            job["err_price"] += len(chunk)
+            job["errors"].append(f"apagar: {type(e).__name__}: {str(e)[:120]}")
+
+    # ── 8c. Guardar pvp_base (PVP crudo) en el mirror para idempotencia ─
+    if pvp_base_updates:
+        try:
+            from psycopg2.extras import execute_values
+            conn2 = db.get_connection(); cur2 = conn2.cursor()
+            execute_values(cur2, """
+                UPDATE odoo_books_mirror m SET pvp_base = v.pvp
+                FROM (VALUES %s) AS v(oid, pvp)
+                WHERE m.odoo_id = v.oid
+            """, pvp_base_updates, template="(%s,%s)",
+                page_size=len(pvp_base_updates))
+            conn2.commit(); conn2.close()
+        except Exception as e:
+            job["errors"].append(f"pvp_base upd: {str(e)[:120]}")
 
     print(f"[SinliBatch] DONE batch: stk={job['stock_written']:,} "
           f"prc={job['price_written']:,} err_apply={job['err_apply']} "
