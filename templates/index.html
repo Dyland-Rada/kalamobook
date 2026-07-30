@@ -5336,6 +5336,7 @@
                         <td style="padding:7px 10px;"><strong>${p.nombre}</strong>
                             <div style="color:#8b93a7; font-size:.72rem;">${p.proveedor_email}</div></td>
                         <td style="padding:7px 10px;">${p.warehouse_code || '—'}</td>
+                        <td style="padding:7px 10px; text-align:right; color:#8b93a7;">${p.catalogo ? p.catalogo.toLocaleString() : '—'}</td>
                         <td style="padding:7px 10px; text-align:right;">${num(p.libros_bd)}</td>
                         <td style="padding:7px 10px; text-align:right;">${num(p.con_stock_bd)}</td>
                         <td style="padding:7px 10px; text-align:right;">${num(p.en_odoo)}
@@ -5357,20 +5358,23 @@
                   <table style="width:100%; border-collapse:collapse; font-size:.86rem; min-width:1050px;">
                     <thead><tr>
                       ${th('Proveedor')}${th('Almacén')}
-                      ${th('Libros BD', true, 'Filas que manda el proveedor en libros_proveedor')}
-                      ${th('Con stock', true, 'De esos, los que tienen stock > 0 en BD')}
+                      ${th('Catálogo', true, 'Todo lo que vende el proveedor según su catálogo (XLSX o volcado AZETA). No todo tiene stock')}
+                      ${th('Reportados', true, 'Lo que el proveedor reporta en sus ficheros de stock (libros_proveedor)')}
+                      ${th('Con stock', true, 'De los reportados, los que tienen stock > 0 en BD')}
                       ${th('En Odoo', true, 'Cuántos de sus ISBNs existen ya como producto en Odoo')}
                       ${th('Encendidos', true, 'Stock > 0 en SU almacén de Odoo, producto activo. Consulta en vivo')}
                       ${th('Último CEGALD', false, 'Último fichero de stock recibido y cuántos registros traía')}
                       ${th('Último fichero', false, 'Último SINLI de cualquier tipo (ENVIO, ESTADO, LIBROS…)')}
                       ${th('Estado')}<th></th>
                     </tr></thead>
-                    <tbody>${filas || '<tr><td colspan="10" style="padding:8px; color:#888;">— sin proveedores mapeados —</td></tr>'}</tbody>
+                    <tbody>${filas || '<tr><td colspan="11" style="padding:8px; color:#888;">— sin proveedores mapeados —</td></tr>'}</tbody>
                   </table></div>
                   <p style="color:#666; font-size:.72rem; margin-top:8px;">
-                    <strong>Libros BD</strong> es todo lo que manda el proveedor; <strong>Con stock</strong>
-                    son los disponibles (en un CEGALD suelen coincidir: solo listan lo disponible).
-                    <strong>En Odoo</strong> vs Libros BD dice cuántos no existen como producto.
+                    <strong>Catálogo</strong> es todo lo que vende el proveedor; <strong>Reportados</strong>
+                    es lo que manda en sus ficheros de stock y <strong>Con stock</strong> los disponibles
+                    (en un CEGALD suelen coincidir: solo listan lo disponible). Por eso AZETA tiene
+                    991.409 de catálogo y solo ~284.000 reportados.
+                    <strong>En Odoo</strong> vs Reportados dice cuántos no existen como producto.
                     <strong>Encendidos</strong> se compara con los que están en Odoo Y tienen stock en BD:
                     la diferencia son productos apagados por la regla de precios (PVP &lt; 2,90 o sin precio)
                     o stock que aún no se ha subido.</p>`;

@@ -256,7 +256,9 @@ def listar(con_stats: bool = True) -> list[dict]:
             """)
             stats = {r[0]: r for r in cur.fetchall()}
             ficheros = _ultimos_ficheros()
+            catalogos = _catalogos()
             for p in out:
+                p["catalogo"] = catalogos.get(p["proveedor_email"])
                 r = stats.get(p["proveedor_email"])
                 p["libros_bd"] = int(r[1] or 0) if r else 0
                 p["con_stock_bd"] = int(r[2] or 0) if r else 0
@@ -269,6 +271,55 @@ def listar(con_stats: bool = True) -> list[dict]:
         return out
     finally:
         conn.close()
+
+
+# distributor_books.fuente -> proveedor_email. El catalogo (todo lo que el
+# proveedor vende) no es lo mismo que libros_proveedor (lo que reporta como
+# disponible ahora): AZETA lista 991k titulos y solo ~284k tienen stock.
+_FUENTE_A_EMAIL = {
+    "PODIPRINT": "sinli@podiprint.com",
+    "PLANETA_LOGISTA": "logista.libros@sinli.logista.com",
+    "PLANETA": "logista.libros@sinli.logista.com",
+    "ANAYA": "envios.documentos.sinli@anaya.es",
+    "DISTRIFER": "sinli.distrifer@zonalibros.com",
+    "DISBOOK": "sinli.disbookbcn@zonalibros.com",
+    "AKAL": "sinli@akal.com",
+}
+
+
+def _catalogos() -> dict[str, int]:
+    """{proveedor_email: titulos de catalogo}. AZETA sale de su catalogo
+    volcado al mirror; el resto, de los XLSX en distributor_books."""
+    out: dict[str, int] = {}
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        try:
+            db.execute_query(cur, """
+                SELECT fuente, COUNT(*) FROM distributor_books
+                WHERE fuente IS NOT NULL GROUP BY fuente
+            """)
+            for fuente, n in cur.fetchall():
+                email = _FUENTE_A_EMAIL.get((fuente or "").upper())
+                if email:
+                    out[email] = out.get(email, 0) + int(n)
+        except Exception:
+            try: conn.rollback()
+            except Exception: pass
+        try:
+            db.execute_query(cur, """
+                SELECT COUNT(*) FROM odoo_books_mirror
+                WHERE azeta_fetched_at IS NOT NULL
+            """)
+            n = cur.fetchone()
+            if n:
+                out[AZETA_EMAIL] = int(n[0])
+        except Exception:
+            try: conn.rollback()
+            except Exception: pass
+    finally:
+        conn.close()
+    return out
 
 
 def _ultimos_ficheros() -> dict[str, dict]:
