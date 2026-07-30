@@ -555,24 +555,65 @@ def _odoo_ids_de(proveedor_email: str) -> list[int]:
 
 async def _buscar(odoo, dominio, modelo="product.template",
                   ids_scope: list[int] | None = None,
-                  campo_scope: str = "id") -> list[int]:
-    """IDs que cumplen el dominio, paginado o acotado a un scope de ids."""
-    out: list[int] = []
+                  campo_scope: str = "id",
+                  campos: list[str] | None = None) -> list[dict]:
+    """Registros que cumplen el dominio, paginado o acotado a un scope."""
+    campos = campos or ["id"]
+    out: list[dict] = []
     if ids_scope is not None:
         for chunk in _chunks(ids_scope, 400):
-            rows = await odoo.search_read(
-                modelo, dominio + [[campo_scope, "in", chunk]], ["id"])
-            out.extend(r["id"] for r in rows)
+            out.extend(await odoo.search_read(
+                modelo, dominio + [[campo_scope, "in", chunk]], campos))
         return out
     offset = 0
     while True:
-        page = await odoo.search_read(modelo, dominio, ["id"],
+        page = await odoo.search_read(modelo, dominio, campos,
                                       offset=offset, limit=PAGE, order="id")
-        out.extend(r["id"] for r in page)
+        out.extend(page)
         if len(page) < PAGE:
             break
         offset += PAGE
     return out
+
+
+def _marcar_resync_por_odoo_ids(odoo_ids: list[int]) -> int:
+    """
+    Marca para re-empuje SOLO los libros indicados (por odoo_id). Igual que
+    forzar_resync pero quirurgico: tras reparar, se re-empuja lo reparado y
+    no los ~700k del catalogo entero.
+    """
+    if not odoo_ids:
+        return 0
+    conn = db.get_connection()
+    cur = conn.cursor()
+    ahora = "NOW()" if db.IS_POSTGRES else "CURRENT_TIMESTAMP"
+    total = 0
+    try:
+        for chunk in _chunks(list(set(odoo_ids)), 5000):
+            if db.IS_POSTGRES:
+                cur.execute(f"""
+                    UPDATE libros_proveedor lp
+                    SET actualizado_en = {ahora}
+                    FROM odoo_books_mirror m
+                    WHERE m.barcode = lp.isbn AND m.odoo_id = ANY(%s)
+                """, (chunk,))
+            else:
+                marks = ",".join("?" * len(chunk))
+                db.execute_query(cur, f"""
+                    UPDATE libros_proveedor SET actualizado_en = {ahora}
+                    WHERE isbn IN (SELECT barcode FROM odoo_books_mirror
+                                   WHERE odoo_id IN ({marks}))
+                """, tuple(chunk))
+            total += cur.rowcount
+        conn.commit()
+    except Exception as e:
+        try: conn.rollback()
+        except Exception: pass
+        print(f"[ProvAdmin] marcar_resync FAIL: {e}")
+        return 0
+    finally:
+        conn.close()
+    return total
 
 
 async def reparar_catalogo(proveedor_email: str | None = None,
@@ -598,7 +639,7 @@ async def reparar_catalogo(proveedor_email: str | None = None,
         "started_at": datetime.now().isoformat(), "stage": "buscando",
         "sin_track_inventory": 0, "variantes_archivadas": 0,
         "candidatos": 0, "reparados": 0, "variantes_reactivadas": 0,
-        "err_apagar": 0, "errors": [], "elapsed_s": 0,
+        "marcados_resync": 0, "err_apagar": 0, "errors": [], "elapsed_s": 0,
     }
     job = _job
     t0 = time.monotonic()
@@ -606,19 +647,23 @@ async def reparar_catalogo(proveedor_email: str | None = None,
         scope = _odoo_ids_de(proveedor_email) if proveedor_email else None
         async with OdooClient() as odoo:
             # 1. Sin Track Inventory
-            sin_track = await _buscar(
+            sin_track = [r["id"] for r in await _buscar(
                 odoo,
                 [["is_storable", "=", False], ["barcode", "!=", False],
                  ["active", "in", [True, False]]],
-                ids_scope=scope)
+                ids_scope=scope)]
             job["sin_track_inventory"] = len(sin_track)
 
             # 2. Variantes archivadas con plantilla activa
-            variantes = await _buscar(
+            var_rows = await _buscar(
                 odoo,
                 [["active", "=", False], ["product_tmpl_id.active", "=", True]],
                 modelo="product.product", ids_scope=scope,
-                campo_scope="product_tmpl_id")
+                campo_scope="product_tmpl_id",
+                campos=["id", "product_tmpl_id"])
+            variantes = [r["id"] for r in var_rows]
+            var_tmpl = [r["product_tmpl_id"][0] if isinstance(r["product_tmpl_id"], list)
+                        else r["product_tmpl_id"] for r in var_rows]
             job["variantes_archivadas"] = len(variantes)
             job["candidatos"] = len(sin_track) + len(variantes)
 
@@ -650,6 +695,13 @@ async def reparar_catalogo(proveedor_email: str | None = None,
                         job["errors"].append(
                             f"variantes {chunk[0]}..{chunk[-1]}: "
                             f"{type(e).__name__}: {str(e)[:120]}")
+
+                # Marcar SOLO lo reparado para que el sync suba su stock.
+                # Sin esto la reparacion no sirve de nada: sus filas siguen
+                # detras del marcapaginas y nadie las vuelve a mirar.
+                job["stage"] = "marcando para re-empuje"
+                job["marcados_resync"] = _marcar_resync_por_odoo_ids(
+                    sin_track + var_tmpl)
             job["stage"] = "done"
         if job["status"] == "running":
             job["status"] = "completed"
@@ -665,7 +717,8 @@ async def reparar_catalogo(proveedor_email: str | None = None,
                f"{job['sin_track_inventory']:,} sin Track Inventory "
                f"({job['reparados']:,} arreglados), "
                f"{job['variantes_archivadas']:,} variantes archivadas "
-               f"({job['variantes_reactivadas']:,} desarchivadas) "
+               f"({job['variantes_reactivadas']:,} desarchivadas), "
+               f"{job['marcados_resync']:,} marcados para re-empuje "
                f"({job['elapsed_s']}s)",
                job, error=(job["status"] == "error" or job["err_apagar"] > 0))
     return job
