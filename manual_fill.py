@@ -137,4 +137,9 @@ async def save_book(data: dict) -> dict:
             ops.append((4, tag_ids[tag]))
         write_vals["product_tag_ids"] = ops
         await odoo.write("product.template", [odoo_id], write_vals)
+        # Odoo no desarchiva la variante al reactivar la plantilla: sin esto
+        # el libro queda activo pero sin product.product, y su stock no se
+        # puede escribir nunca.
+        if write_vals.get("active") is True:
+            await pricing_engine.reactivar_variantes(odoo, [odoo_id])
     return {"ok": True, "tag": tag, "odoo_id": odoo_id}
