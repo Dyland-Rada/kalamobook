@@ -181,6 +181,13 @@ async def startup():
         print("[Startup] PROXY: NINGUNO — saliendo con IP directa del server")
     print("=" * 60)
 
+    # Columnas de pausa de proveedores (idempotente)
+    try:
+        import proveedores_admin
+        proveedores_admin.ensure_schema()
+    except Exception as e:
+        print(f"[Startup] proveedores ensure_schema FALLO: {type(e).__name__}: {e}")
+
     # Auto-arrancar el cron de stock AZETA si la env var lo pide
     if os.environ.get("AZETA_STOCK_CRON_ENABLED", "").lower() in ("1", "true", "yes"):
         try:
@@ -1804,6 +1811,110 @@ async def sync_stock_cegald_stop():
     return JSONResponse(status_code=400, content={
         "status": "error", "message": "No hay CEGALD job corriendo."
     })
+
+
+# ─── Proveedores / almacenes (pausar, reactivar, alta) ───────────────
+
+@app.get("/api/v1/proveedores", tags=["Proveedores"])
+async def proveedores_listar(con_stats: bool = Query(True)):
+    """
+    Proveedores con almacen mapeado (estado activo/pausado + que hay en BD)
+    y los que mandan libros pero NO tienen almacen (su stock no llega a Odoo).
+    """
+    import proveedores_admin
+    return JSONResponse(content={
+        "proveedores": proveedores_admin.listar(con_stats=con_stats),
+        "sin_mapear": proveedores_admin.sin_mapear(),
+        "job": proveedores_admin.get_status(),
+    })
+
+
+@app.post("/api/v1/proveedores/pausar", tags=["Proveedores"])
+async def proveedores_pausar(
+    email: str = Query(..., description="proveedor_email"),
+    dry_run: bool = Query(True, description="True = solo contar, sin escribir"),
+    motivo: str | None = Query(None, description="ej. 'cierre verano'"),
+):
+    """
+    Pausa un proveedor: deja de sincronizarse Y su stock en Odoo va a 0
+    (solo en SU almacen). Con dry_run=true devuelve cuantos quants apagaria.
+    Reversible con /reactivar, pero el stock solo vuelve con su proximo archivo.
+    """
+    import threading
+    import sys
+    import proveedores_admin
+
+    if proveedores_admin.get_status().get("status") == "running":
+        return JSONResponse(status_code=409, content={
+            "status": "error", "message": "Ya hay una pausa/alta corriendo."
+        })
+
+    if dry_run:
+        return JSONResponse(content=await proveedores_admin.pausar(
+            email, dry_run=True, motivo=motivo))
+
+    def _run_in_thread():
+        if sys.platform == 'win32':
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
+        try:
+            new_loop.run_until_complete(
+                proveedores_admin.pausar(email, dry_run=False, motivo=motivo))
+        finally:
+            new_loop.close()
+
+    threading.Thread(target=_run_in_thread, daemon=True).start()
+    return JSONResponse(content={"status": "started", "proveedor": email,
+                                  "dry_run": False, "motivo": motivo})
+
+
+@app.post("/api/v1/proveedores/reactivar", tags=["Proveedores"])
+async def proveedores_reactivar(email: str = Query(...)):
+    """
+    Quita la pausa. NO re-empuja stock: entra solo cuando llegue el proximo
+    archivo de stock del proveedor.
+    """
+    import proveedores_admin
+    res = proveedores_admin.reactivar(email)
+    code = 400 if res.get("status") == "error" else 200
+    return JSONResponse(status_code=code, content=res)
+
+
+@app.get("/api/v1/proveedores/status", tags=["Proveedores"])
+async def proveedores_status():
+    """Estado del job de pausa (apagado de stock en curso)."""
+    import proveedores_admin
+    return JSONResponse(content=proveedores_admin.get_status())
+
+
+@app.post("/api/v1/proveedores/stop", tags=["Proveedores"])
+async def proveedores_stop():
+    import proveedores_admin
+    if proveedores_admin.stop():
+        return JSONResponse(content={"status": "stopping"})
+    return JSONResponse(status_code=400, content={
+        "status": "error", "message": "No hay job de proveedores corriendo."
+    })
+
+
+@app.post("/api/v1/proveedores/alta", tags=["Proveedores"])
+async def proveedores_alta(
+    email: str = Query(..., description="proveedor_email tal como llega en el SINLI"),
+    nombre: str = Query(..., description="nombre real, ej. PODIPRINT"),
+    warehouse_code: str = Query(..., description="codigo de almacen, ej. POD01"),
+    warehouse_name: str | None = Query(None, description="nombre del almacen (default: nombre)"),
+):
+    """
+    Da de alta un proveedor: crea su almacen en Odoo si no existe, guarda el
+    mapeo proveedor->almacen y corrige su nombre en la tabla proveedores.
+    Idempotente.
+    """
+    import proveedores_admin
+    res = await proveedores_admin.alta(email, nombre, warehouse_code,
+                                        warehouse_name)
+    code = 400 if res.get("status") == "error" else 200
+    return JSONResponse(status_code=code, content=res)
 
 
 # ─── Auditoría: event_log + resumen para la tab Auditoría ───────────

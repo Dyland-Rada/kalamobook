@@ -36,6 +36,18 @@ ENTIDAD_STOCK = "azeta_stock_to_odoo"  # key en sync_state para marker
 DEFAULT_BATCH_SIZE = 200
 
 
+def _azeta_pausado() -> bool:
+    """
+    True si AZETA esta pausado desde la gestion de proveedores. La pausa ya
+    puso AZE01 a 0; empujar stock aqui lo volveria a encender.
+    """
+    try:
+        import proveedores_admin
+        return proveedores_admin.esta_pausado(AZETA_PROVEEDOR_EMAIL)
+    except Exception:
+        return False
+
+
 def _get_azeta_marker():
     """Lee el marker (stock_actualizado_en) del último ciclo. Naive."""
     conn = db.get_connection()
@@ -439,6 +451,12 @@ async def run_azeta_push(batch_size: int = DEFAULT_BATCH_SIZE,
     job = push_job
     t_start = time.monotonic()
 
+    if _azeta_pausado():
+        job["status"] = "error"
+        job["errors"].append(
+            "AZETA esta PAUSADO en la gestion de proveedores — push cancelado.")
+        return job
+
     try:
         # Modo test: 1 ISBN
         if test_isbn:
@@ -740,6 +758,12 @@ async def run_azeta_stock_push_only(test_isbn: str | None = None,
     job = stock_push_job
     t_start = time.monotonic()
     max_ts_seen = marker  # para avanzar marker tras éxito
+
+    if _azeta_pausado():
+        job["status"] = "error"
+        job["errors"].append(
+            "AZETA esta PAUSADO en la gestion de proveedores — push cancelado.")
+        return job
 
     try:
         # ── 1. Cargar targets ─────────────────────────────────────────

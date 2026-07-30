@@ -2261,6 +2261,47 @@
                 </div>
             </div>
 
+            <!-- Gestión de proveedores: pausar / reactivar / alta -->
+            <div class="card" style="border:2px solid rgba(230,126,34,0.45);">
+                <div class="card-title">
+                    <ion-icon name="power-outline"></ion-icon> Proveedores — pausar y reactivar
+                    <button class="btn-edit" style="float:right;" onclick="loadProveedores()">
+                        <ion-icon name="refresh-outline"></ion-icon> Refrescar</button>
+                </div>
+                <p style="color:#8b93a7; font-size:.8rem; margin-top:6px;">
+                    <strong>Pausar</strong> (ej. cierran en verano): deja de sincronizarse y su stock
+                    en Odoo se pone a <strong>0</strong>, solo en SU almacén — los demás proveedores
+                    no se tocan. <strong>Reactivar</strong>: se quita la pausa y el stock vuelve
+                    cuando entre su próximo archivo. Siempre se muestra primero cuántos libros
+                    se apagarían.
+                </p>
+                <div id="prov-job" style="display:none; margin:10px 0; padding:10px; border-radius:8px;
+                     background:rgba(230,126,34,0.12); border:1px solid rgba(230,126,34,0.35); font-size:.85rem;"></div>
+                <div id="prov-tabla" style="margin-top:10px;">
+                    <span style="color:#8b93a7">Pulsa Refrescar para cargar.</span>
+                </div>
+
+                <div class="section-label" style="color:#e67e22; margin-top:20px;">
+                    <ion-icon name="add-circle-outline"></ion-icon> Dar de alta un proveedor (almacén + mapeo)
+                </div>
+                <p style="color:#8b93a7; font-size:.78rem; margin-top:2px;">
+                    Crea el almacén en Odoo si no existe y guarda el mapeo. Sin esto, el stock
+                    del proveedor nunca llega a Odoo.
+                </p>
+                <div id="prov-sinmapear" style="margin:8px 0; font-size:.82rem;"></div>
+                <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:6px;">
+                    <input type="text" id="prov-alta-email" placeholder="email SINLI (ej. sinli@podiprint.com)"
+                           style="padding:8px 10px; background:#2c2f3e; color:#eee; border:1px solid #444; border-radius:6px; min-width:250px;">
+                    <input type="text" id="prov-alta-nombre" placeholder="nombre (ej. PODIPRINT)"
+                           style="padding:8px 10px; background:#2c2f3e; color:#eee; border:1px solid #444; border-radius:6px; min-width:160px;">
+                    <input type="text" id="prov-alta-code" placeholder="almacén (ej. POD01)"
+                           style="padding:8px 10px; background:#2c2f3e; color:#eee; border:1px solid #444; border-radius:6px; width:140px;">
+                    <button class="btn btn-primary" onclick="provAlta()" style="background:#e67e22;">
+                        <ion-icon name="add-outline"></ion-icon> Dar de alta</button>
+                </div>
+                <div id="prov-alta-result" style="margin-top:8px; font-size:.82rem;"></div>
+            </div>
+
             <div class="card" style="border:2px solid rgba(52,152,219,0.5);">
                 <div class="card-title">
                     <ion-icon name="clipboard-outline"></ion-icon> Auditoría — qué se recibió y qué se actualizó
@@ -5192,6 +5233,165 @@
                   </table>
                   <p style="color:#666; font-size:.72rem; margin-top:8px;">Libros con stock > 0 en cada almacén (producto activo). Consulta en vivo a Odoo.</p>`;
             } catch (e) { el.innerHTML = '<span style="color:#f87171">Error consultando Odoo.</span>'; }
+        }
+
+        // ═══ PROVEEDORES: pausar / reactivar / alta ═══
+        let provPollTimer = null;
+
+        async function loadProveedores() {
+            const el = document.getElementById('prov-tabla');
+            el.innerHTML = '<span style="color:#8b93a7">Cargando…</span>';
+            try {
+                const r = await fetch('/api/v1/proveedores');
+                const d = await r.json();
+                const filas = d.proveedores.map(p => {
+                    const badge = p.activo
+                        ? '<span style="color:#4ade80; font-weight:600;">ACTIVO</span>'
+                        : `<span style="color:#f87171; font-weight:600;">PAUSADO</span>
+                           <div style="color:#8b93a7; font-size:.72rem;">${p.pausado_en ? p.pausado_en.slice(0,16) : ''}${p.pausado_motivo ? ' · ' + p.pausado_motivo : ''}</div>`;
+                    const accion = p.activo
+                        ? `<button class="btn btn-danger" style="padding:4px 10px; font-size:.78rem;"
+                             onclick="provPausar('${p.proveedor_email}','${(p.nombre||'').replace(/'/g,'')}')">
+                             <ion-icon name="pause-outline"></ion-icon> Pausar</button>`
+                        : `<button class="btn btn-success" style="padding:4px 10px; font-size:.78rem;"
+                             onclick="provReactivar('${p.proveedor_email}','${(p.nombre||'').replace(/'/g,'')}')">
+                             <ion-icon name="play-outline"></ion-icon> Reactivar</button>`;
+                    const bd = td => td === undefined ? '—' : td.toLocaleString();
+                    return `<tr style="border-bottom:1px solid rgba(255,255,255,.05);">
+                        <td style="padding:7px 10px;"><strong>${p.nombre}</strong>
+                            <div style="color:#8b93a7; font-size:.72rem;">${p.proveedor_email}</div></td>
+                        <td style="padding:7px 10px;">${p.warehouse_code || '—'}</td>
+                        <td style="padding:7px 10px; text-align:right;">${bd(p.libros_bd)}</td>
+                        <td style="padding:7px 10px; text-align:right;">${bd(p.con_stock_bd)}</td>
+                        <td style="padding:7px 10px; color:#8b93a7; font-size:.78rem;">${p.ultimo_archivo ? p.ultimo_archivo.slice(0,16) : '—'}</td>
+                        <td style="padding:7px 10px;">${badge}</td>
+                        <td style="padding:7px 10px; text-align:right;">${accion}</td>
+                    </tr>`;
+                }).join('');
+                el.innerHTML = `
+                  <table style="width:100%; border-collapse:collapse; font-size:.86rem;">
+                    <thead><tr>
+                      <th style="text-align:left; padding:7px 10px; color:#8b93a7; font-size:.72rem; text-transform:uppercase;">Proveedor</th>
+                      <th style="text-align:left; padding:7px 10px; color:#8b93a7; font-size:.72rem; text-transform:uppercase;">Almacén</th>
+                      <th style="text-align:right; padding:7px 10px; color:#8b93a7; font-size:.72rem; text-transform:uppercase;">Libros BD</th>
+                      <th style="text-align:right; padding:7px 10px; color:#8b93a7; font-size:.72rem; text-transform:uppercase;">Con stock</th>
+                      <th style="text-align:left; padding:7px 10px; color:#8b93a7; font-size:.72rem; text-transform:uppercase;">Último archivo</th>
+                      <th style="text-align:left; padding:7px 10px; color:#8b93a7; font-size:.72rem; text-transform:uppercase;">Estado</th>
+                      <th></th>
+                    </tr></thead>
+                    <tbody>${filas || '<tr><td colspan="7" style="padding:8px; color:#888;">— sin proveedores mapeados —</td></tr>'}</tbody>
+                  </table>`;
+
+                const sm = document.getElementById('prov-sinmapear');
+                if (d.sin_mapear && d.sin_mapear.length) {
+                    sm.innerHTML = '<strong style="color:#fbbf24;">Sin almacén (su stock NO llega a Odoo):</strong> '
+                        + d.sin_mapear.map(p => `<a href="#" onclick="provPrefill('${p.proveedor_email}');return false;"
+                             style="color:#fbbf24; text-decoration:underline;">${p.proveedor_email}</a>
+                             <span style="color:#8b93a7;">(${p.libros_bd.toLocaleString()} libros, ${p.con_stock_bd.toLocaleString()} con stock)</span>`).join(' · ');
+                } else {
+                    sm.innerHTML = '<span style="color:#4ade80;">Todos los proveedores con libros tienen almacén mapeado.</span>';
+                }
+                provRenderJob(d.job);
+            } catch (e) {
+                el.innerHTML = '<span style="color:#f87171">Error cargando proveedores.</span>';
+            }
+        }
+
+        function provPrefill(email) {
+            document.getElementById('prov-alta-email').value = email;
+            document.getElementById('prov-alta-nombre').focus();
+        }
+
+        function provRenderJob(job) {
+            const box = document.getElementById('prov-job');
+            if (!job || job.status === 'idle') { box.style.display = 'none'; return; }
+            box.style.display = 'block';
+            const color = job.status === 'error' ? '#f87171'
+                        : job.status === 'running' ? '#fbbf24' : '#4ade80';
+            box.innerHTML = `<strong style="color:${color}">${job.accion || 'job'} · ${job.status}</strong>
+                — ${job.proveedor || ''} (${job.warehouse || '?'})
+                · ${(job.con_stock||0).toLocaleString()} con stock
+                · ${(job.apagados||0).toLocaleString()} apagados
+                ${job.err_apagar ? '· <span style="color:#f87171">' + job.err_apagar + ' errores</span>' : ''}
+                <span style="color:#8b93a7;"> · ${job.stage || ''} ${job.elapsed_s ? '(' + job.elapsed_s + 's)' : ''}</span>
+                ${(job.errors && job.errors.length) ? '<div style="color:#f87171; font-size:.75rem; margin-top:4px;">' + job.errors.slice(-3).join('<br>') + '</div>' : ''}`;
+            if (job.status === 'running') provPollStart(); else provPollStop();
+        }
+
+        function provPollStart() {
+            if (provPollTimer) return;
+            provPollTimer = setInterval(async () => {
+                try {
+                    const r = await fetch('/api/v1/proveedores/status');
+                    const job = await r.json();
+                    provRenderJob(job);
+                    if (job.status !== 'running') { provPollStop(); loadProveedores(); }
+                } catch (e) { provPollStop(); }
+            }, 3000);
+        }
+        function provPollStop() {
+            if (provPollTimer) { clearInterval(provPollTimer); provPollTimer = null; }
+        }
+
+        async function provPausar(email, nombre) {
+            const box = document.getElementById('prov-job');
+            box.style.display = 'block';
+            box.innerHTML = `<span style="color:#fbbf24">Calculando cuántos libros se apagarían de ${nombre}…</span>`;
+            let d;
+            try {
+                const r = await fetch(`/api/v1/proveedores/pausar?email=${encodeURIComponent(email)}&dry_run=true`,
+                                      { method: 'POST' });
+                d = await r.json();
+            } catch (e) { box.innerHTML = '<span style="color:#f87171">Error en el cálculo previo.</span>'; return; }
+            if (d.status === 'error') { provRenderJob(d); return; }
+            provRenderJob(d);
+            const motivo = prompt(
+                `PAUSAR ${nombre} (${d.warehouse})\n\n` +
+                `Se pondrán a 0 ${Number(d.con_stock).toLocaleString()} libros con stock en su almacén.\n` +
+                `El resto de proveedores no se toca. Reversible, pero el stock solo vuelve\n` +
+                `cuando entre su próximo archivo.\n\n` +
+                `Escribe el motivo para confirmar (ej. "cierre verano"), o Cancelar:`,
+                'cierre verano');
+            if (motivo === null) { box.innerHTML = '<span style="color:#8b93a7">Cancelado — no se tocó nada.</span>'; return; }
+            const r2 = await fetch(`/api/v1/proveedores/pausar?email=${encodeURIComponent(email)}&dry_run=false&motivo=${encodeURIComponent(motivo)}`,
+                                   { method: 'POST' });
+            const d2 = await r2.json();
+            if (d2.status === 'started') { box.innerHTML = `<span style="color:#fbbf24">Apagando stock de ${nombre}…</span>`; provPollStart(); }
+            else provRenderJob(d2);
+        }
+
+        async function provReactivar(email, nombre) {
+            if (!confirm(`Reactivar ${nombre}.\n\nVuelve a sincronizarse. El stock NO se re-empuja ahora: ` +
+                         `entra cuando llegue su próximo archivo de stock.`)) return;
+            const r = await fetch(`/api/v1/proveedores/reactivar?email=${encodeURIComponent(email)}`,
+                                  { method: 'POST' });
+            const d = await r.json();
+            const box = document.getElementById('prov-job');
+            box.style.display = 'block';
+            box.innerHTML = d.status === 'ok'
+                ? `<span style="color:#4ade80">${nombre} reactivado.</span> <span style="color:#8b93a7">${d.nota}</span>`
+                : `<span style="color:#f87171">${d.message || 'Error'}</span>`;
+            loadProveedores();
+        }
+
+        async function provAlta() {
+            const email = document.getElementById('prov-alta-email').value.trim();
+            const nombre = document.getElementById('prov-alta-nombre').value.trim();
+            const code = document.getElementById('prov-alta-code').value.trim().toUpperCase();
+            const out = document.getElementById('prov-alta-result');
+            if (!email || !nombre || !code) { out.innerHTML = '<span style="color:#f87171">Faltan email, nombre o código de almacén.</span>'; return; }
+            if (!confirm(`Dar de alta ${nombre}\n\nemail: ${email}\nalmacén: ${code}\n\nSe crea el almacén en Odoo si no existe.`)) return;
+            out.innerHTML = '<span style="color:#8b93a7">Creando…</span>';
+            const r = await fetch(`/api/v1/proveedores/alta?email=${encodeURIComponent(email)}&nombre=${encodeURIComponent(nombre)}&warehouse_code=${encodeURIComponent(code)}`,
+                                  { method: 'POST' });
+            const d = await r.json();
+            out.innerHTML = d.status === 'ok'
+                ? `<span style="color:#4ade80">OK</span> — almacén ${d.warehouse_code} (id ${d.warehouse_id}, location ${d.location_id})
+                   ${d.almacen_creado ? '· creado en Odoo' : '· ya existía'}
+                   ${d.mapeo_creado ? '· mapeo creado' : (d.mapeo_actualizado ? '· mapeo actualizado' : '')}
+                   ${d.nombre_corregido ? '· nombre ' + d.nombre_corregido : ''}`
+                : `<span style="color:#f87171">${d.message || 'Error'}</span>`;
+            loadProveedores();
         }
 
         // ═══ RELLENO MANUAL ═══

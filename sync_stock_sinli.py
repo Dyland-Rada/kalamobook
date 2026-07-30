@@ -216,6 +216,19 @@ def _load_provider_warehouse_map() -> dict[str, str]:
         conn.close()
 
 
+def _load_pausados() -> set[str]:
+    """
+    Proveedores pausados (activo=false). Sus libros se saltan sin registrar
+    error: es una pausa querida, no un fallo de configuracion.
+    """
+    try:
+        import proveedores_admin
+        return proveedores_admin.pausados()
+    except Exception as e:
+        print(f"[SinliSync] no pude leer pausados: {e}")
+        return set()
+
+
 async def _load_warehouse_locations(odoo: OdooClient) -> dict[str, int]:
     """Devuelve {warehouse_code: lot_stock_id} pulleando stock.warehouse."""
     rows = await odoo.search_read(
@@ -442,6 +455,7 @@ def _new_job(mode: str, concurrency: int = PUSH_CONCURRENCY,
         "err_price": 0,
         "err_other": 0,
         "err_no_warehouse": 0,
+        "skipped_pausados": 0,
         "batches_done": 0,
         "elapsed_s": 0,
         "errors": [],
@@ -454,7 +468,8 @@ async def _run_one_batch(odoo: OdooClient,
                          pid_cache: dict[int, int],
                          job: dict,
                          solo_proveedor: str | None = None,
-                         limit_override: int | None = None) -> tuple[int, Any]:
+                         limit_override: int | None = None,
+                         pausados: set[str] | None = None) -> tuple[int, Any]:
     """
     Procesa un lote en batch (multi-location).
     Estrategia: resolver pids batch, agrupar libros por (location, qty),
@@ -472,10 +487,18 @@ async def _run_one_batch(odoo: OdooClient,
     max_ts = marker
 
     # ── 1. Validar warehouse/location de cada libro ──────────────────
+    pausados = pausados or set()
     valid_books: list[dict] = []
     for book in batch:
         if book["actualizado_en"] and (max_ts is None or book["actualizado_en"] > max_ts):
             max_ts = book["actualizado_en"]
+
+        # Proveedor pausado: ni stock ni precio. Su almacen quedo a 0 al
+        # pausarlo y asi sigue hasta que lo reactiven.
+        if book["proveedor_email"] in pausados:
+            job["skipped_pausados"] += 1
+            job["items_processed"] += 1
+            continue
 
         wh_code = prov_to_wh.get(book["proveedor_email"])
         if not wh_code:
@@ -712,6 +735,8 @@ async def run_once(loop_until_empty: bool = False,
     try:
         job["stage"] = "loading_caches"
         prov_to_wh = _load_provider_warehouse_map()
+        pausados = _load_pausados()
+        job["pausados"] = sorted(pausados)
         pid_cache: dict[int, int] = {}
 
         # Estimación de pendientes (para mostrar progreso)
@@ -764,6 +789,7 @@ async def run_once(loop_until_empty: bool = False,
                     odoo, prov_to_wh, wh_to_loc, pid_cache, job,
                     solo_proveedor=solo_proveedor,
                     limit_override=batch_limit,
+                    pausados=pausados,
                 )
                 if n == 0:
                     break
@@ -812,7 +838,8 @@ async def run_once(loop_until_empty: bool = False,
                     detalle={k: job.get(k) for k in ("items_processed",
                              "stock_written", "price_written", "err_no_product",
                              "err_apply", "err_price", "err_other",
-                             "err_no_warehouse", "mode", "solo_proveedor",
+                             "err_no_warehouse", "skipped_pausados", "pausados",
+                             "mode", "solo_proveedor",
                              "elapsed_s", "batches_done")},
                     nivel="error" if (errs > 0 or job["status"] == "error") else "info",
                 )
@@ -1161,6 +1188,10 @@ async def run_cegald_replacement(proveedor_email: str,
     try:
         if proveedor_email == AZETA_EMAIL:
             raise RuntimeError("AZETA esta excluido del reemplazo CEGALD")
+        if proveedor_email in _load_pausados():
+            raise RuntimeError(
+                f"{proveedor_email} esta PAUSADO: su almacen ya esta a 0. "
+                "Reactivalo antes de correr el reemplazo CEGALD.")
 
         # Resolver location del proveedor
         job["stage"] = "resolving_location"
