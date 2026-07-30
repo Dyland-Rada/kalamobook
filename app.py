@@ -1816,14 +1816,30 @@ async def sync_stock_cegald_stop():
 # ─── Proveedores / almacenes (pausar, reactivar, alta) ───────────────
 
 @app.get("/api/v1/proveedores", tags=["Proveedores"])
-async def proveedores_listar(con_stats: bool = Query(True)):
+async def proveedores_listar(
+    con_stats: bool = Query(True, description="totales en BD/Odoo + ultimo fichero"),
+    con_odoo: bool = Query(True, description="consultar stock encendido en Odoo (mas lento)"),
+):
     """
-    Proveedores con almacen mapeado (estado activo/pausado + que hay en BD)
-    y los que mandan libros pero NO tienen almacen (su stock no llega a Odoo).
+    Proveedores con almacen mapeado: totales en BD (libros / con stock),
+    cuantos existen ya en Odoo, cuantos estan encendidos en su almacen,
+    ultimo CEGALD y ultimo fichero recibido, y estado activo/pausado.
+    Ademas, los que mandan libros pero NO tienen almacen.
     """
     import proveedores_admin
+    provs = proveedores_admin.listar(con_stats=con_stats)
+    if con_odoo and provs:
+        try:
+            encendidos = await proveedores_admin.stock_odoo_por_almacen(
+                [p["warehouse_code"] for p in provs])
+            for p in provs:
+                p["encendidos_odoo"] = encendidos.get(p["warehouse_code"])
+        except Exception as e:
+            for p in provs:
+                p["encendidos_odoo"] = None
+            print(f"[Proveedores] stock Odoo FALLO: {type(e).__name__}: {e}")
     return JSONResponse(content={
-        "proveedores": proveedores_admin.listar(con_stats=con_stats),
+        "proveedores": provs,
         "sin_mapear": proveedores_admin.sin_mapear(),
         "job": proveedores_admin.get_status(),
     })
@@ -1992,34 +2008,22 @@ async def audit_summary(days: int = Query(7, ge=1, le=30)):
     return JSONResponse(content=audit_log.get_summary(days=days))
 
 
-# Proveedor -> (location_id en Odoo, nombre corto)
-_STOCK_LOCS = [
-    (14, "AZETA"), (62, "LOGISTA"), (50, "ICARO"), (32, "DISTRIFORMA"),
-    (56, "PUNXES"), (44, "ANAYA"), (26, "DISTRIFER"), (20, "DISBOOK"),
-    (98, "ALFA"), (38, "AKAL"), (68, "MACHADO"), (74, "UDL"),
-]
-
-
 @app.get("/api/v1/audit/stock-proveedor", tags=["Auditoria"])
 async def audit_stock_proveedor():
     """
     Stock ENCENDIDO por proveedor (stock.quant con quantity>0 en su almacen).
-    Consulta Odoo en paralelo. Solo productos activos (los apagados por la
-    regla de precios no cuentan como publicables)."""
-    from odoo_client import OdooClient
-    async with OdooClient() as c:
-        async def cuenta(loc):
-            try:
-                on = await c.search_count(
-                    "stock.quant",
-                    [["location_id", "=", loc], ["quantity", ">", 0],
-                     ["product_id.product_tmpl_id.active", "=", True]])
-                return on
-            except Exception:
-                return None
-        counts = await asyncio.gather(*[cuenta(loc) for loc, _ in _STOCK_LOCS])
-    rows = [{"proveedor": name, "encendidos": n}
-            for (loc, name), n in zip(_STOCK_LOCS, counts)]
+    Los almacenes salen de proveedor_almacen_odoo, no de una lista fija: un
+    proveedor nuevo aparece aqui solo. Consulta Odoo en paralelo. Solo
+    productos activos (los apagados por la regla de precios no son
+    publicables)."""
+    import proveedores_admin
+    provs = proveedores_admin.listar(con_stats=False)
+    encendidos = await proveedores_admin.stock_odoo_por_almacen(
+        [p["warehouse_code"] for p in provs])
+    rows = [{"proveedor": p["nombre"], "almacen": p["warehouse_code"],
+             "encendidos": encendidos.get(p["warehouse_code"])}
+            for p in provs]
+    rows.sort(key=lambda r: -(r["encendidos"] or 0))
     total = sum(r["encendidos"] for r in rows if r["encendidos"])
     return JSONResponse(content={"proveedores": rows, "total": total})
 

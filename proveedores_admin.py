@@ -179,25 +179,109 @@ def listar(con_stats: bool = True) -> list[dict]:
         } for r in cur.fetchall()]
 
         if con_stats and out:
+            # Un solo pase: total en BD, con stock, cuantos existen ya en
+            # Odoo (via mirror) y cuantos de esos tienen stock. ~0,8s.
             db.execute_query(cur, """
-                SELECT proveedor_email, COUNT(*),
-                       COUNT(*) FILTER (WHERE stock_disponible > 0),
-                       MAX(stock_actualizado_en)
-                FROM libros_proveedor
-                GROUP BY proveedor_email
+                SELECT lp.proveedor_email, COUNT(*),
+                       COUNT(*) FILTER (WHERE lp.stock_disponible > 0),
+                       COUNT(m.barcode),
+                       COUNT(*) FILTER (WHERE m.barcode IS NOT NULL
+                                          AND lp.stock_disponible > 0),
+                       MAX(lp.stock_actualizado_en)
+                FROM libros_proveedor lp
+                LEFT JOIN odoo_books_mirror m ON m.barcode = lp.isbn
+                GROUP BY lp.proveedor_email
             """)
-            stats = {r[0]: (int(r[1] or 0), int(r[2] or 0),
-                            str(r[3]) if r[3] else None)
-                     for r in cur.fetchall()}
+            stats = {r[0]: r for r in cur.fetchall()}
+            ficheros = _ultimos_ficheros()
             for p in out:
-                n, con_stock, ultimo = stats.get(
-                    p["proveedor_email"], (0, 0, None))
-                p["libros_bd"] = n
-                p["con_stock_bd"] = con_stock
-                p["ultimo_archivo"] = ultimo
+                r = stats.get(p["proveedor_email"])
+                p["libros_bd"] = int(r[1] or 0) if r else 0
+                p["con_stock_bd"] = int(r[2] or 0) if r else 0
+                p["en_odoo"] = int(r[3] or 0) if r else 0
+                p["en_odoo_con_stock"] = int(r[4] or 0) if r else 0
+                p["ultimo_movimiento"] = str(r[5]) if (r and r[5]) else None
+                f = ficheros.get(p["proveedor_email"], {})
+                p["ultimo_cegald"] = f.get("cegald")
+                p["ultimo_fichero"] = f.get("cualquiera")
         return out
     finally:
         conn.close()
+
+
+def _ultimos_ficheros() -> dict[str, dict]:
+    """
+    Ultimo CEGALD y ultimo fichero de cualquier tipo por proveedor, desde
+    sinli_auditoria (lo que el n8n de Server A registra al recibir cada
+    email SINLI). Es la unica fuente fiable de "¿cuando llego su ultimo
+    archivo?": los timestamps de libros_proveedor solo se mueven cuando
+    cambia el stock, asi que un CEGALD de 45k libros sin cambios apenas
+    toca filas.
+    """
+    out: dict[str, dict] = {}
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        db.execute_query(cur, """
+            SELECT DISTINCT ON (email_canonico)
+                   email_canonico, procesado_en, registros, archivo_nombre
+            FROM sinli_auditoria
+            WHERE email_canonico IS NOT NULL AND file_type = 'CEGALD'
+            ORDER BY email_canonico, procesado_en DESC
+        """)
+        for r in cur.fetchall():
+            out.setdefault(r[0], {})["cegald"] = {
+                "cuando": str(r[1]), "registros": r[2], "archivo": r[3]}
+        db.execute_query(cur, """
+            SELECT DISTINCT ON (email_canonico)
+                   email_canonico, procesado_en, registros, file_type
+            FROM sinli_auditoria
+            WHERE email_canonico IS NOT NULL
+            ORDER BY email_canonico, procesado_en DESC
+        """)
+        for r in cur.fetchall():
+            out.setdefault(r[0], {})["cualquiera"] = {
+                "cuando": str(r[1]), "registros": r[2], "tipo": r[3]}
+    except Exception as e:
+        print(f"[ProvAdmin] sinli_auditoria no accesible: {e}")
+        try: conn.rollback()
+        except Exception: pass
+    finally:
+        conn.close()
+    return out
+
+
+async def stock_odoo_por_almacen(warehouse_codes: list[str]) -> dict[str, int]:
+    """
+    {warehouse_code: nº de libros encendidos} consultando Odoo en vivo.
+    Encendido = quant con quantity > 0 y producto activo (los que apaga la
+    regla de precios API-15 no son publicables, no cuentan).
+    """
+    out: dict[str, int] = {}
+    async with OdooClient() as odoo:
+        rows = await odoo.search_read("stock.warehouse", [], ["code", "lot_stock_id"])
+        loc: dict[str, int] = {}
+        for r in rows:
+            lot = r.get("lot_stock_id")
+            if r.get("code") and lot:
+                loc[r["code"]] = lot[0] if isinstance(lot, list) else lot
+
+        async def cuenta(code: str):
+            lid = loc.get(code)
+            if not lid:
+                return code, None
+            try:
+                return code, await odoo.search_count(
+                    "stock.quant",
+                    [["location_id", "=", lid], ["quantity", ">", 0],
+                     ["product_id.product_tmpl_id.active", "=", True]])
+            except Exception:
+                return code, None
+
+        for code, n in await asyncio.gather(
+                *[cuenta(c) for c in warehouse_codes if c]):
+            out[code] = n
+    return out
 
 
 def sin_mapear() -> list[dict]:

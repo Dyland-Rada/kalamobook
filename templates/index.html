@@ -5240,9 +5240,23 @@
         // ═══ PROVEEDORES: pausar / reactivar / alta ═══
         let provPollTimer = null;
 
+        // "30/07 16:48 · 45.546 libros" + aviso en ámbar si lleva días
+        function fmtFichero(f, esCegald) {
+            if (!f || !f.cuando) return '<span style="color:#8b93a7">—</span>';
+            const d = new Date(f.cuando);
+            const dias = (Date.now() - d.getTime()) / 86400000;
+            const color = dias > 3 ? '#fbbf24' : '#c9d1e0';
+            const fecha = `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+            const detalle = esCegald
+                ? (f.registros !== null && f.registros !== undefined ? `${Number(f.registros).toLocaleString()} libros` : '')
+                : (f.tipo || '');
+            return `<span style="color:${color}">${fecha}</span>
+                    <div style="color:#8b93a7; font-size:.7rem;">${detalle}${dias > 3 ? ` · hace ${Math.floor(dias)}d` : ''}</div>`;
+        }
+
         async function loadProveedores() {
             const el = document.getElementById('prov-tabla');
-            el.innerHTML = '<span style="color:#8b93a7">Cargando…</span>';
+            el.innerHTML = '<span style="color:#8b93a7">Cargando… (consultando stock en Odoo, unos segundos)</span>';
             try {
                 const r = await fetch('/api/v1/proveedores');
                 const d = await r.json();
@@ -5263,31 +5277,55 @@
                              title="Re-empujar su stock a Odoo sin esperar a su próximo fichero"
                              onclick="provEmpujar('${p.proveedor_email}','${nom}')">
                              <ion-icon name="arrow-up-circle-outline"></ion-icon> Empujar</button>`;
-                    const bd = td => td === undefined ? '—' : td.toLocaleString();
+                    const num = v => (v === undefined || v === null) ? '—' : v.toLocaleString();
+                    // Diferencias que importan: libros que el proveedor manda
+                    // pero no existen en Odoo, y stock que deberia estar
+                    // encendido y no lo esta.
+                    const faltan = (p.libros_bd || 0) - (p.en_odoo || 0);
+                    const desfase = (p.encendidos_odoo === null || p.encendidos_odoo === undefined)
+                        ? null : (p.en_odoo_con_stock || 0) - p.encendidos_odoo;
                     return `<tr style="border-bottom:1px solid rgba(255,255,255,.05);">
                         <td style="padding:7px 10px;"><strong>${p.nombre}</strong>
                             <div style="color:#8b93a7; font-size:.72rem;">${p.proveedor_email}</div></td>
                         <td style="padding:7px 10px;">${p.warehouse_code || '—'}</td>
-                        <td style="padding:7px 10px; text-align:right;">${bd(p.libros_bd)}</td>
-                        <td style="padding:7px 10px; text-align:right;">${bd(p.con_stock_bd)}</td>
-                        <td style="padding:7px 10px; color:#8b93a7; font-size:.78rem;">${p.ultimo_archivo ? p.ultimo_archivo.slice(0,16) : '—'}</td>
+                        <td style="padding:7px 10px; text-align:right;">${num(p.libros_bd)}</td>
+                        <td style="padding:7px 10px; text-align:right;">${num(p.con_stock_bd)}</td>
+                        <td style="padding:7px 10px; text-align:right;">${num(p.en_odoo)}
+                            ${faltan > 0 ? `<div style="color:#fbbf24; font-size:.7rem;">faltan ${faltan.toLocaleString()}</div>` : ''}</td>
+                        <td style="padding:7px 10px; text-align:right; font-weight:600;
+                                   color:${desfase === null ? '#8b93a7' : (desfase > 0 ? '#f87171' : '#4ade80')};">
+                            ${num(p.encendidos_odoo)}
+                            ${desfase > 0 ? `<div style="color:#f87171; font-size:.7rem;">−${desfase.toLocaleString()} apagados o sin subir</div>` : ''}</td>
+                        <td style="padding:7px 10px; font-size:.78rem;">${fmtFichero(p.ultimo_cegald, true)}</td>
+                        <td style="padding:7px 10px; font-size:.78rem;">${fmtFichero(p.ultimo_fichero, false)}</td>
                         <td style="padding:7px 10px;">${badge}</td>
-                        <td style="padding:7px 10px; text-align:right;">${accion}</td>
+                        <td style="padding:7px 10px; text-align:right; white-space:nowrap;">${accion}</td>
                     </tr>`;
                 }).join('');
+                const th = (txt, right, tip) => `<th title="${tip || ''}" style="text-align:${right?'right':'left'};
+                    padding:7px 10px; color:#8b93a7; font-size:.72rem; text-transform:uppercase; white-space:nowrap;">${txt}</th>`;
                 el.innerHTML = `
-                  <table style="width:100%; border-collapse:collapse; font-size:.86rem;">
+                  <div style="overflow-x:auto;">
+                  <table style="width:100%; border-collapse:collapse; font-size:.86rem; min-width:1050px;">
                     <thead><tr>
-                      <th style="text-align:left; padding:7px 10px; color:#8b93a7; font-size:.72rem; text-transform:uppercase;">Proveedor</th>
-                      <th style="text-align:left; padding:7px 10px; color:#8b93a7; font-size:.72rem; text-transform:uppercase;">Almacén</th>
-                      <th style="text-align:right; padding:7px 10px; color:#8b93a7; font-size:.72rem; text-transform:uppercase;">Libros BD</th>
-                      <th style="text-align:right; padding:7px 10px; color:#8b93a7; font-size:.72rem; text-transform:uppercase;">Con stock</th>
-                      <th style="text-align:left; padding:7px 10px; color:#8b93a7; font-size:.72rem; text-transform:uppercase;">Último archivo</th>
-                      <th style="text-align:left; padding:7px 10px; color:#8b93a7; font-size:.72rem; text-transform:uppercase;">Estado</th>
-                      <th></th>
+                      ${th('Proveedor')}${th('Almacén')}
+                      ${th('Libros BD', true, 'Filas que manda el proveedor en libros_proveedor')}
+                      ${th('Con stock', true, 'De esos, los que tienen stock > 0 en BD')}
+                      ${th('En Odoo', true, 'Cuántos de sus ISBNs existen ya como producto en Odoo')}
+                      ${th('Encendidos', true, 'Stock > 0 en SU almacén de Odoo, producto activo. Consulta en vivo')}
+                      ${th('Último CEGALD', false, 'Último fichero de stock recibido y cuántos registros traía')}
+                      ${th('Último fichero', false, 'Último SINLI de cualquier tipo (ENVIO, ESTADO, LIBROS…)')}
+                      ${th('Estado')}<th></th>
                     </tr></thead>
-                    <tbody>${filas || '<tr><td colspan="7" style="padding:8px; color:#888;">— sin proveedores mapeados —</td></tr>'}</tbody>
-                  </table>`;
+                    <tbody>${filas || '<tr><td colspan="10" style="padding:8px; color:#888;">— sin proveedores mapeados —</td></tr>'}</tbody>
+                  </table></div>
+                  <p style="color:#666; font-size:.72rem; margin-top:8px;">
+                    <strong>Libros BD</strong> es todo lo que manda el proveedor; <strong>Con stock</strong>
+                    son los disponibles (en un CEGALD suelen coincidir: solo listan lo disponible).
+                    <strong>En Odoo</strong> vs Libros BD dice cuántos no existen como producto.
+                    <strong>Encendidos</strong> se compara con los que están en Odoo Y tienen stock en BD:
+                    la diferencia son productos apagados por la regla de precios (PVP &lt; 2,90 o sin precio)
+                    o stock que aún no se ha subido.</p>`;
 
                 const sm = document.getElementById('prov-sinmapear');
                 if (d.sin_mapear && d.sin_mapear.length) {
