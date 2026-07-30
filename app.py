@@ -1881,6 +1881,19 @@ async def proveedores_reactivar(email: str = Query(...)):
     return JSONResponse(status_code=code, content=res)
 
 
+@app.post("/api/v1/proveedores/empujar-ahora", tags=["Proveedores"])
+async def proveedores_empujar_ahora(email: str = Query(...)):
+    """
+    Marca los libros del proveedor (los que ya existen en Odoo) como
+    cambiados ahora, para que el sync los empuje sin esperar a su proximo
+    fichero. No cambia stock ni precio, solo el timestamp del marcapaginas.
+    """
+    import proveedores_admin
+    res = proveedores_admin.forzar_resync(email)
+    code = 400 if res.get("status") == "error" else 200
+    return JSONResponse(status_code=code, content=res)
+
+
 @app.get("/api/v1/proveedores/status", tags=["Proveedores"])
 async def proveedores_status():
     """Estado del job de pausa (apagado de stock en curso)."""

@@ -52,31 +52,34 @@ def stop() -> bool:
 
 
 # ─── Schema ───────────────────────────────────────────────────────────
-_ALTERS = (
-    "ALTER TABLE proveedor_almacen_odoo "
-    "ADD COLUMN IF NOT EXISTS activo BOOLEAN NOT NULL DEFAULT TRUE",
-    "ALTER TABLE proveedor_almacen_odoo "
-    "ADD COLUMN IF NOT EXISTS pausado_en TIMESTAMP",
-    "ALTER TABLE proveedor_almacen_odoo "
-    "ADD COLUMN IF NOT EXISTS pausado_motivo TEXT",
-    "ALTER TABLE proveedor_almacen_odoo "
-    "ADD COLUMN IF NOT EXISTS reactivado_en TIMESTAMP",
-)
+# El estado de pausa vive en tabla PROPIA, no en columnas de
+# proveedor_almacen_odoo: esa tabla es de supabase_admin y nuestro rol
+# (postgres, sin superuser) no puede hacerle ALTER — solo INSERT/UPDATE.
+TABLA_PAUSA = "proveedor_pausa"
+
+_DDL = f"""
+    CREATE TABLE IF NOT EXISTS {TABLA_PAUSA} (
+        proveedor_email TEXT PRIMARY KEY,
+        activo BOOLEAN NOT NULL DEFAULT TRUE,
+        pausado_en TIMESTAMP,
+        pausado_motivo TEXT,
+        reactivado_en TIMESTAMP,
+        actualizado_en TIMESTAMP
+    )
+"""
 
 _schema_ok = False
 
 
 def ensure_schema():
-    """Anade las columnas de pausa. Idempotente, barato, sin migraciones."""
+    """Crea la tabla de pausas. Idempotente, barato, sin migraciones."""
     global _schema_ok
-    if _schema_ok or not db.IS_POSTGRES:
-        _schema_ok = True
+    if _schema_ok:
         return
     conn = db.get_connection()
     cur = conn.cursor()
     try:
-        for sql in _ALTERS:
-            cur.execute(sql)
+        cur.execute(_DDL)
         conn.commit()
         _schema_ok = True
     except Exception as e:
@@ -109,9 +112,8 @@ def pausados() -> set[str]:
     conn = db.get_connection()
     cur = conn.cursor()
     try:
-        db.execute_query(cur, """
-            SELECT proveedor_email FROM proveedor_almacen_odoo
-            WHERE activo = false
+        db.execute_query(cur, f"""
+            SELECT proveedor_email FROM {TABLA_PAUSA} WHERE activo = false
         """)
         return {r[0] for r in cur.fetchall() if r[0]}
     except Exception:
@@ -125,13 +127,16 @@ def esta_pausado(proveedor_email: str) -> bool:
 
 
 def _mapping(proveedor_email: str) -> dict | None:
+    ensure_schema()
     conn = db.get_connection()
     cur = conn.cursor()
     try:
-        db.execute_query(cur, """
-            SELECT proveedor_email, warehouse_code, nombre_proveedor,
-                   COALESCE(activo, true), pausado_en, pausado_motivo
-            FROM proveedor_almacen_odoo WHERE proveedor_email = ?
+        db.execute_query(cur, f"""
+            SELECT m.proveedor_email, m.warehouse_code, m.nombre_proveedor,
+                   COALESCE(p.activo, true), p.pausado_en, p.pausado_motivo
+            FROM proveedor_almacen_odoo m
+            LEFT JOIN {TABLA_PAUSA} p ON p.proveedor_email = m.proveedor_email
+            WHERE m.proveedor_email = ?
         """, (proveedor_email,))
         r = cur.fetchone()
         if not r:
@@ -155,12 +160,13 @@ def listar(con_stats: bool = True) -> list[dict]:
     conn = db.get_connection()
     cur = conn.cursor()
     try:
-        db.execute_query(cur, """
-            SELECT proveedor_email, warehouse_code, nombre_proveedor,
-                   COALESCE(activo, true), pausado_en, pausado_motivo,
-                   reactivado_en
-            FROM proveedor_almacen_odoo
-            ORDER BY nombre_proveedor NULLS LAST, proveedor_email
+        db.execute_query(cur, f"""
+            SELECT m.proveedor_email, m.warehouse_code, m.nombre_proveedor,
+                   COALESCE(p.activo, true), p.pausado_en, p.pausado_motivo,
+                   p.reactivado_en
+            FROM proveedor_almacen_odoo m
+            LEFT JOIN {TABLA_PAUSA} p ON p.proveedor_email = m.proveedor_email
+            ORDER BY m.nombre_proveedor NULLS LAST, m.proveedor_email
         """)
         out = [{
             "proveedor_email": r[0],
@@ -309,14 +315,21 @@ async def _apagar_todo(odoo: OdooClient, quant_ids: list[int], job: dict):
 
 # ─── Pausar / reactivar ───────────────────────────────────────────────
 def _marcar_pausa(proveedor_email: str, motivo: str | None):
+    ensure_schema()
     conn = db.get_connection()
     cur = conn.cursor()
+    ahora = "NOW()" if db.IS_POSTGRES else "CURRENT_TIMESTAMP"
     try:
-        db.execute_query(cur, """
-            UPDATE proveedor_almacen_odoo
-            SET activo = false, pausado_en = NOW(), pausado_motivo = ?
-            WHERE proveedor_email = ?
-        """, (motivo, proveedor_email))
+        db.execute_query(cur, f"""
+            INSERT INTO {TABLA_PAUSA}
+                (proveedor_email, activo, pausado_en, pausado_motivo,
+                 actualizado_en)
+            VALUES (?, false, {ahora}, ?, {ahora})
+            ON CONFLICT (proveedor_email) DO UPDATE
+            SET activo = false, pausado_en = {ahora},
+                pausado_motivo = EXCLUDED.pausado_motivo,
+                actualizado_en = {ahora}
+        """, (proveedor_email, motivo))
         conn.commit()
     finally:
         conn.close()
@@ -406,11 +419,15 @@ def reactivar(proveedor_email: str) -> dict:
                 "message": f"{proveedor_email} no tiene almacen mapeado"}
     conn = db.get_connection()
     cur = conn.cursor()
+    ahora = "NOW()" if db.IS_POSTGRES else "CURRENT_TIMESTAMP"
     try:
-        db.execute_query(cur, """
-            UPDATE proveedor_almacen_odoo
-            SET activo = true, reactivado_en = NOW(), pausado_motivo = NULL
-            WHERE proveedor_email = ?
+        db.execute_query(cur, f"""
+            INSERT INTO {TABLA_PAUSA}
+                (proveedor_email, activo, reactivado_en, actualizado_en)
+            VALUES (?, true, {ahora}, {ahora})
+            ON CONFLICT (proveedor_email) DO UPDATE
+            SET activo = true, reactivado_en = {ahora},
+                pausado_motivo = NULL, actualizado_en = {ahora}
         """, (proveedor_email,))
         conn.commit()
     finally:
@@ -422,6 +439,46 @@ def reactivar(proveedor_email: str) -> dict:
     _audit("reactivacion",
            f"Reactivado {m['nombre']} ({m['warehouse_code']}). El stock "
            f"entrara con su proximo archivo.", out)
+    return out
+
+
+def forzar_resync(proveedor_email: str) -> dict:
+    """
+    Marca los libros del proveedor como "cambiados ahora" para que el sync
+    los vuelva a empujar sin esperar a su proximo fichero.
+
+    Solo toca las filas cuyo ISBN YA existe en Odoo (las demas no las
+    empujaria igualmente) y no cambia ningun stock ni precio: solo el
+    timestamp que el sync usa como marcapaginas.
+
+    Util tras dar de alta un almacen (las filas viejas quedaron detras del
+    marcapaginas) o tras reactivar un proveedor si no quieres esperar.
+    """
+    conn = db.get_connection()
+    cur = conn.cursor()
+    ahora = "NOW()" if db.IS_POSTGRES else "CURRENT_TIMESTAMP"
+    try:
+        db.execute_query(cur, f"""
+            UPDATE libros_proveedor lp
+            SET actualizado_en = {ahora}
+            FROM odoo_books_mirror m
+            WHERE m.barcode = lp.isbn
+              AND lp.proveedor_email = ?
+        """, (proveedor_email,))
+        n = cur.rowcount
+        conn.commit()
+    except Exception as e:
+        try: conn.rollback()
+        except Exception: pass
+        return {"status": "error", "message": f"{type(e).__name__}: {e}"[:200]}
+    finally:
+        conn.close()
+    out = {"status": "ok", "proveedor": proveedor_email, "marcados": n,
+           "nota": "El sync los empujara en su proxima pasada (cron 1h) o "
+                   "lanzando run-once."}
+    _audit("forzar_resync",
+           f"Re-empuje forzado de {proveedor_email}: {n:,} libros marcados "
+           f"para la proxima pasada del sync.", out)
     return out
 
 
@@ -479,7 +536,7 @@ async def alta(proveedor_email: str, nombre: str, warehouse_code: str,
         if existe:
             db.execute_query(cur, """
                 UPDATE proveedor_almacen_odoo
-                SET warehouse_code = ?, nombre_proveedor = ?, activo = true
+                SET warehouse_code = ?, nombre_proveedor = ?
                 WHERE proveedor_email = ?
             """, (warehouse_code, nombre, proveedor_email))
             out["mapeo_actualizado"] = True

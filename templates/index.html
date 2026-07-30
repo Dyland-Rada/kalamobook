@@ -5249,13 +5249,18 @@
                         ? '<span style="color:#4ade80; font-weight:600;">ACTIVO</span>'
                         : `<span style="color:#f87171; font-weight:600;">PAUSADO</span>
                            <div style="color:#8b93a7; font-size:.72rem;">${p.pausado_en ? p.pausado_en.slice(0,16) : ''}${p.pausado_motivo ? ' · ' + p.pausado_motivo : ''}</div>`;
-                    const accion = p.activo
+                    const nom = (p.nombre||'').replace(/'/g,'');
+                    const accion = (p.activo
                         ? `<button class="btn btn-danger" style="padding:4px 10px; font-size:.78rem;"
-                             onclick="provPausar('${p.proveedor_email}','${(p.nombre||'').replace(/'/g,'')}')">
+                             onclick="provPausar('${p.proveedor_email}','${nom}')">
                              <ion-icon name="pause-outline"></ion-icon> Pausar</button>`
                         : `<button class="btn btn-success" style="padding:4px 10px; font-size:.78rem;"
-                             onclick="provReactivar('${p.proveedor_email}','${(p.nombre||'').replace(/'/g,'')}')">
-                             <ion-icon name="play-outline"></ion-icon> Reactivar</button>`;
+                             onclick="provReactivar('${p.proveedor_email}','${nom}')">
+                             <ion-icon name="play-outline"></ion-icon> Reactivar</button>`)
+                        + ` <button class="btn btn-primary" style="padding:4px 10px; font-size:.78rem; background:#3498db;"
+                             title="Re-empujar su stock a Odoo sin esperar a su próximo fichero"
+                             onclick="provEmpujar('${p.proveedor_email}','${nom}')">
+                             <ion-icon name="arrow-up-circle-outline"></ion-icon> Empujar</button>`;
                     const bd = td => td === undefined ? '—' : td.toLocaleString();
                     return `<tr style="border-bottom:1px solid rgba(255,255,255,.05);">
                         <td style="padding:7px 10px;"><strong>${p.nombre}</strong>
@@ -5372,6 +5377,22 @@
                 ? `<span style="color:#4ade80">${nombre} reactivado.</span> <span style="color:#8b93a7">${d.nota}</span>`
                 : `<span style="color:#f87171">${d.message || 'Error'}</span>`;
             loadProveedores();
+        }
+
+        async function provEmpujar(email, nombre) {
+            if (!confirm(`Re-empujar ${nombre} a Odoo.\n\nMarca sus libros (los que ya existen en Odoo) ` +
+                         `para que el sync los sincronice en su próxima pasada, sin esperar a su ` +
+                         `próximo fichero. No cambia stock ni precios.`)) return;
+            const box = document.getElementById('prov-job');
+            box.style.display = 'block';
+            box.innerHTML = '<span style="color:#8b93a7">Marcando…</span>';
+            const r = await fetch(`/api/v1/proveedores/empujar-ahora?email=${encodeURIComponent(email)}`,
+                                  { method: 'POST' });
+            const d = await r.json();
+            box.innerHTML = d.status === 'ok'
+                ? `<span style="color:#4ade80">${nombre}: ${Number(d.marcados).toLocaleString()} libros marcados.</span>
+                   <span style="color:#8b93a7">${d.nota}</span>`
+                : `<span style="color:#f87171">${d.message || 'Error'}</span>`;
         }
 
         async function provAlta() {

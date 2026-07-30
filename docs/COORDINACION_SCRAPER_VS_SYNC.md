@@ -57,6 +57,32 @@ Postgres (`84.46.251.249:5432`, db `postgres`).
 | `sync_sin_ficha` | **sync exclusivo** | scraper la puede consumir como cola de prioridad (futuro) |
 | `proveedor_almacen_odoo` | **sync exclusivo** | scraper puede leer si quiere mostrar en CSV (futuro) |
 
+### 2.1 Pausa de proveedores (tabla `proveedor_pausa`, 2026-07-30)
+
+| Tabla | Owner | Otro proceso |
+|---|---|---|
+| `proveedor_pausa` | **sync/scraper (rol postgres)** | n8n no la necesita |
+
+Tabla propia: `proveedor_email` (PK), `activo` (default true), `pausado_en`,
+`pausado_motivo`, `reactivado_en`. La crea `proveedores_admin.ensure_schema()`
+al arrancar la app (CREATE TABLE IF NOT EXISTS, idempotente).
+
+Va en tabla aparte y no en columnas de `proveedor_almacen_odoo` porque esa
+tabla (como `proveedores` y `libros_proveedor`) es de `supabase_admin`: el rol
+`postgres` puede INSERT/UPDATE pero **no ALTER**.
+
+**`activo = false` significa: ese proveedor NO se sincroniza a Odoo y su
+almacén ya está a 0.** Al pausar se apagan todos sus quants con stock; el
+sync SINLI salta sus libros (`skipped_pausados`) y los push de AZETA se
+cancelan si AZETA está pausado. Un proveedor sin fila en `proveedor_pausa`
+está activo.
+
+Quien ingiere ficheros (n8n de Server A) **puede seguir escribiendo en
+`libros_proveedor` con normalidad** — no hace falta que mire esta columna.
+El filtro está en la escritura a Odoo, no en la ingesta. Al reactivar, el
+stock entra con el siguiente fichero del proveedor (el marcapáginas del
+sync avanzó durante la pausa, así que las filas viejas no se reprocesan).
+
 ## 3. Responsabilidades del scraper relativas al sync
 
 ### 3.1 Mantener `odoo_books_mirror` fresco
