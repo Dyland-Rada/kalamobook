@@ -2271,6 +2271,10 @@
                             title="Enciende Track Inventory en los libros que lo tienen apagado: sin eso Odoo rechaza su stock"
                             onclick="provRepararStock()">
                         <ion-icon name="build-outline"></ion-icon> Reparar Track Inventory</button>
+                    <button class="btn-edit" style="float:right; margin-right:8px;"
+                            title="Compara el stock de la BD con el de Odoo y re-empuja lo que falte por subir"
+                            onclick="provConciliar()">
+                        <ion-icon name="git-compare-outline"></ion-icon> Conciliar stock</button>
                 </div>
                 <p style="color:#8b93a7; font-size:.8rem; margin-top:6px;">
                     <strong>Pausar</strong> (ej. cierran en verano): deja de sincronizarse y su stock
@@ -5358,12 +5362,15 @@
             const color = job.status === 'error' ? '#f87171'
                         : job.status === 'running' ? '#fbbf24' : '#4ade80';
             const esReparar = job.accion === 'reparar_catalogo';
+            const esConciliar = job.accion === 'conciliar';
+            const cifras = esConciliar
+                ? `${(job.faltan||0).toLocaleString()} sin subir · ${(job.marcados_resync||0).toLocaleString()} marcados`
+                : esReparar
+                ? `${(job.candidatos||0).toLocaleString()} sin poder llevar stock · ${(job.reparados||0).toLocaleString()} + ${(job.variantes_reactivadas||0).toLocaleString()} arreglados`
+                : `${(job.con_stock||0).toLocaleString()} con stock · ${(job.apagados||0).toLocaleString()} apagados`;
             box.innerHTML = `<strong style="color:${color}">${job.accion || 'job'} · ${job.status}</strong>
                 — ${job.proveedor || ''} ${job.warehouse ? '(' + job.warehouse + ')' : ''}
-                · ${esReparar ? (job.candidatos||0).toLocaleString() + ' sin poder llevar stock'
-                              : (job.con_stock||0).toLocaleString() + ' con stock'}
-                · ${esReparar ? (job.reparados||0).toLocaleString() + ' + ' + (job.variantes_reactivadas||0).toLocaleString() + ' arreglados'
-                              : (job.apagados||0).toLocaleString() + ' apagados'}
+                · ${cifras}
                 ${job.err_apagar ? '· <span style="color:#f87171">' + job.err_apagar + ' errores</span>' : ''}
                 <span style="color:#8b93a7;"> · ${job.stage || ''} ${job.elapsed_s ? '(' + job.elapsed_s + 's)' : ''}</span>
                 ${(job.errors && job.errors.length) ? '<div style="color:#f87171; font-size:.75rem; margin-top:4px;">' + job.errors.slice(-3).join('<br>') + '</div>' : ''}`;
@@ -5441,6 +5448,31 @@
                 ? `<span style="color:#4ade80">${nombre}: ${Number(d.marcados).toLocaleString()} libros marcados.</span>
                    <span style="color:#8b93a7">${d.nota}</span>`
                 : `<span style="color:#f87171">${d.message || 'Error'}</span>`;
+        }
+
+        async function provConciliar() {
+            const box = document.getElementById('prov-job');
+            box.style.display = 'block';
+            box.innerHTML = '<span style="color:#fbbf24">Comparando BD con Odoo… (unos minutos, recorre todos los almacenes)</span>';
+            const r = await fetch('/api/v1/proveedores/conciliar?dry_run=true', { method: 'POST' });
+            const d = await r.json();
+            if (d.status === 'error') { provRenderJob(d); return; }
+            const detalle = Object.entries(d.por_proveedor || {})
+                .filter(([, v]) => v.faltan > 0)
+                .sort((a, b) => b[1].faltan - a[1].faltan)
+                .map(([n, v]) => `· ${n}: ${v.faltan.toLocaleString()}`).join('\n');
+            if (!d.faltan) {
+                box.innerHTML = `<span style="color:#4ade80">Todo al día: los ${Number(d.deberian).toLocaleString()} libros con stock ya están subidos a Odoo.</span>`;
+                return;
+            }
+            if (!confirm(`${Number(d.faltan).toLocaleString()} libros tienen stock en la BD pero no en Odoo:\n\n${detalle}\n\n` +
+                         `Se marcan para que el sync los suba en su próxima pasada.\nNo cambia precios ni cantidades.\n\n¿Marcar?`)) {
+                box.innerHTML = '<span style="color:#8b93a7">Cancelado — no se tocó nada.</span>'; return;
+            }
+            const r2 = await fetch('/api/v1/proveedores/conciliar?dry_run=false', { method: 'POST' });
+            const d2 = await r2.json();
+            if (d2.status === 'started') { box.innerHTML = '<span style="color:#fbbf24">Marcando…</span>'; provPollStart(); }
+            else provRenderJob(d2);
         }
 
         async function provRepararStock() {

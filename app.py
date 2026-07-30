@@ -1953,6 +1953,46 @@ async def proveedores_reparar_catalogo(
     return JSONResponse(content={"status": "started", "proveedor": email or "TODOS"})
 
 
+@app.post("/api/v1/proveedores/conciliar", tags=["Proveedores"])
+async def proveedores_conciliar(
+    email: str | None = Query(None, description="proveedor_email; vacio = todos"),
+    dry_run: bool = Query(True, description="True = solo contar lo que falta"),
+):
+    """
+    Compara lo que DEBERIA tener stock (stock > 0 en BD, existe en Odoo,
+    PVP >= 2,90) con los quants reales de cada almacen, y marca para
+    re-empuje solo lo que falta. Detecta libros que entraron con stock y
+    nunca cambiaron de cantidad: el sync no los mira y se quedan sin quant.
+    AZETA queda fuera (su stock lo empuja su propio job).
+    """
+    import threading
+    import sys
+    import proveedores_admin
+
+    if proveedores_admin.get_status().get("status") == "running":
+        return JSONResponse(status_code=409, content={
+            "status": "error", "message": "Ya hay un job de proveedores corriendo."
+        })
+
+    if dry_run:
+        return JSONResponse(content=await
+            proveedores_admin.conciliar(email, dry_run=True))
+
+    def _run_in_thread():
+        if sys.platform == 'win32':
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
+        try:
+            new_loop.run_until_complete(
+                proveedores_admin.conciliar(email, dry_run=False))
+        finally:
+            new_loop.close()
+
+    threading.Thread(target=_run_in_thread, daemon=True).start()
+    return JSONResponse(content={"status": "started", "proveedor": email or "TODOS"})
+
+
 @app.get("/api/v1/proveedores/status", tags=["Proveedores"])
 async def proveedores_status():
     """Estado del job de pausa (apagado de stock en curso)."""
