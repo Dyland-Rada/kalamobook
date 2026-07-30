@@ -2267,6 +2267,10 @@
                     <ion-icon name="power-outline"></ion-icon> Proveedores — pausar y reactivar
                     <button class="btn-edit" style="float:right;" onclick="loadProveedores()">
                         <ion-icon name="refresh-outline"></ion-icon> Refrescar</button>
+                    <button class="btn-edit" style="float:right; margin-right:8px;"
+                            title="Enciende Track Inventory en los libros que lo tienen apagado: sin eso Odoo rechaza su stock"
+                            onclick="provRepararStock()">
+                        <ion-icon name="build-outline"></ion-icon> Reparar Track Inventory</button>
                 </div>
                 <p style="color:#8b93a7; font-size:.8rem; margin-top:6px;">
                     <strong>Pausar</strong> (ej. cierran en verano): deja de sincronizarse y su stock
@@ -5353,10 +5357,13 @@
             box.style.display = 'block';
             const color = job.status === 'error' ? '#f87171'
                         : job.status === 'running' ? '#fbbf24' : '#4ade80';
+            const esReparar = job.accion === 'reparar_track_inventory';
             box.innerHTML = `<strong style="color:${color}">${job.accion || 'job'} · ${job.status}</strong>
-                — ${job.proveedor || ''} (${job.warehouse || '?'})
-                · ${(job.con_stock||0).toLocaleString()} con stock
-                · ${(job.apagados||0).toLocaleString()} apagados
+                — ${job.proveedor || ''} ${job.warehouse ? '(' + job.warehouse + ')' : ''}
+                · ${esReparar ? (job.candidatos||0).toLocaleString() + ' sin Track Inventory'
+                              : (job.con_stock||0).toLocaleString() + ' con stock'}
+                · ${esReparar ? (job.reparados||0).toLocaleString() + ' reparados'
+                              : (job.apagados||0).toLocaleString() + ' apagados'}
                 ${job.err_apagar ? '· <span style="color:#f87171">' + job.err_apagar + ' errores</span>' : ''}
                 <span style="color:#8b93a7;"> · ${job.stage || ''} ${job.elapsed_s ? '(' + job.elapsed_s + 's)' : ''}</span>
                 ${(job.errors && job.errors.length) ? '<div style="color:#f87171; font-size:.75rem; margin-top:4px;">' + job.errors.slice(-3).join('<br>') + '</div>' : ''}`;
@@ -5434,6 +5441,25 @@
                 ? `<span style="color:#4ade80">${nombre}: ${Number(d.marcados).toLocaleString()} libros marcados.</span>
                    <span style="color:#8b93a7">${d.nota}</span>`
                 : `<span style="color:#f87171">${d.message || 'Error'}</span>`;
+        }
+
+        async function provRepararStock() {
+            const box = document.getElementById('prov-job');
+            box.style.display = 'block';
+            box.innerHTML = '<span style="color:#fbbf24">Buscando libros sin Track Inventory…</span>';
+            const r = await fetch('/api/v1/proveedores/reparar-track-inventory?dry_run=true', { method: 'POST' });
+            const d = await r.json();
+            if (d.status === 'error') { provRenderJob(d); return; }
+            if (!d.candidatos) { box.innerHTML = '<span style="color:#4ade80">Nada que reparar: todos los libros admiten stock.</span>'; return; }
+            if (!confirm(`${Number(d.candidatos).toLocaleString()} libros tienen Track Inventory apagado.\n\n` +
+                         `Odoo rechaza su stock mientras siga así, por lo que nunca aparecerán como disponibles.\n` +
+                         `Se les enciende el seguimiento de inventario. No cambia precios ni nada más.\n\n¿Reparar?`)) {
+                box.innerHTML = '<span style="color:#8b93a7">Cancelado — no se tocó nada.</span>'; return;
+            }
+            const r2 = await fetch('/api/v1/proveedores/reparar-track-inventory?dry_run=false', { method: 'POST' });
+            const d2 = await r2.json();
+            if (d2.status === 'started') { box.innerHTML = '<span style="color:#fbbf24">Reparando…</span>'; provPollStart(); }
+            else provRenderJob(d2);
         }
 
         async function provAlta() {

@@ -538,6 +538,101 @@ def reactivar(proveedor_email: str, empujar: bool = True) -> dict:
     return out
 
 
+def _odoo_ids_de(proveedor_email: str) -> list[int]:
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        db.execute_query(cur, """
+            SELECT DISTINCT m.odoo_id
+            FROM libros_proveedor lp
+            JOIN odoo_books_mirror m ON m.barcode = lp.isbn
+            WHERE lp.proveedor_email = ? AND m.odoo_id IS NOT NULL
+        """, (proveedor_email,))
+        return [int(r[0]) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+async def reparar_track_inventory(proveedor_email: str | None = None,
+                                   dry_run: bool = True) -> dict:
+    """
+    Enciende "Track Inventory" (is_storable) en los libros que lo tienen
+    apagado.
+
+    Odoo 19 rechaza cualquier stock.quant de un producto sin is_storable
+    ("No se pueden crear cuantos para consumibles o servicios"), asi que su
+    stock no se puede subir NUNCA. Los libros creados por nuestro pipeline
+    antes de 2026-07-30 salieron asi (type=consu sin is_storable).
+
+    Sin proveedor_email repara todo el catalogo; con el, solo los libros de
+    ese proveedor. Incluye archivados (los apagados por la regla de precios
+    volveran a estar bien cuando se reactiven).
+    """
+    global _job
+    _job = {
+        "status": "running", "accion": "reparar_track_inventory",
+        "proveedor": proveedor_email or "TODOS", "dry_run": dry_run,
+        "started_at": datetime.now().isoformat(), "stage": "buscando",
+        "candidatos": 0, "reparados": 0, "err_apagar": 0,
+        "con_stock": 0, "apagados": 0, "errors": [], "elapsed_s": 0,
+    }
+    job = _job
+    t0 = time.monotonic()
+    dominio = [["is_storable", "=", False], ["barcode", "!=", False],
+               ["active", "in", [True, False]]]
+    try:
+        async with OdooClient() as odoo:
+            pendientes: list[int] = []
+            if proveedor_email:
+                ids = _odoo_ids_de(proveedor_email)
+                for chunk in _chunks(ids, 400):
+                    rows = await odoo.search_read(
+                        "product.template", dominio + [["id", "in", chunk]], ["id"])
+                    pendientes.extend(r["id"] for r in rows)
+            else:
+                offset = 0
+                while True:
+                    page = await odoo.search_read(
+                        "product.template", dominio, ["id"],
+                        offset=offset, limit=PAGE, order="id")
+                    pendientes.extend(r["id"] for r in page)
+                    if len(page) < PAGE:
+                        break
+                    offset += PAGE
+            job["candidatos"] = len(pendientes)
+
+            if not dry_run:
+                job["stage"] = "reparando"
+                for chunk in _chunks(pendientes, CHUNK):
+                    if job["status"] != "running":
+                        break
+                    try:
+                        await odoo.write("product.template", chunk,
+                                         {"is_storable": True})
+                        job["reparados"] += len(chunk)
+                    except Exception as e:
+                        job["err_apagar"] += len(chunk)
+                        job["errors"].append(
+                            f"chunk {chunk[0]}..{chunk[-1]}: "
+                            f"{type(e).__name__}: {str(e)[:120]}")
+            job["stage"] = "done"
+        if job["status"] == "running":
+            job["status"] = "completed"
+    except Exception as e:
+        job["status"] = "error"
+        job["errors"].append(f"{type(e).__name__}: {e}"[:300])
+        print(f"[ProvAdmin] reparar_track_inventory FAIL: {e!r}")
+    finally:
+        job["elapsed_s"] = round(time.monotonic() - t0, 2)
+        _audit("reparar_track_inventory",
+               f"Track Inventory {job['proveedor']}"
+               f"{' [DRY RUN]' if dry_run else ''}: {job['candidatos']:,} "
+               f"libros sin stock posible, {job['reparados']:,} reparados "
+               f"({job['elapsed_s']}s)",
+               job, error=(job["status"] == "error" or job["err_apagar"] > 0))
+    return job
+
+
 def forzar_resync(proveedor_email: str) -> dict:
     """
     Marca los libros del proveedor como "cambiados ahora" para que el sync

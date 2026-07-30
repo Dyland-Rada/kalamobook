@@ -90,6 +90,8 @@ async def run(limit, chunk=200):
                     "name": name[:250], "barcode": t["isbn"],
                     "default_code": t["isbn"], "list_price": price,
                     "type": "consu", "sale_ok": True, "purchase_ok": True,
+                    # Sin esto Odoo 19 rechaza el stock.quant del producto.
+                    "is_storable": True,
                 })
             new_ids = await odoo.execute_kw("product.template", "create", [vals])
             for t, oid in zip(batch, new_ids):

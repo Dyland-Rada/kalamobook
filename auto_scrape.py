@@ -176,6 +176,10 @@ async def _create_and_tag(odoo, tag_ids, targets, chunk=200):
                 "list_price": wp if wp is not None else (pvp or 0.0),
                 "active": wp is not None,        # < 2,90 / sin precio -> apagado
                 "type": "consu", "sale_ok": True, "purchase_ok": True,
+                # Odoo 19: sin is_storable el producto no admite stock.quant
+                # ("No se pueden crear cuantos para consumibles o servicios")
+                # y su stock no se puede subir NUNCA.
+                "is_storable": True,
             })
         new_ids = await odoo.execute_kw("product.template", "create", [vals])
         for t, oid in zip(batch, new_ids):

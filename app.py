@@ -1914,6 +1914,45 @@ async def proveedores_empujar_ahora(email: str = Query(...)):
     return JSONResponse(status_code=code, content=res)
 
 
+@app.post("/api/v1/proveedores/reparar-track-inventory", tags=["Proveedores"])
+async def proveedores_reparar_track_inventory(
+    email: str | None = Query(None, description="proveedor_email; vacio = todo el catalogo"),
+    dry_run: bool = Query(True, description="True = solo contar"),
+):
+    """
+    Enciende "Track Inventory" (is_storable) en los libros que lo tienen
+    apagado. Odoo 19 rechaza el stock.quant de esos productos, asi que su
+    stock no puede subirse nunca. Afecta a los creados por el pipeline
+    antes del 2026-07-30.
+    """
+    import threading
+    import sys
+    import proveedores_admin
+
+    if proveedores_admin.get_status().get("status") == "running":
+        return JSONResponse(status_code=409, content={
+            "status": "error", "message": "Ya hay un job de proveedores corriendo."
+        })
+
+    if dry_run:
+        return JSONResponse(content=await
+            proveedores_admin.reparar_track_inventory(email, dry_run=True))
+
+    def _run_in_thread():
+        if sys.platform == 'win32':
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
+        try:
+            new_loop.run_until_complete(
+                proveedores_admin.reparar_track_inventory(email, dry_run=False))
+        finally:
+            new_loop.close()
+
+    threading.Thread(target=_run_in_thread, daemon=True).start()
+    return JSONResponse(content={"status": "started", "proveedor": email or "TODOS"})
+
+
 @app.get("/api/v1/proveedores/status", tags=["Proveedores"])
 async def proveedores_status():
     """Estado del job de pausa (apagado de stock en curso)."""
