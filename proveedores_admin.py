@@ -724,6 +724,132 @@ async def reparar_catalogo(proveedor_email: str | None = None,
     return job
 
 
+def _candidatos_con_stock(proveedor_email: str) -> dict[int, str]:
+    """
+    {odoo_id: isbn} de los libros del proveedor que DEBERIAN estar
+    encendidos: stock > 0 en BD, ya existen en Odoo y pasan la regla API-15
+    (PVP >= 2,90; por debajo el producto esta apagado a proposito).
+    """
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        db.execute_query(cur, """
+            SELECT DISTINCT m.odoo_id, lp.isbn
+            FROM libros_proveedor lp
+            JOIN odoo_books_mirror m ON m.barcode = lp.isbn
+            WHERE lp.proveedor_email = ?
+              AND lp.stock_disponible > 0
+              AND COALESCE(lp.precio_con_iva, 0) >= 2.90
+              AND m.odoo_id IS NOT NULL
+        """, (proveedor_email,))
+        return {int(r[0]): r[1] for r in cur.fetchall()}
+    finally:
+        conn.close()
+
+
+async def conciliar(proveedor_email: str | None = None,
+                    dry_run: bool = True) -> dict:
+    """
+    Compara lo que DEBERIA estar encendido con lo que hay en Odoo y marca
+    para re-empuje solo lo que falta.
+
+    El sync solo mira filas cuyo stock CAMBIO desde el marcapaginas, asi que
+    un libro que entro con stock y nunca vario se queda sin quant para
+    siempre. Esto lo detecta comparando contra Odoo, sin re-empujar el
+    catalogo entero.
+
+    AZETA queda fuera: su stock lo empuja azeta_push_odoo, no este sync.
+    """
+    global _job
+    _job = {
+        "status": "running", "accion": "conciliar",
+        "proveedor": proveedor_email or "TODOS", "dry_run": dry_run,
+        "started_at": datetime.now().isoformat(), "stage": "empezando",
+        "deberian": 0, "encendidos": 0, "faltan": 0, "marcados_resync": 0,
+        "por_proveedor": {}, "errors": [], "elapsed_s": 0,
+    }
+    job = _job
+    t0 = time.monotonic()
+    try:
+        pausa = pausados()
+        provs = [p for p in listar(con_stats=False)
+                 if p["proveedor_email"] != AZETA_EMAIL
+                 and p["proveedor_email"] not in pausa
+                 and (not proveedor_email
+                      or p["proveedor_email"] == proveedor_email)]
+        faltan_todos: list[int] = []
+        async with OdooClient() as odoo:
+            for p in provs:
+                if job["status"] != "running":
+                    break
+                email = p["proveedor_email"]
+                job["stage"] = f"conciliando {p['nombre']}"
+                candidatos = _candidatos_con_stock(email)
+                if not candidatos:
+                    continue
+                try:
+                    _, location_id = await _location_de(odoo, p["warehouse_code"])
+                except Exception as e:
+                    job["errors"].append(f"{p['nombre']}: {e}")
+                    continue
+
+                # template -> product.product
+                tmpl_to_pid: dict[int, int] = {}
+                for chunk in _chunks(list(candidatos), 1000):
+                    for r in await odoo.search_read(
+                            "product.product",
+                            [["product_tmpl_id", "in", chunk]],
+                            ["id", "product_tmpl_id"]):
+                        t = r["product_tmpl_id"]
+                        tmpl_to_pid.setdefault(
+                            t[0] if isinstance(t, list) else t, r["id"])
+
+                # cuales de esos productos YA tienen stock en su almacen
+                pids = list(tmpl_to_pid.values())
+                con_quant: set[int] = set()
+                for chunk in _chunks(pids, 1000):
+                    for r in await odoo.search_read(
+                            "stock.quant",
+                            [["product_id", "in", chunk],
+                             ["location_id", "=", location_id],
+                             ["quantity", ">", 0]], ["product_id"]):
+                        pid = r["product_id"]
+                        con_quant.add(pid[0] if isinstance(pid, list) else pid)
+
+                faltan = [t for t, pid in tmpl_to_pid.items()
+                          if pid not in con_quant]
+                job["deberian"] += len(candidatos)
+                job["encendidos"] += len(con_quant)
+                job["faltan"] += len(faltan)
+                job["por_proveedor"][p["nombre"]] = {
+                    "deberian": len(candidatos),
+                    "encendidos": len(con_quant),
+                    "faltan": len(faltan),
+                }
+                faltan_todos.extend(faltan)
+
+        if not dry_run and faltan_todos:
+            job["stage"] = "marcando para re-empuje"
+            job["marcados_resync"] = _marcar_resync_por_odoo_ids(faltan_todos)
+        job["stage"] = "done"
+        if job["status"] == "running":
+            job["status"] = "completed"
+    except Exception as e:
+        job["status"] = "error"
+        job["errors"].append(f"{type(e).__name__}: {e}"[:300])
+        print(f"[ProvAdmin] conciliar FAIL: {e!r}")
+    finally:
+        job["elapsed_s"] = round(time.monotonic() - t0, 2)
+        _audit("conciliar",
+               f"Conciliacion {job['proveedor']}"
+               f"{' [DRY RUN]' if dry_run else ''}: {job['deberian']:,} "
+               f"deberian tener stock, {job['encendidos']:,} lo tienen, "
+               f"{job['faltan']:,} sin subir ({job['marcados_resync']:,} "
+               f"marcados) ({job['elapsed_s']}s)",
+               job, error=(job["status"] == "error"))
+    return job
+
+
 def forzar_resync(proveedor_email: str) -> dict:
     """
     Marca los libros del proveedor como "cambiados ahora" para que el sync
