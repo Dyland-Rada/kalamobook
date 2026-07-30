@@ -1870,13 +1870,17 @@ async def proveedores_pausar(
 
 
 @app.post("/api/v1/proveedores/reactivar", tags=["Proveedores"])
-async def proveedores_reactivar(email: str = Query(...)):
+async def proveedores_reactivar(
+    email: str = Query(...),
+    empujar: bool = Query(True, description="marcar sus libros para re-empuje"),
+):
     """
-    Quita la pausa. NO re-empuja stock: entra solo cuando llegue el proximo
-    archivo de stock del proveedor.
+    Quita la pausa y marca sus libros para que el sync vuelva a subir su
+    stock en la proxima pasada. Con empujar=false solo quita la marca (el
+    stock solo volveria para los libros cuya cantidad cambie).
     """
     import proveedores_admin
-    res = proveedores_admin.reactivar(email)
+    res = proveedores_admin.reactivar(email, empujar=empujar)
     code = 400 if res.get("status") == "error" else 200
     return JSONResponse(status_code=code, content=res)
 

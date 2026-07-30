@@ -79,9 +79,15 @@ está activo.
 
 Quien ingiere ficheros (n8n de Server A) **puede seguir escribiendo en
 `libros_proveedor` con normalidad** — no hace falta que mire esta columna.
-El filtro está en la escritura a Odoo, no en la ingesta. Al reactivar, el
-stock entra con el siguiente fichero del proveedor (el marcapáginas del
-sync avanzó durante la pausa, así que las filas viejas no se reprocesan).
+El filtro está en la escritura a Odoo, no en la ingesta.
+
+**Reactivar re-empuja obligatoriamente.** La ingesta solo mueve
+`actualizado_en` cuando el stock **cambia** (medido 2026-07-30: AKAL 1 fila
+de 3.808 en un día, DISBOOK 11 de 8.013). Como el marcapáginas del sync
+avanzó durante la pausa, esperar al siguiente fichero dejaría a 0 para
+siempre todo lo que no cambie de cantidad. Por eso `reactivar()` marca
+`actualizado_en = NOW()` en los libros del proveedor que existen en Odoo
+(mismo efecto que el botón "Empujar" / `POST /api/v1/proveedores/empujar-ahora`).
 
 ## 3. Responsabilidades del scraper relativas al sync
 

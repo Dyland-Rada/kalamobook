@@ -407,10 +407,16 @@ async def pausar(proveedor_email: str, dry_run: bool = True,
     return job
 
 
-def reactivar(proveedor_email: str) -> dict:
+def reactivar(proveedor_email: str, empujar: bool = True) -> dict:
     """
-    Quita la pausa. No re-empuja stock: entra solo con el proximo archivo
-    del proveedor (CEGALD o manual).
+    Quita la pausa y deja su stock listo para volver a Odoo.
+
+    empujar=True (default) marca sus libros para re-empuje. Es necesario:
+    la ingesta solo mueve actualizado_en cuando el stock CAMBIA (medido
+    2026-07-30: AKAL movio 1 fila de 3.808 en un dia), asi que esperar al
+    proximo fichero dejaria a 0 para siempre todo lo que no cambie de
+    cantidad — justo el caso de un proveedor que vuelve de vacaciones con
+    el mismo stock, o de un print-on-demand con cantidad fija.
     """
     ensure_schema()
     m = _mapping(proveedor_email)
@@ -433,12 +439,18 @@ def reactivar(proveedor_email: str) -> dict:
     finally:
         conn.close()
     out = {"status": "ok", "proveedor": proveedor_email,
-           "warehouse": m["warehouse_code"],
-           "nota": "El stock vuelve cuando entre el proximo archivo del "
-                   "proveedor; no se re-empuja lo viejo."}
+           "warehouse": m["warehouse_code"], "marcados": 0}
+    if empujar:
+        res = forzar_resync(proveedor_email)
+        out["marcados"] = res.get("marcados", 0)
+        if res.get("status") == "error":
+            out["aviso"] = f"Reactivado, pero el re-empuje fallo: {res.get('message')}"
+    out["nota"] = (f"{out['marcados']:,} libros marcados; el sync los sube en "
+                   f"su proxima pasada (cron 1h).") if empujar else \
+                  "Sin re-empuje: el stock solo volvera si cambia de cantidad."
     _audit("reactivacion",
-           f"Reactivado {m['nombre']} ({m['warehouse_code']}). El stock "
-           f"entrara con su proximo archivo.", out)
+           f"Reactivado {m['nombre']} ({m['warehouse_code']}): "
+           f"{out['marcados']:,} libros marcados para re-empuje.", out)
     return out
 
 

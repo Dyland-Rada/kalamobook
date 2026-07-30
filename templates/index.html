@@ -2271,8 +2271,10 @@
                 <p style="color:#8b93a7; font-size:.8rem; margin-top:6px;">
                     <strong>Pausar</strong> (ej. cierran en verano): deja de sincronizarse y su stock
                     en Odoo se pone a <strong>0</strong>, solo en SU almacén — los demás proveedores
-                    no se tocan. <strong>Reactivar</strong>: se quita la pausa y el stock vuelve
-                    cuando entre su próximo archivo. Siempre se muestra primero cuántos libros
+                    no se tocan. <strong>Reactivar</strong>: se quita la pausa y se marcan sus
+                    libros para que el sync vuelva a subir su stock en la próxima pasada — no
+                    basta con esperar su fichero, porque la ingesta solo mueve los libros cuya
+                    cantidad <em>cambia</em>. Antes de pausar siempre se muestra cuántos libros
                     se apagarían.
                 </p>
                 <div id="prov-job" style="display:none; margin:10px 0; padding:10px; border-radius:8px;
@@ -5366,15 +5368,16 @@
         }
 
         async function provReactivar(email, nombre) {
-            if (!confirm(`Reactivar ${nombre}.\n\nVuelve a sincronizarse. El stock NO se re-empuja ahora: ` +
-                         `entra cuando llegue su próximo archivo de stock.`)) return;
+            if (!confirm(`Reactivar ${nombre}.\n\nVuelve a sincronizarse y se marcan sus libros para ` +
+                         `re-empuje: el sync sube su stock en la próxima pasada (cron 1h).`)) return;
             const r = await fetch(`/api/v1/proveedores/reactivar?email=${encodeURIComponent(email)}`,
                                   { method: 'POST' });
             const d = await r.json();
             const box = document.getElementById('prov-job');
             box.style.display = 'block';
             box.innerHTML = d.status === 'ok'
-                ? `<span style="color:#4ade80">${nombre} reactivado.</span> <span style="color:#8b93a7">${d.nota}</span>`
+                ? `<span style="color:#4ade80">${nombre} reactivado — ${Number(d.marcados||0).toLocaleString()} libros marcados.</span>
+                   <span style="color:#8b93a7">${d.nota || ''} ${d.aviso || ''}</span>`
                 : `<span style="color:#f87171">${d.message || 'Error'}</span>`;
             loadProveedores();
         }
