@@ -51,6 +51,33 @@ def web_price(pvp) -> float | None:
     return round(p + supplement(p), 2)
 
 
+async def reactivar_variantes(odoo, template_ids: list[int]) -> int:
+    """
+    Desarchiva las variantes de las plantillas que acabamos de reactivar.
+
+    Odoo archiva las variantes en cascada al archivar la plantilla, pero al
+    desarchivarla NO las devuelve: queda plantilla activa con variante
+    archivada. Ese producto no se puede vender ni admite stock.quant
+    ("product.product no encontrado" en el sync). Medido 2026-07-30:
+    22.074 productos en ese estado tras varios ciclos de la regla API-15.
+    """
+    reactivadas = 0
+    for i in range(0, len(template_ids), 500):
+        chunk = template_ids[i:i + 500]
+        try:
+            rows = await odoo.search_read(
+                "product.product",
+                [["product_tmpl_id", "in", chunk], ["active", "=", False]],
+                ["id"])
+            ids = [r["id"] for r in rows]
+            if ids:
+                await odoo.write("product.product", ids, {"active": True})
+                reactivadas += len(ids)
+        except Exception as e:
+            print(f"[Pricing] reactivar_variantes chunk@{i}: {e}")
+    return reactivadas
+
+
 def _load_targets(limit=None):
     """Lee mirror: (odoo_id, pvp_base, list_price)."""
     conn = db.get_connection(); cur = conn.cursor()
@@ -105,6 +132,7 @@ async def run_price_update(dry_run: bool = True, limit: int | None = None) -> di
         async with OdooClient() as odoo:
             # 1) actualizar precios (una write por valor de precio)
             job["stage"] = "actualizando precios"
+            reactivados: list[int] = []
             for wp, ids in price_updates.items():
                 for i in range(0, len(ids), 500):
                     chunk = ids[i:i + 500]
@@ -113,8 +141,13 @@ async def run_price_update(dry_run: bool = True, limit: int | None = None) -> di
                                          {"list_price": wp, "active": True})
                         job["precio_actualizado"] += len(chunk)
                         job["calls"] += 1
+                        reactivados.extend(chunk)
                     except Exception as e:
                         job["errors"].append(f"precio {wp}: {str(e)[:100]}")
+            # Desarchivar variantes de lo reactivado (Odoo no lo hace solo)
+            job["stage"] = "reactivando variantes"
+            job["variantes_reactivadas"] = await reactivar_variantes(
+                odoo, reactivados)
             # 2) apagar (active=False) en lotes
             job["stage"] = "apagando"
             for i in range(0, len(to_deactivate), 500):

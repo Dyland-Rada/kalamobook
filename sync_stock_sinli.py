@@ -664,16 +664,30 @@ async def _run_one_batch(odoo: OdooClient,
                 job["errors"].append(err)
 
     # ── 8. PRECIO WEB: write por valor único (pvp_base + suplemento) ──
+    reactivados: list[int] = []
     for price, tmpl_ids in prices_by_value.items():
         for chunk in _chunks(tmpl_ids, WRITE_CHUNK):
             try:
                 await odoo.write("product.template", chunk,
                                  {"list_price": price, "active": True})
                 job["price_written"] += len(chunk)
+                reactivados.extend(chunk)
             except Exception as e:
                 job["err_price"] += len(chunk)
                 err = f"price={price}: {type(e).__name__}: {str(e)[:150]}"
                 job["errors"].append(err)
+
+    # ── 8a. Desarchivar variantes de lo que acabamos de reactivar ─────
+    # Odoo archiva variantes en cascada pero no las devuelve al desarchivar
+    # la plantilla: quedaria plantilla activa + variante archivada, que no
+    # admite stock ("product.product no encontrado").
+    if reactivados:
+        try:
+            job["variantes_reactivadas"] = (
+                job.get("variantes_reactivadas", 0)
+                + await pricing_engine.reactivar_variantes(odoo, reactivados))
+        except Exception as e:
+            job["errors"].append(f"reactivar variantes: {str(e)[:120]}")
 
     # ── 8b. APAGAR los de PVP < 2,90 (regla API-15) ─────────────────
     for chunk in _chunks(to_deactivate, WRITE_CHUNK):

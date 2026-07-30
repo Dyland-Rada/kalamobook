@@ -553,57 +553,78 @@ def _odoo_ids_de(proveedor_email: str) -> list[int]:
         conn.close()
 
 
-async def reparar_track_inventory(proveedor_email: str | None = None,
-                                   dry_run: bool = True) -> dict:
+async def _buscar(odoo, dominio, modelo="product.template",
+                  ids_scope: list[int] | None = None,
+                  campo_scope: str = "id") -> list[int]:
+    """IDs que cumplen el dominio, paginado o acotado a un scope de ids."""
+    out: list[int] = []
+    if ids_scope is not None:
+        for chunk in _chunks(ids_scope, 400):
+            rows = await odoo.search_read(
+                modelo, dominio + [[campo_scope, "in", chunk]], ["id"])
+            out.extend(r["id"] for r in rows)
+        return out
+    offset = 0
+    while True:
+        page = await odoo.search_read(modelo, dominio, ["id"],
+                                      offset=offset, limit=PAGE, order="id")
+        out.extend(r["id"] for r in page)
+        if len(page) < PAGE:
+            break
+        offset += PAGE
+    return out
+
+
+async def reparar_catalogo(proveedor_email: str | None = None,
+                           dry_run: bool = True) -> dict:
     """
-    Enciende "Track Inventory" (is_storable) en los libros que lo tienen
-    apagado.
+    Arregla los dos estados que impiden que un libro pueda llevar stock:
 
-    Odoo 19 rechaza cualquier stock.quant de un producto sin is_storable
-    ("No se pueden crear cuantos para consumibles o servicios"), asi que su
-    stock no se puede subir NUNCA. Los libros creados por nuestro pipeline
-    antes de 2026-07-30 salieron asi (type=consu sin is_storable).
+    1. **Sin Track Inventory** (`is_storable = False`). Odoo 19 rechaza
+       cualquier stock.quant de esos productos ("No se pueden crear cuantos
+       para consumibles o servicios"). Los creados por nuestro pipeline
+       antes de 2026-07-30 salieron asi (type=consu sin is_storable).
+    2. **Variante archivada con plantilla activa.** Odoo archiva las
+       variantes en cascada al apagar la plantilla (regla API-15) pero no
+       las devuelve al reactivarla. El sync los ve como "product.product no
+       encontrado" y nunca les escribe stock.
 
-    Sin proveedor_email repara todo el catalogo; con el, solo los libros de
-    ese proveedor. Incluye archivados (los apagados por la regla de precios
-    volveran a estar bien cuando se reactiven).
+    Sin proveedor_email repara todo el catalogo; con el, solo sus libros.
     """
     global _job
     _job = {
-        "status": "running", "accion": "reparar_track_inventory",
+        "status": "running", "accion": "reparar_catalogo",
         "proveedor": proveedor_email or "TODOS", "dry_run": dry_run,
         "started_at": datetime.now().isoformat(), "stage": "buscando",
-        "candidatos": 0, "reparados": 0, "err_apagar": 0,
-        "con_stock": 0, "apagados": 0, "errors": [], "elapsed_s": 0,
+        "sin_track_inventory": 0, "variantes_archivadas": 0,
+        "candidatos": 0, "reparados": 0, "variantes_reactivadas": 0,
+        "err_apagar": 0, "errors": [], "elapsed_s": 0,
     }
     job = _job
     t0 = time.monotonic()
-    dominio = [["is_storable", "=", False], ["barcode", "!=", False],
-               ["active", "in", [True, False]]]
     try:
+        scope = _odoo_ids_de(proveedor_email) if proveedor_email else None
         async with OdooClient() as odoo:
-            pendientes: list[int] = []
-            if proveedor_email:
-                ids = _odoo_ids_de(proveedor_email)
-                for chunk in _chunks(ids, 400):
-                    rows = await odoo.search_read(
-                        "product.template", dominio + [["id", "in", chunk]], ["id"])
-                    pendientes.extend(r["id"] for r in rows)
-            else:
-                offset = 0
-                while True:
-                    page = await odoo.search_read(
-                        "product.template", dominio, ["id"],
-                        offset=offset, limit=PAGE, order="id")
-                    pendientes.extend(r["id"] for r in page)
-                    if len(page) < PAGE:
-                        break
-                    offset += PAGE
-            job["candidatos"] = len(pendientes)
+            # 1. Sin Track Inventory
+            sin_track = await _buscar(
+                odoo,
+                [["is_storable", "=", False], ["barcode", "!=", False],
+                 ["active", "in", [True, False]]],
+                ids_scope=scope)
+            job["sin_track_inventory"] = len(sin_track)
+
+            # 2. Variantes archivadas con plantilla activa
+            variantes = await _buscar(
+                odoo,
+                [["active", "=", False], ["product_tmpl_id.active", "=", True]],
+                modelo="product.product", ids_scope=scope,
+                campo_scope="product_tmpl_id")
+            job["variantes_archivadas"] = len(variantes)
+            job["candidatos"] = len(sin_track) + len(variantes)
 
             if not dry_run:
-                job["stage"] = "reparando"
-                for chunk in _chunks(pendientes, CHUNK):
+                job["stage"] = "encendiendo Track Inventory"
+                for chunk in _chunks(sin_track, CHUNK):
                     if job["status"] != "running":
                         break
                     try:
@@ -613,7 +634,21 @@ async def reparar_track_inventory(proveedor_email: str | None = None,
                     except Exception as e:
                         job["err_apagar"] += len(chunk)
                         job["errors"].append(
-                            f"chunk {chunk[0]}..{chunk[-1]}: "
+                            f"is_storable {chunk[0]}..{chunk[-1]}: "
+                            f"{type(e).__name__}: {str(e)[:120]}")
+
+                job["stage"] = "desarchivando variantes"
+                for chunk in _chunks(variantes, CHUNK):
+                    if job["status"] != "running":
+                        break
+                    try:
+                        await odoo.write("product.product", chunk,
+                                         {"active": True})
+                        job["variantes_reactivadas"] += len(chunk)
+                    except Exception as e:
+                        job["err_apagar"] += len(chunk)
+                        job["errors"].append(
+                            f"variantes {chunk[0]}..{chunk[-1]}: "
                             f"{type(e).__name__}: {str(e)[:120]}")
             job["stage"] = "done"
         if job["status"] == "running":
@@ -621,13 +656,16 @@ async def reparar_track_inventory(proveedor_email: str | None = None,
     except Exception as e:
         job["status"] = "error"
         job["errors"].append(f"{type(e).__name__}: {e}"[:300])
-        print(f"[ProvAdmin] reparar_track_inventory FAIL: {e!r}")
+        print(f"[ProvAdmin] reparar_catalogo FAIL: {e!r}")
     finally:
         job["elapsed_s"] = round(time.monotonic() - t0, 2)
-        _audit("reparar_track_inventory",
-               f"Track Inventory {job['proveedor']}"
-               f"{' [DRY RUN]' if dry_run else ''}: {job['candidatos']:,} "
-               f"libros sin stock posible, {job['reparados']:,} reparados "
+        _audit("reparar_catalogo",
+               f"Reparar catalogo {job['proveedor']}"
+               f"{' [DRY RUN]' if dry_run else ''}: "
+               f"{job['sin_track_inventory']:,} sin Track Inventory "
+               f"({job['reparados']:,} arreglados), "
+               f"{job['variantes_archivadas']:,} variantes archivadas "
+               f"({job['variantes_reactivadas']:,} desarchivadas) "
                f"({job['elapsed_s']}s)",
                job, error=(job["status"] == "error" or job["err_apagar"] > 0))
     return job

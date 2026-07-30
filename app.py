@@ -1914,16 +1914,16 @@ async def proveedores_empujar_ahora(email: str = Query(...)):
     return JSONResponse(status_code=code, content=res)
 
 
-@app.post("/api/v1/proveedores/reparar-track-inventory", tags=["Proveedores"])
-async def proveedores_reparar_track_inventory(
+@app.post("/api/v1/proveedores/reparar-catalogo", tags=["Proveedores"])
+async def proveedores_reparar_catalogo(
     email: str | None = Query(None, description="proveedor_email; vacio = todo el catalogo"),
     dry_run: bool = Query(True, description="True = solo contar"),
 ):
     """
-    Enciende "Track Inventory" (is_storable) en los libros que lo tienen
-    apagado. Odoo 19 rechaza el stock.quant de esos productos, asi que su
-    stock no puede subirse nunca. Afecta a los creados por el pipeline
-    antes del 2026-07-30.
+    Arregla los dos estados que impiden que un libro lleve stock:
+    (1) sin Track Inventory (is_storable=False) — Odoo rechaza sus quants;
+    (2) variante archivada con plantilla activa — el sync no encuentra el
+    product.product. Empezar siempre con dry_run=true.
     """
     import threading
     import sys
@@ -1936,7 +1936,7 @@ async def proveedores_reparar_track_inventory(
 
     if dry_run:
         return JSONResponse(content=await
-            proveedores_admin.reparar_track_inventory(email, dry_run=True))
+            proveedores_admin.reparar_catalogo(email, dry_run=True))
 
     def _run_in_thread():
         if sys.platform == 'win32':
@@ -1945,7 +1945,7 @@ async def proveedores_reparar_track_inventory(
         asyncio.set_event_loop(new_loop)
         try:
             new_loop.run_until_complete(
-                proveedores_admin.reparar_track_inventory(email, dry_run=False))
+                proveedores_admin.reparar_catalogo(email, dry_run=False))
         finally:
             new_loop.close()
 
