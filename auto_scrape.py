@@ -45,11 +45,33 @@ def get_status() -> dict:
 
 
 # ── 1. Detectar nuevos ────────────────────────────────────────────────
+def _proveedores_excluidos() -> set[str]:
+    """
+    Proveedores cuyos libros nuevos NO se crean: pausados o marcados con
+    crear_nuevos=false. Sin esto, PODIPRINT (100.000 titulos
+    print-on-demand, casi todos extranjeros y sin ficha en CDL) meteria
+    99.608 productos sin titulo ni portada en la primera corrida.
+    """
+    try:
+        import proveedores_admin
+        return proveedores_admin.pausados() | proveedores_admin.sin_creacion()
+    except Exception as e:
+        print(f"[AutoScrape] no pude leer proveedores excluidos: {e}")
+        return set()
+
+
 def _detect_new(limit=None) -> list[dict]:
     """ISBNs con stock, no en Odoo. Junta precio, proveedores y metadata
-    de books si ya la tenemos."""
+    de books si ya la tenemos. Ignora los proveedores excluidos: un libro
+    solo entra si algun proveedor NO excluido lo tiene con stock."""
+    excluidos = _proveedores_excluidos()
     conn = db.get_connection(); cur = conn.cursor()
-    q = """
+    filtro, params = "", []
+    if excluidos:
+        marks = ",".join(["%s"] * len(excluidos))
+        filtro = f" AND lp.proveedor_email NOT IN ({marks})"
+        params = list(excluidos)
+    q = f"""
         SELECT lp.isbn,
                MAX(lp.precio_con_iva) AS precio,
                string_agg(DISTINCT p.nombre, ', ') AS proveedores,
@@ -61,15 +83,18 @@ def _detect_new(limit=None) -> list[dict]:
         LEFT JOIN odoo_books_mirror m ON m.barcode = lp.isbn
         LEFT JOIN proveedores p ON p.id = lp.proveedor_id
         LEFT JOIN books b ON b.isbn = lp.isbn
-        WHERE lp.stock_disponible > 0 AND m.barcode IS NULL
+        WHERE lp.stock_disponible > 0 AND m.barcode IS NULL{filtro}
         GROUP BY lp.isbn
     """
     if limit:
         q += f" LIMIT {int(limit)}"
-    cur.execute(q)
+    cur.execute(q, params)
     cols = [d[0] for d in cur.description]
     rows = [dict(zip(cols, r)) for r in cur.fetchall()]
     conn.close()
+    if excluidos:
+        print(f"[AutoScrape] {len(rows):,} nuevos "
+              f"(excluidos {len(excluidos)} proveedores: {', '.join(sorted(excluidos))})")
     return rows
 
 
@@ -349,3 +374,78 @@ async def run_auto_scrape_cycle(max_new: int | None = None,
         auto_scrape_job.update(status="error", error=f"{type(e).__name__}: {e!r}"[:300],
                                elapsed_s=round(time.monotonic() - t0, 1))
         return auto_scrape_job
+
+
+# ── 5. Cron diario ────────────────────────────────────────────────────
+# Sin esto el ciclo solo corre si alguien llama al endpoint a mano: el
+# modulo se escribio "para correr 1x/dia (n8n)" pero nadie lo llamaba —
+# 0 corridas registradas desde que existe (detectado 2026-07-30).
+CRON_INTERVAL_S = int(os.environ.get("AUTO_SCRAPE_CRON_INTERVAL_S", str(24 * 3600)))
+
+_cron_task = None
+_cron_state: dict = {
+    "enabled": False,
+    "interval_s": CRON_INTERVAL_S,
+    "last_run_at": None,
+    "last_run_status": None,
+    "last_summary": None,
+    "next_run_at": None,
+    "runs_total": 0,
+    "errors": [],
+}
+
+
+def get_cron_status() -> dict:
+    out = dict(_cron_state)
+    out["errors"] = out.get("errors", [])[-10:]
+    out["task_running"] = bool(_cron_task and not _cron_task.done())
+    return out
+
+
+async def _cron_loop():
+    from datetime import timedelta
+    print(f"[AutoScrapeCron] Arrancado, intervalo {_cron_state['interval_s']}s")
+    while _cron_state["enabled"]:
+        try:
+            res = await run_auto_scrape_cycle()
+            _cron_state["last_run_at"] = datetime.now().isoformat()
+            _cron_state["last_run_status"] = res.get("status")
+            _cron_state["last_summary"] = res.get("resumen")
+            _cron_state["runs_total"] += 1
+            print(f"[AutoScrapeCron] Run #{_cron_state['runs_total']}: "
+                  f"{res.get('status')} {res.get('resumen')}")
+        except Exception as e:
+            _cron_state["last_run_status"] = "error"
+            _cron_state["errors"].append(f"{type(e).__name__}: {e!r}"[:300])
+            print(f"[AutoScrapeCron] Fatal: {e!r}")
+
+        _cron_state["next_run_at"] = (
+            datetime.now() + timedelta(seconds=_cron_state["interval_s"])
+        ).isoformat()
+        for _ in range(_cron_state["interval_s"]):
+            if not _cron_state["enabled"]:
+                break
+            await asyncio.sleep(1)
+    print("[AutoScrapeCron] Detenido")
+    _cron_state["next_run_at"] = None
+
+
+def start_cron() -> bool:
+    global _cron_task
+    if _cron_task and not _cron_task.done():
+        return False
+    _cron_state["enabled"] = True
+    _cron_state["errors"] = []
+    try:
+        _cron_task = asyncio.create_task(_cron_loop())
+        return True
+    except RuntimeError:
+        _cron_state["enabled"] = False
+        return False
+
+
+def stop_cron() -> bool:
+    if not _cron_state["enabled"]:
+        return False
+    _cron_state["enabled"] = False
+    return True

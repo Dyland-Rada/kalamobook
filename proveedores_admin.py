@@ -64,9 +64,15 @@ _DDL = f"""
         pausado_en TIMESTAMP,
         pausado_motivo TEXT,
         reactivado_en TIMESTAMP,
-        actualizado_en TIMESTAMP
+        actualizado_en TIMESTAMP,
+        crear_nuevos BOOLEAN NOT NULL DEFAULT TRUE
     )
 """
+# La tabla ya existe en produccion desde el 30/07 sin crear_nuevos.
+_DDL_ALTER = (
+    f"ALTER TABLE {TABLA_PAUSA} "
+    "ADD COLUMN IF NOT EXISTS crear_nuevos BOOLEAN NOT NULL DEFAULT TRUE",
+)
 
 _schema_ok = False
 
@@ -80,6 +86,9 @@ def ensure_schema():
     cur = conn.cursor()
     try:
         cur.execute(_DDL)
+        if db.IS_POSTGRES:
+            for sql in _DDL_ALTER:
+                cur.execute(sql)
         conn.commit()
         _schema_ok = True
     except Exception as e:
@@ -126,6 +135,58 @@ def esta_pausado(proveedor_email: str) -> bool:
     return proveedor_email in pausados()
 
 
+def sin_creacion() -> set[str]:
+    """
+    Proveedores marcados como "no crear sus libros nuevos en Odoo". El
+    auto-scrape los ignora al detectar novedades.
+
+    Caso PODIPRINT: manda 100.000 titulos print-on-demand, casi todos
+    extranjeros (solo 332 con prefijo 97884). Casa del Libro no los tiene,
+    asi que crearlos daria 99.608 fichas sin titulo ni portada. Decision
+    del cliente 2026-07-30: no crearlos.
+    """
+    ensure_schema()
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        db.execute_query(cur, f"""
+            SELECT proveedor_email FROM {TABLA_PAUSA} WHERE crear_nuevos = false
+        """)
+        return {r[0] for r in cur.fetchall() if r[0]}
+    except Exception:
+        return set()
+    finally:
+        conn.close()
+
+
+def set_crear_nuevos(proveedor_email: str, valor: bool) -> dict:
+    """Enciende/apaga la creacion automatica de libros nuevos del proveedor."""
+    ensure_schema()
+    conn = db.get_connection()
+    cur = conn.cursor()
+    ahora = "NOW()" if db.IS_POSTGRES else "CURRENT_TIMESTAMP"
+    try:
+        db.execute_query(cur, f"""
+            INSERT INTO {TABLA_PAUSA}
+                (proveedor_email, activo, crear_nuevos, actualizado_en)
+            VALUES (?, true, ?, {ahora})
+            ON CONFLICT (proveedor_email) DO UPDATE
+            SET crear_nuevos = EXCLUDED.crear_nuevos, actualizado_en = {ahora}
+        """, (proveedor_email, valor))
+        conn.commit()
+    except Exception as e:
+        try: conn.rollback()
+        except Exception: pass
+        return {"status": "error", "message": f"{type(e).__name__}: {e}"[:200]}
+    finally:
+        conn.close()
+    out = {"status": "ok", "proveedor": proveedor_email, "crear_nuevos": valor}
+    _audit("crear_nuevos",
+           f"{proveedor_email}: creacion automatica de libros nuevos "
+           f"{'ACTIVADA' if valor else 'DESACTIVADA'}", out)
+    return out
+
+
 def _mapping(proveedor_email: str) -> dict | None:
     ensure_schema()
     conn = db.get_connection()
@@ -163,7 +224,7 @@ def listar(con_stats: bool = True) -> list[dict]:
         db.execute_query(cur, f"""
             SELECT m.proveedor_email, m.warehouse_code, m.nombre_proveedor,
                    COALESCE(p.activo, true), p.pausado_en, p.pausado_motivo,
-                   p.reactivado_en
+                   p.reactivado_en, COALESCE(p.crear_nuevos, true)
             FROM proveedor_almacen_odoo m
             LEFT JOIN {TABLA_PAUSA} p ON p.proveedor_email = m.proveedor_email
             ORDER BY m.nombre_proveedor NULLS LAST, m.proveedor_email
@@ -176,6 +237,7 @@ def listar(con_stats: bool = True) -> list[dict]:
             "pausado_en": str(r[4]) if r[4] else None,
             "pausado_motivo": r[5],
             "reactivado_en": str(r[6]) if r[6] else None,
+            "crear_nuevos": bool(r[7]),
         } for r in cur.fetchall()]
 
         if con_stats and out:

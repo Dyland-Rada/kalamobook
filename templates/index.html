@@ -5269,10 +5269,16 @@
                 const r = await fetch('/api/v1/proveedores');
                 const d = await r.json();
                 const filas = d.proveedores.map(p => {
-                    const badge = p.activo
+                    const crear = p.crear_nuevos !== false;
+                    const badge = (p.activo
                         ? '<span style="color:#4ade80; font-weight:600;">ACTIVO</span>'
                         : `<span style="color:#f87171; font-weight:600;">PAUSADO</span>
-                           <div style="color:#8b93a7; font-size:.72rem;">${p.pausado_en ? p.pausado_en.slice(0,16) : ''}${p.pausado_motivo ? ' · ' + p.pausado_motivo : ''}</div>`;
+                           <div style="color:#8b93a7; font-size:.72rem;">${p.pausado_en ? p.pausado_en.slice(0,16) : ''}${p.pausado_motivo ? ' · ' + p.pausado_motivo : ''}</div>`)
+                        + `<div style="font-size:.7rem; margin-top:3px;">
+                             <a href="#" onclick="provCrearNuevos('${p.proveedor_email}',${!crear});return false;"
+                                title="Si está OFF, el ciclo diario no crea sus libros nuevos en Odoo"
+                                style="color:${crear ? '#4ade80' : '#fbbf24'}; text-decoration:underline;">
+                                crear nuevos: ${crear ? 'ON' : 'OFF'}</a></div>`;
                     const nom = (p.nombre||'').replace(/'/g,'');
                     const accion = (p.activo
                         ? `<button class="btn btn-danger" style="padding:4px 10px; font-size:.78rem;"
@@ -5448,6 +5454,21 @@
                 ? `<span style="color:#4ade80">${nombre}: ${Number(d.marcados).toLocaleString()} libros marcados.</span>
                    <span style="color:#8b93a7">${d.nota}</span>`
                 : `<span style="color:#f87171">${d.message || 'Error'}</span>`;
+        }
+
+        async function provCrearNuevos(email, valor) {
+            if (!confirm(valor
+                ? `Activar la creación automática de libros nuevos de este proveedor.\n\nEl ciclo diario creará en Odoo sus títulos con stock que aún no existan.`
+                : `Desactivar la creación automática de libros nuevos de este proveedor.\n\nSus títulos seguirán llegando a la BD y su stock se sincroniza igual, pero el ciclo diario NO los creará en Odoo.`)) return;
+            const r = await fetch(`/api/v1/proveedores/crear-nuevos?email=${encodeURIComponent(email)}&valor=${valor}`,
+                                  { method: 'POST' });
+            const d = await r.json();
+            const box = document.getElementById('prov-job');
+            box.style.display = 'block';
+            box.innerHTML = d.status === 'ok'
+                ? `<span style="color:#4ade80">Creación de nuevos ${valor ? 'ACTIVADA' : 'DESACTIVADA'} para ${email}.</span>`
+                : `<span style="color:#f87171">${d.message || 'Error'}</span>`;
+            loadProveedores();
         }
 
         async function provConciliar() {

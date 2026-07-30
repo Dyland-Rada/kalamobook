@@ -212,6 +212,18 @@ async def startup():
         except Exception as e:
             print(f"[Startup] SINLI sync cron FALLO: {type(e).__name__}: {e}")
 
+    # Auto-arrancar el ciclo diario de libros nuevos (auto-scrape)
+    if os.environ.get("AUTO_SCRAPE_CRON_ENABLED", "").lower() in ("1", "true", "yes"):
+        try:
+            import auto_scrape
+            if auto_scrape.start_cron():
+                print(f"[Startup] Auto-scrape cron AUTO-ARRANCADO "
+                      f"(intervalo {auto_scrape.CRON_INTERVAL_S}s)")
+            else:
+                print("[Startup] Auto-scrape cron NO arrancado (ya activo)")
+        except Exception as e:
+            print(f"[Startup] Auto-scrape cron FALLO: {type(e).__name__}: {e}")
+
 
 # ─── Web Interface (HTML) ────────────────────────────────────────────
 
@@ -1310,6 +1322,36 @@ async def auto_scrape_status():
     return JSONResponse(content=auto_scrape.get_status())
 
 
+@app.post("/api/v1/auto-scrape/cron/start", tags=["Auto-Scrape"])
+async def auto_scrape_cron_start():
+    """
+    Activa el ciclo diario de libros nuevos (detectar -> scrapear CDL ->
+    crear en Odoo -> Excel -> webhook a Server A para el correo).
+    Para auto-arrancar tras reboot: AUTO_SCRAPE_CRON_ENABLED=1.
+    """
+    import auto_scrape
+    if auto_scrape.start_cron():
+        return JSONResponse(content={"status": "started",
+                                      "interval_s": auto_scrape.CRON_INTERVAL_S})
+    return JSONResponse(status_code=400, content={
+        "status": "error", "message": "Cron ya corriendo o sin event loop."})
+
+
+@app.post("/api/v1/auto-scrape/cron/stop", tags=["Auto-Scrape"])
+async def auto_scrape_cron_stop():
+    import auto_scrape
+    if auto_scrape.stop_cron():
+        return JSONResponse(content={"status": "stopping"})
+    return JSONResponse(status_code=400, content={
+        "status": "error", "message": "Cron no estaba corriendo."})
+
+
+@app.get("/api/v1/auto-scrape/cron/status", tags=["Auto-Scrape"])
+async def auto_scrape_cron_status():
+    import auto_scrape
+    return JSONResponse(content=auto_scrape.get_cron_status())
+
+
 @app.get("/api/v1/reportes/{report_id}", tags=["Auto-Scrape"])
 async def get_reporte(report_id: str):
     """Sirve el Excel de un reporte de auto-scrape. Protegido por el Basic
@@ -1991,6 +2033,22 @@ async def proveedores_conciliar(
 
     threading.Thread(target=_run_in_thread, daemon=True).start()
     return JSONResponse(content={"status": "started", "proveedor": email or "TODOS"})
+
+
+@app.post("/api/v1/proveedores/crear-nuevos", tags=["Proveedores"])
+async def proveedores_crear_nuevos(
+    email: str = Query(...),
+    valor: bool = Query(..., description="True = crear sus libros nuevos en Odoo"),
+):
+    """
+    Enciende/apaga la creacion automatica de los libros nuevos de un
+    proveedor. En false, el ciclo diario ignora sus novedades (caso
+    PODIPRINT: 100.000 titulos sin ficha en Casa del Libro).
+    """
+    import proveedores_admin
+    res = proveedores_admin.set_crear_nuevos(email, valor)
+    code = 400 if res.get("status") == "error" else 200
+    return JSONResponse(status_code=code, content=res)
 
 
 @app.get("/api/v1/proveedores/status", tags=["Proveedores"])
