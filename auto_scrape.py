@@ -33,6 +33,8 @@ WEBHOOK_TOKEN = os.environ.get("SCRAPE_WEBHOOK_TOKEN", "")
 PUBLIC_BASE = os.environ.get("PUBLIC_BASE_URL", "https://kalamob.reinventaconia.com")
 PROXIES = [p.strip() for p in os.environ.get("PROXY_POOL", "").split(",") if p.strip()]
 CONCURRENCY = int(os.environ.get("AUTO_SCRAPE_CONCURRENCY", "12"))
+WEBHOOK_TIMEOUT_S = int(os.environ.get("SCRAPE_WEBHOOK_TIMEOUT_S", "180"))
+WEBHOOK_RETRIES = int(os.environ.get("SCRAPE_WEBHOOK_RETRIES", "3"))
 
 _BOOK_COLS = ["title", "author", "editorial", "image_url", "description",
               "weight", "height", "width"]
@@ -71,18 +73,27 @@ def _detect_new(limit=None) -> list[dict]:
         marks = ",".join(["%s"] * len(excluidos))
         filtro = f" AND lp.proveedor_email NOT IN ({marks})"
         params = list(excluidos)
+    # La ficha sale de books (lo scrapeado en CDL) y, si ahi no hay, del
+    # catalogo que mando el propio distribuidor (distributor_books). Sin
+    # esa segunda fuente se creaban libros con el ISBN por nombre teniendo
+    # el titulo en casa: 98.216 de PODIPRINT y 12 de la corrida del 30/07.
     q = f"""
         SELECT lp.isbn,
                MAX(lp.precio_con_iva) AS precio,
                string_agg(DISTINCT p.nombre, ', ') AS proveedores,
-               MAX(b.title) AS title, MAX(b.author) AS author,
-               MAX(b.editorial) AS editorial, MAX(b.image_url) AS image_url,
-               MAX(b.description) AS description, MAX(b.weight) AS weight,
-               MAX(b.height) AS height, MAX(b.width) AS width
+               COALESCE(MAX(NULLIF(b.title, '')), MAX(NULLIF(d.title, ''))) AS title,
+               COALESCE(MAX(NULLIF(b.author, '')), MAX(NULLIF(d.author, ''))) AS author,
+               COALESCE(MAX(NULLIF(b.editorial, '')), MAX(NULLIF(d.editorial, ''))) AS editorial,
+               COALESCE(MAX(NULLIF(b.image_url, '')), MAX(NULLIF(d.image_url, ''))) AS image_url,
+               COALESCE(MAX(NULLIF(b.description, '')), MAX(NULLIF(d.description, ''))) AS description,
+               COALESCE(MAX(b.weight), MAX(d.weight)) AS weight,
+               COALESCE(MAX(b.height), MAX(d.height)) AS height,
+               COALESCE(MAX(b.width), MAX(d.width)) AS width
         FROM libros_proveedor lp
         LEFT JOIN odoo_books_mirror m ON m.barcode = lp.isbn
         LEFT JOIN proveedores p ON p.id = lp.proveedor_id
         LEFT JOIN books b ON b.isbn = lp.isbn
+        LEFT JOIN distributor_books d ON d.isbn = lp.isbn
         WHERE lp.stock_disponible > 0 AND m.barcode IS NULL{filtro}
         GROUP BY lp.isbn
     """
@@ -273,14 +284,26 @@ def _send_webhook(summary: dict, archivo_url: str, muestra: list[str]) -> dict:
         "archivo_url": archivo_url,
         "no_scrapeados_muestra": muestra[:50],
     }).encode()
-    req = urllib.request.Request(
-        WEBHOOK_URL, data=payload, method="POST",
-        headers={"Content-Type": "application/json", "x-kalamo-token": WEBHOOK_TOKEN})
-    try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            return {"sent": True, "status": r.status}
-    except Exception as e:
-        return {"sent": False, "reason": str(e)[:150]}
+    # Server A valida el token, se DESCARGA el Excel por Basic auth y envia
+    # el correo antes de responder: con 30s se agotaba el tiempo y el
+    # reporte del 30/07 no llego ("The read operation timed out").
+    ultimo = None
+    for intento in range(WEBHOOK_RETRIES):
+        req = urllib.request.Request(
+            WEBHOOK_URL, data=payload, method="POST",
+            headers={"Content-Type": "application/json",
+                     "x-kalamo-token": WEBHOOK_TOKEN})
+        try:
+            with urllib.request.urlopen(req, timeout=WEBHOOK_TIMEOUT_S) as r:
+                return {"sent": True, "status": r.status,
+                        "intentos": intento + 1}
+        except Exception as e:
+            ultimo = str(e)[:150]
+            print(f"[AutoScrape] webhook intento {intento + 1}/{WEBHOOK_RETRIES} "
+                  f"fallo: {ultimo}")
+            if intento + 1 < WEBHOOK_RETRIES:
+                time.sleep(5)
+    return {"sent": False, "reason": ultimo, "intentos": WEBHOOK_RETRIES}
 
 
 def _sample_created(n: int) -> list[dict]:
