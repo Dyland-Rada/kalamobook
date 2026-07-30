@@ -2312,6 +2312,40 @@
                 <div id="prov-alta-result" style="margin-top:8px; font-size:.82rem;"></div>
             </div>
 
+            <!-- Ciclo diario de libros nuevos -->
+            <div class="card" style="border:2px solid rgba(46,204,113,0.4);">
+                <div class="card-title">
+                    <ion-icon name="sparkles-outline"></ion-icon> Libros nuevos — ciclo diario
+                    <span class="status-badge" id="as-badge" style="font-size:.7rem;">—</span>
+                    <button class="btn-edit" style="float:right;" onclick="asLoad()">
+                        <ion-icon name="refresh-outline"></ion-icon> Refrescar</button>
+                </div>
+                <p style="color:#8b93a7; font-size:.8rem; margin-top:6px;">
+                    Detecta los libros con stock que aún no están en Odoo, los busca en Casa del Libro,
+                    los crea y etiqueta, y manda el Excel a Server A para que envíe el correo.
+                    Los proveedores con <strong>crear nuevos: OFF</strong> quedan fuera.
+                    Para que arranque solo tras un reboot: <code>AUTO_SCRAPE_CRON_ENABLED=1</code>.
+                </p>
+                <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:8px;">
+                    <button class="btn btn-success" onclick="asCron(true)">▶ Activar ciclo diario</button>
+                    <button class="btn btn-danger" onclick="asCron(false)"><ion-icon name="stop-circle-outline"></ion-icon> Detener</button>
+                    <button class="btn btn-primary" style="background:#2ecc71;" onclick="asRun()">
+                        <ion-icon name="play-outline"></ion-icon> Ejecutar ahora</button>
+                    <span id="as-stage" style="color:#8b93a7; font-size:.85rem;"></span>
+                </div>
+                <div style="margin-top:10px; display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px;">
+                    <div class="stat-box"><div class="stat-number" style="color:#3498db" id="as-total">—</div>
+                        <div class="stat-label">Nuevos detectados</div></div>
+                    <div class="stat-box"><div class="stat-number" style="color:#2ecc71" id="as-scrap">—</div>
+                        <div class="stat-label">Con ficha (scrapeados)</div></div>
+                    <div class="stat-box"><div class="stat-number" style="color:#e67e22" id="as-nos">—</div>
+                        <div class="stat-label">Sin ficha (al correo)</div></div>
+                    <div class="stat-box"><div class="stat-number" style="color:#bbb; font-size:.85rem;" id="as-next">—</div>
+                        <div class="stat-label">Próxima corrida</div></div>
+                </div>
+                <div id="as-detail" style="margin-top:8px; font-size:.8rem; color:#8b93a7;"></div>
+            </div>
+
             <div class="card" style="border:2px solid rgba(52,152,219,0.5);">
                 <div class="card-title">
                     <ion-icon name="clipboard-outline"></ion-icon> Auditoría — qué se recibió y qué se actualizó
@@ -2498,7 +2532,7 @@
             if (tab === 'odoo') { odooPoll(); odooStartPolling(); isbnIndexPoll(); loadMirrorAndDistInitial(); startResumenAutoRefresh(); }
             if (tab === 'catalog') { catalogSearch(1); loadSuppliersDatalist(); }
             if (tab === 'manual') manualSub(manualTipo);
-            if (tab === 'audit') { auditLoadAll(); auditStartAutoRefresh(); }
+            if (tab === 'audit') { auditLoadAll(); auditStartAutoRefresh(); asLoad(); }
             else { auditStopAutoRefresh(); }
             if (tab !== 'odoo') {
                 odooStopPolling(); mirrorStopPolling(); distStopPolling();
@@ -5454,6 +5488,53 @@
                 ? `<span style="color:#4ade80">${nombre}: ${Number(d.marcados).toLocaleString()} libros marcados.</span>
                    <span style="color:#8b93a7">${d.nota}</span>`
                 : `<span style="color:#f87171">${d.message || 'Error'}</span>`;
+        }
+
+        // ═══ CICLO DIARIO DE LIBROS NUEVOS ═══
+        async function asLoad() {
+            try {
+                const [j, c] = await Promise.all([
+                    fetch('/api/v1/auto-scrape/status').then(r => r.json()),
+                    fetch('/api/v1/auto-scrape/cron/status').then(r => r.json()),
+                ]);
+                const badge = document.getElementById('as-badge');
+                const on = c.enabled && c.task_running;
+                badge.textContent = on ? 'CICLO ACTIVO' : (j.status === 'running' ? 'CORRIENDO' : 'PARADO');
+                badge.style.color = on ? '#4ade80' : '#f87171';
+                const res = j.resumen || c.last_summary || {};
+                document.getElementById('as-total').textContent = res.total?.toLocaleString() ?? '—';
+                document.getElementById('as-scrap').textContent = res.scrapeados?.toLocaleString() ?? '—';
+                document.getElementById('as-nos').textContent = res.no_scrapeados?.toLocaleString() ?? '—';
+                document.getElementById('as-next').textContent = c.next_run_at ? c.next_run_at.slice(5, 16).replace('T', ' ') : '—';
+                document.getElementById('as-stage').textContent = j.stage ? `· ${j.stage}` : '';
+                const partes = [`corridas: ${c.runs_total || 0}`];
+                if (c.last_run_at) partes.push(`última: ${c.last_run_at.slice(5, 16).replace('T', ' ')} (${c.last_run_status})`);
+                if (j.archivo_url) partes.push(`<a href="${j.archivo_url}" style="color:#3498db;">descargar último Excel</a>`);
+                if (j.webhook) partes.push(`webhook: ${j.webhook.sent ? 'enviado' : (j.webhook.reason || 'no')}`);
+                if (j.error) partes.push(`<span style="color:#f87171">${j.error}</span>`);
+                document.getElementById('as-detail').innerHTML = partes.join(' · ');
+            } catch (e) {
+                document.getElementById('as-detail').innerHTML = '<span style="color:#f87171">Error consultando el ciclo.</span>';
+            }
+        }
+
+        async function asCron(activar) {
+            const r = await fetch(`/api/v1/auto-scrape/cron/${activar ? 'start' : 'stop'}`, { method: 'POST' });
+            const d = await r.json();
+            document.getElementById('as-detail').innerHTML = d.status === 'error'
+                ? `<span style="color:#f87171">${d.message}</span>`
+                : `<span style="color:#4ade80">Ciclo ${activar ? 'activado' : 'detenido'}.</span>`;
+            asLoad();
+        }
+
+        async function asRun() {
+            if (!confirm('Ejecutar el ciclo ahora.\n\nCrea en Odoo los libros con stock que falten (salvo proveedores con "crear nuevos: OFF"), ' +
+                         'genera el Excel y avisa a Server A para el correo.')) return;
+            const r = await fetch('/api/v1/auto-scrape/run', { method: 'POST' });
+            const d = await r.json();
+            document.getElementById('as-detail').innerHTML = d.status === 'started'
+                ? '<span style="color:#fbbf24">Corriendo… pulsa Refrescar en un minuto.</span>'
+                : `<span style="color:#f87171">${d.message || JSON.stringify(d)}</span>`;
         }
 
         async function provCrearNuevos(email, valor) {
