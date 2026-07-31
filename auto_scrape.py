@@ -36,6 +36,13 @@ CONCURRENCY = int(os.environ.get("AUTO_SCRAPE_CONCURRENCY", "12"))
 WEBHOOK_TIMEOUT_S = int(os.environ.get("SCRAPE_WEBHOOK_TIMEOUT_S", "180"))
 WEBHOOK_RETRIES = int(os.environ.get("SCRAPE_WEBHOOK_RETRIES", "3"))
 
+# Rangos ISBN de Espana: 978-84 (el clasico) y 979-13 (asignado a Espana en
+# 2022, ya muy usado). Solo se scrapea CDL para estos: es una libreria
+# espanola y con ISBN extranjero no encuentra nada.
+# Faltaba 979-13: 13.966 libros espanoles se quedaban sin ficha ni portada
+# pudiendo tenerlas (detectado 2026-07-30).
+PREFIJOS_ES = ("97884", "97913")
+
 _BOOK_COLS = ["title", "author", "editorial", "image_url", "description",
               "weight", "height", "width"]
 
@@ -132,7 +139,8 @@ async def _scrape_missing(targets: list[dict]) -> int:
     """Scrapea CDL los targets espanoles sin titulo. Actualiza el dict
     in-memory y guarda en books. Devuelve cuantos consiguio."""
     pend = [t for t in targets
-            if not (t.get("title") or "").strip() and str(t["isbn"]).startswith("97884")]
+            if not (t.get("title") or "").strip()
+            and str(t["isbn"]).startswith(PREFIJOS_ES)]
     if not pend:
         return 0
     auto_scrape_job["stage"] = f"scraping ({len(pend)})"

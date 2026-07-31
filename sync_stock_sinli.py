@@ -737,14 +737,22 @@ async def run_once(loop_until_empty: bool = False,
     mode = "backlog" if loop_until_empty else "once"
     if solo_proveedor or max_books:
         mode = "test" if max_books and max_books <= 50 else mode
-    sync_job = _new_job(mode, conc, solo_proveedor, max_books)
-    job = sync_job
     t_start = time.monotonic()
 
+    # El lock PRIMERO: si no, el cron horario que arranca encima de un
+    # backlog en curso pisaba sync_job con un job vacio en estado "error"
+    # y el que si estaba trabajando dejaba de verse (paso el 31/07 con el
+    # push de PODIPRINT: parecia fallido y habia terminado bien).
     if not _acquire_lock():
-        job["status"] = "error"
-        job["errors"].append("No se pudo adquirir lock — ya hay otra ejecucion.")
-        return job
+        rechazado = _new_job(mode, conc, solo_proveedor, max_books)
+        rechazado["status"] = "error"
+        rechazado["errors"].append(
+            "No se pudo adquirir lock — ya hay otra ejecucion.")
+        print("[SinliSync] Lock ocupado, no arranco (hay otra ejecucion)")
+        return rechazado
+
+    sync_job = _new_job(mode, conc, solo_proveedor, max_books)
+    job = sync_job
 
     try:
         job["stage"] = "loading_caches"
