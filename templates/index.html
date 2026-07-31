@@ -822,6 +822,7 @@
             <button class="tab-btn" onclick="switchTab('catalog')" id="tab-catalog"><ion-icon name="library-outline"></ion-icon> Catálogo Odoo</button>
             <button class="tab-btn" onclick="switchTab('odoo')" id="tab-odoo"><ion-icon name="sync-outline"></ion-icon> Odoo Sync</button>
             <button class="tab-btn" onclick="switchTab('manual')" id="tab-manual"><ion-icon name="create-outline"></ion-icon> Relleno manual</button>
+            <button class="tab-btn" onclick="switchTab('shopify')" id="tab-shopify"><ion-icon name="storefront-outline"></ion-icon> Shopify</button>
         </div>
 
         <!-- ═══ TAB 1: INDIVIDUAL SEARCH (interno, oculto) ═══ -->
@@ -2496,6 +2497,84 @@
             </div>
         </div>
 
+        <!-- ═══ TAB: SHOPIFY ═══ -->
+        <div class="tab-content" id="content-shopify">
+            <div class="card" style="border:2px solid rgba(46,204,113,0.45);">
+                <div class="card-title">
+                    <ion-icon name="storefront-outline"></ion-icon> Shopify — publicación de libros
+                    <span class="status-badge" id="sh-badge" style="font-size:.7rem;">—</span>
+                    <button class="btn-edit" style="float:right;" onclick="shLoad(true)">
+                        <ion-icon name="refresh-outline"></ion-icon> Refrescar</button>
+                </div>
+                <p style="color:#8b93a7; font-size:.8rem; margin-top:6px;">
+                    Los libros con portada, descripción, precio y stock se publican con ficha
+                    completa: la ficha técnica sale de nuestros datos y la IA redacta los bloques
+                    narrativos y el SEO. <strong>Todo es manual</strong>: nada sube solo.
+                </p>
+
+                <div style="margin-top:12px; display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px;">
+                    <div class="stat-box"><div class="stat-number" style="color:#3498db" id="sh-tienda">—</div>
+                        <div class="stat-label">Productos en Shopify</div></div>
+                    <div class="stat-box"><div class="stat-number" style="color:#4ade80" id="sh-publicados">—</div>
+                        <div class="stat-label">Fichados como publicados</div></div>
+                    <div class="stat-box"><div class="stat-number" style="color:#e67e22" id="sh-generados">—</div>
+                        <div class="stat-label">Fichas listas sin subir</div></div>
+                    <div class="stat-box"><div class="stat-number" style="color:#fbbf24" id="sh-candidatos">—</div>
+                        <div class="stat-label">Por publicar</div></div>
+                </div>
+                <div id="sh-job" style="display:none; margin:12px 0; padding:10px; border-radius:8px;
+                     background:rgba(46,204,113,0.12); border:1px solid rgba(46,204,113,0.35); font-size:.85rem;"></div>
+
+                <!-- Paso 1 -->
+                <div class="section-label" style="color:#3498db; margin-top:18px;">
+                    1. Auditar contra la tienda
+                </div>
+                <p style="color:#8b93a7; font-size:.8rem;">
+                    Lee los productos que hay en Shopify y anota los que no teníamos fichados.
+                    Imprescindible antes de generar: la primera vez descartó 11.697 libros que
+                    ya estaban publicados y que habrían costado unos 34 millones de tokens.
+                </p>
+                <button class="btn btn-primary" style="background:#3498db;" onclick="shAuditar()">
+                    <ion-icon name="git-compare-outline"></ion-icon> Auditar Shopify</button>
+
+                <!-- Paso 2 -->
+                <div class="section-label" style="color:#e67e22; margin-top:18px;">
+                    2. Generar fichas con IA
+                </div>
+                <p style="color:#8b93a7; font-size:.8rem;">
+                    Unos 2.900 tokens y 1 segundo por ficha con 10 en paralelo. Se guardan
+                    conforme salen, así que se puede parar y continuar. No publica nada.
+                </p>
+                <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+                    <input type="number" id="sh-gen-limite" value="50" min="1" style="width:110px;
+                           padding:8px 10px; background:#2c2f3e; color:#eee; border:1px solid #444; border-radius:6px;">
+                    <button class="btn btn-primary" style="background:#e67e22;" onclick="shGenerar()">
+                        <ion-icon name="sparkles-outline"></ion-icon> Generar fichas</button>
+                    <button class="btn btn-danger" onclick="shStop()">
+                        <ion-icon name="stop-circle-outline"></ion-icon> Detener</button>
+                </div>
+
+                <!-- Paso 3 -->
+                <div class="section-label" style="color:#2ecc71; margin-top:18px;">
+                    3. Subir a la tienda
+                </div>
+                <p style="color:#8b93a7; font-size:.8rem;">
+                    Dos caminos, el mismo resultado. Shopify solo admite <strong>1.000 productos
+                    nuevos al día</strong> por encima de 50.000, así que por API hay tope; el XLSX
+                    no lo tiene.
+                </p>
+                <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+                    <button class="btn btn-primary" style="background:#2ecc71;" onclick="shPublicar()">
+                        <ion-icon name="cloud-upload-outline"></ion-icon> Publicar por API</button>
+                    <button class="btn btn-primary" style="background:#9b59b6;" onclick="shExportar()">
+                        <ion-icon name="download-outline"></ion-icon> Generar XLSX para Matrixify</button>
+                </div>
+                <div id="sh-ficheros" style="margin-top:12px; font-size:.82rem;"></div>
+
+                <div id="sh-descartes" style="margin-top:18px; font-size:.78rem; color:#666;"></div>
+            </div>
+        </div>
+
         <!-- ═══ TAB: RELLENO MANUAL ═══ -->
         <div class="tab-content" id="content-manual">
             <div class="card">
@@ -2532,6 +2611,7 @@
             if (tab === 'odoo') { odooPoll(); odooStartPolling(); isbnIndexPoll(); loadMirrorAndDistInitial(); startResumenAutoRefresh(); }
             if (tab === 'catalog') { catalogSearch(1); loadSuppliersDatalist(); }
             if (tab === 'manual') manualSub(manualTipo);
+            if (tab === 'shopify') shLoad(true); else shPollStop();
             if (tab === 'audit') { auditLoadAll(); auditStartAutoRefresh(); asLoad(); }
             else { auditStopAutoRefresh(); }
             if (tab !== 'odoo') {
@@ -5492,6 +5572,146 @@
                 ? `<span style="color:#4ade80">${nombre}: ${Number(d.marcados).toLocaleString()} libros marcados.</span>
                    <span style="color:#8b93a7">${d.nota}</span>`
                 : `<span style="color:#f87171">${d.message || 'Error'}</span>`;
+        }
+
+        // ═══ SHOPIFY ═══
+        let shPollTimer = null;
+
+        async function shLoad(conTienda) {
+            try {
+                const r = await fetch('/api/v1/shopify/estado?con_tienda=' + (conTienda ? 'true' : 'false'));
+                const d = await r.json();
+                const num = v => (v === undefined || v === null) ? '—' : Number(v).toLocaleString();
+                document.getElementById('sh-publicados').textContent = num(d.resumen?.publicados);
+                document.getElementById('sh-generados').textContent = num(d.resumen?.generados);
+                document.getElementById('sh-candidatos').textContent = num(d.candidatos);
+                if (d.productos_en_shopify !== undefined)
+                    document.getElementById('sh-tienda').textContent = num(d.productos_en_shopify);
+                if (d.tienda_error) document.getElementById('sh-tienda').textContent = 'error';
+                const b = document.getElementById('sh-badge');
+                const st = d.job?.status || 'idle';
+                b.textContent = st === 'running' ? 'TRABAJANDO' : (d.tienda ? 'CONECTADO' : 'LISTO');
+                b.style.color = st === 'running' ? '#fbbf24' : '#4ade80';
+                const x = d.descartados || {};
+                if (x.brutos) {
+                    document.getElementById('sh-descartes').innerHTML =
+                        `De ${Number(x.brutos).toLocaleString()} libros con portada, descripción y stock quedan fuera: ` +
+                        `<strong>${Number(x.sin_titulo).toLocaleString()}</strong> sin título · ` +
+                        `<strong>${Number(x.sin_precio).toLocaleString()}</strong> sin precio · ` +
+                        `<strong>${Number(x.descripcion_corta).toLocaleString()}</strong> con descripción de una línea · ` +
+                        `<strong>${Number(x.sin_isbn).toLocaleString()}</strong> sin ISBN válido.`;
+                }
+                shRenderJob(d.job);
+                shFicheros();
+            } catch (e) {
+                document.getElementById('sh-descartes').innerHTML =
+                    '<span style="color:#f87171">Error consultando el estado.</span>';
+            }
+        }
+
+        function shRenderJob(job) {
+            const box = document.getElementById('sh-job');
+            if (!job || job.status === 'idle') { box.style.display = 'none'; return; }
+            box.style.display = 'block';
+            const color = job.status === 'error' ? '#f87171'
+                        : job.status === 'running' ? '#fbbf24' : '#4ade80';
+            const n = v => Number(v || 0).toLocaleString();
+            let cifras = '';
+            if (job.accion === 'auditar')
+                cifras = `${n(job.en_shopify)} en la tienda · ${n(job.solo_en_shopify)} nuevos anotados · quedan ${n(job.candidatos)}`;
+            else if (job.accion === 'generar')
+                cifras = `${n(job.generadas)}/${n(job.total)} fichas · ${n(job.fallidas)} fallidas · ${n(job.tokens_entrada + job.tokens_salida)} tokens`;
+            else if (job.accion === 'publicar')
+                cifras = `${n(job.publicados)} publicados de ${n(job.a_publicar)} · ${n(job.fallidos)} fallidos`;
+            else if (job.accion === 'exportar')
+                cifras = `${n(job.filas)} filas · ${job.tamano_mb || 0} MB`;
+            box.innerHTML = `<strong style="color:${color}">${job.accion || 'job'} · ${job.status}</strong>
+                ${job.dry_run ? '<span style="color:#8b93a7">[simulación]</span>' : ''} — ${cifras}
+                <span style="color:#8b93a7"> · ${job.stage || ''} ${job.elapsed_s ? '(' + job.elapsed_s + 's)' : ''}</span>
+                ${(job.errors && job.errors.length) ? '<div style="color:#f87171; font-size:.75rem; margin-top:4px;">' + job.errors.slice(-3).join('<br>') + '</div>' : ''}`;
+            if (job.status === 'running') shPollStart(); else shPollStop();
+        }
+
+        function shPollStart() {
+            if (shPollTimer) return;
+            shPollTimer = setInterval(async () => {
+                try {
+                    const r = await fetch('/api/v1/shopify/estado');
+                    const d = await r.json();
+                    shRenderJob(d.job);
+                    if (d.job?.status !== 'running') { shPollStop(); shLoad(false); }
+                } catch (e) { shPollStop(); }
+            }, 4000);
+        }
+        function shPollStop() { if (shPollTimer) { clearInterval(shPollTimer); shPollTimer = null; } }
+
+        async function shAuditar() {
+            if (!confirm('Auditar contra Shopify.\n\nLee los productos de la tienda y anota los que no teníamos fichados. ' +
+                         'No crea ni modifica nada en Shopify.')) return;
+            const r = await fetch('/api/v1/shopify/auditar', { method: 'POST' });
+            const d = await r.json();
+            if (d.status === 'started') { document.getElementById('sh-job').style.display = 'block';
+                document.getElementById('sh-job').innerHTML = '<span style="color:#fbbf24">Auditando… tarda algo más de un minuto.</span>';
+                shPollStart(); }
+            else shRenderJob(d);
+        }
+
+        async function shGenerar() {
+            const lim = parseInt(document.getElementById('sh-gen-limite').value) || 50;
+            if (!confirm(`Generar ${lim.toLocaleString()} fichas con IA.\n\nUnos ${(lim*2900).toLocaleString()} tokens de DeepSeek. ` +
+                         `No publica nada en Shopify: las fichas quedan guardadas para revisarlas.`)) return;
+            const r = await fetch(`/api/v1/shopify/generar?limite=${lim}`, { method: 'POST' });
+            const d = await r.json();
+            if (d.status === 'started') { document.getElementById('sh-job').style.display = 'block';
+                document.getElementById('sh-job').innerHTML = '<span style="color:#fbbf24">Generando…</span>'; shPollStart(); }
+            else shRenderJob(d);
+        }
+
+        async function shPublicar() {
+            const box = document.getElementById('sh-job');
+            box.style.display = 'block';
+            box.innerHTML = '<span style="color:#fbbf24">Comprobando qué se subiría…</span>';
+            const r = await fetch('/api/v1/shopify/publicar?dry_run=true', { method: 'POST' });
+            const d = await r.json();
+            if (d.status === 'error') { shRenderJob(d); return; }
+            if (!d.a_publicar) { box.innerHTML = '<span style="color:#8b93a7">No hay fichas generadas pendientes de subir.</span>'; return; }
+            const muestra = (d.muestra || []).slice(0, 5).map(m => `· ${m.title}`).join('\n');
+            if (!confirm(`Se van a CREAR ${Number(d.a_publicar).toLocaleString()} productos en Shopify.\n\n` +
+                         `${muestra}\n\nDisponibles en total: ${Number(d.disponibles).toLocaleString()} (tope diario ${Number(d.tope).toLocaleString()}).\n\n` +
+                         `Esto sí modifica la tienda. ¿Publicar?`)) {
+                box.innerHTML = '<span style="color:#8b93a7">Cancelado — no se tocó la tienda.</span>'; return; }
+            const r2 = await fetch('/api/v1/shopify/publicar?dry_run=false', { method: 'POST' });
+            const d2 = await r2.json();
+            if (d2.status === 'started') { box.innerHTML = '<span style="color:#fbbf24">Publicando…</span>'; shPollStart(); }
+            else shRenderJob(d2);
+        }
+
+        async function shExportar() {
+            const box = document.getElementById('sh-job');
+            box.style.display = 'block';
+            box.innerHTML = '<span style="color:#fbbf24">Escribiendo el XLSX…</span>';
+            const r = await fetch('/api/v1/shopify/exportar', { method: 'POST' });
+            shRenderJob(await r.json());
+            shFicheros();
+        }
+
+        async function shFicheros() {
+            try {
+                const r = await fetch('/api/v1/shopify/ficheros');
+                const d = await r.json();
+                const el = document.getElementById('sh-ficheros');
+                if (!d.ficheros?.length) { el.innerHTML = ''; return; }
+                el.innerHTML = '<strong style="color:#8b93a7">Ficheros generados:</strong> ' +
+                    d.ficheros.map(f => `<a href="/api/v1/shopify/descargar/${f.nombre}" style="color:#9b59b6;">${f.nombre}</a> <span style="color:#666">(${f.mb} MB)</span>`).join(' · ');
+            } catch (e) {}
+        }
+
+        async function shStop() {
+            const r = await fetch('/api/v1/shopify/stop', { method: 'POST' });
+            const d = await r.json();
+            document.getElementById('sh-job').innerHTML = d.status === 'stopping'
+                ? '<span style="color:#fbbf24">Deteniendo… lo generado se conserva.</span>'
+                : `<span style="color:#8b93a7">${d.message}</span>`;
         }
 
         // ═══ CICLO DIARIO DE LIBROS NUEVOS ═══

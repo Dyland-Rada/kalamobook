@@ -3276,3 +3276,150 @@ async def odoo_notfound_export(background_tasks: BackgroundTasks):
 
 if __name__ == "__main__":
     uvicorn.run("app:app", host="127.0.0.1", port=8000, reload=True)
+
+
+# ─── Shopify: auditar, generar fichas, publicar ──────────────────────
+
+def _shopify_en_hilo(fn, *args, **kwargs):
+    """Lanza un job de Shopify en segundo plano con su propio event loop."""
+    import threading
+    import sys
+
+    def _run():
+        if sys.platform == 'win32':
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            fn(*args, **kwargs)
+        finally:
+            loop.close()
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+@app.get("/api/v1/shopify/estado", tags=["Shopify"])
+async def shopify_estado(con_tienda: bool = Query(False, description="consultar Shopify en vivo")):
+    """
+    Cuantos productos hay publicados, cuantas fichas generadas sin subir y
+    cuantos libros quedan por publicar, con el motivo de los descartados.
+    """
+    import shopify_pub as sp
+    out = {
+        "resumen": sp.resumen(),
+        "candidatos": len(sp.candidatos_sin_publicar()),
+        "descartados": sp.candidatos_descartados(),
+        "job": sp.get_status(),
+    }
+    if con_tienda:
+        try:
+            import shopify_api as sa
+            out["tienda"] = sa.info_tienda()
+            out["productos_en_shopify"] = sa.contar_productos()
+        except Exception as e:
+            out["tienda_error"] = f"{type(e).__name__}: {e}"
+    return JSONResponse(content=out)
+
+
+@app.post("/api/v1/shopify/auditar", tags=["Shopify"])
+async def shopify_auditar(escribir: bool = Query(True, description="anotar los que falten")):
+    """
+    Compara la tienda con nuestra tabla. Los productos que estan en Shopify y
+    no teniamos fichados se anotan como publicados, para no regenerarlos.
+    """
+    import shopify_pub as sp
+    if sp.get_status().get("status") == "running":
+        return JSONResponse(status_code=409, content={
+            "status": "error", "message": "Ya hay un job de Shopify corriendo."})
+    _shopify_en_hilo(sp.auditar, escribir)
+    return JSONResponse(content={"status": "started", "accion": "auditar"})
+
+
+@app.post("/api/v1/shopify/generar", tags=["Shopify"])
+async def shopify_generar(
+    limite: int | None = Query(None, ge=1, description="cuantas fichas generar"),
+    concurrencia: int | None = Query(None, ge=1, le=30),
+):
+    """
+    Genera con IA las fichas de los libros pendientes y las deja guardadas.
+    NO publica nada: eso es el paso siguiente.
+    """
+    import shopify_pub as sp
+    if sp.get_status().get("status") == "running":
+        return JSONResponse(status_code=409, content={
+            "status": "error", "message": "Ya hay un job de Shopify corriendo."})
+    _shopify_en_hilo(sp.generar_fichas, limite, concurrencia)
+    return JSONResponse(content={"status": "started", "accion": "generar",
+                                  "limite": limite})
+
+
+@app.post("/api/v1/shopify/publicar", tags=["Shopify"])
+async def shopify_publicar(
+    limite: int | None = Query(None, ge=1),
+    dry_run: bool = Query(True, description="True = solo decir que subiria"),
+):
+    """
+    Sube a Shopify las fichas generadas. Tope diario por el limite de Shopify
+    (1.000 variantes nuevas al dia). Empezar siempre con dry_run.
+    """
+    import shopify_pub as sp
+    if sp.get_status().get("status") == "running":
+        return JSONResponse(status_code=409, content={
+            "status": "error", "message": "Ya hay un job de Shopify corriendo."})
+    if dry_run:
+        return JSONResponse(content=sp.publicar(limite=limite, dry_run=True))
+    _shopify_en_hilo(sp.publicar, limite, False)
+    return JSONResponse(content={"status": "started", "accion": "publicar"})
+
+
+@app.post("/api/v1/shopify/exportar", tags=["Shopify"])
+async def shopify_exportar(estado: str = Query("generado")):
+    """Escribe el XLSX Matrixify de las fichas en ese estado."""
+    import shopify_pub as sp
+    if sp.get_status().get("status") == "running":
+        return JSONResponse(status_code=409, content={
+            "status": "error", "message": "Ya hay un job de Shopify corriendo."})
+    return JSONResponse(content=sp.exportar_xlsx(estado=estado))
+
+
+@app.get("/api/v1/shopify/descargar/{fichero}", tags=["Shopify"])
+async def shopify_descargar(fichero: str):
+    """Descarga un XLSX generado. Protegido por la auth de la app."""
+    from fastapi.responses import FileResponse
+    import shopify_pub as sp
+    if "/" in fichero or "\\" in fichero or ".." in fichero:
+        return JSONResponse(status_code=400, content={"error": "nombre no valido"})
+    ruta = os.path.join(sp.DIR_SALIDA, fichero)
+    if not os.path.isfile(ruta):
+        return JSONResponse(status_code=404, content={"error": "no existe"})
+    return FileResponse(ruta, filename=fichero, media_type=
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+@app.get("/api/v1/shopify/ficheros", tags=["Shopify"])
+async def shopify_ficheros():
+    """XLSX disponibles para descargar, del mas reciente al mas antiguo."""
+    import shopify_pub as sp
+    try:
+        nombres = [f for f in os.listdir(sp.DIR_SALIDA)
+                   if f.startswith("Kalamo_Matrixify_") and f.endswith(".xlsx")]
+    except FileNotFoundError:
+        nombres = []
+    from datetime import datetime as _dt
+    ficheros = []
+    for n in sorted(nombres, reverse=True)[:20]:
+        ruta = os.path.join(sp.DIR_SALIDA, n)
+        ficheros.append({"nombre": n,
+                         "mb": round(os.path.getsize(ruta) / 1024 / 1024, 1),
+                         "cuando": _dt.fromtimestamp(
+                             os.path.getmtime(ruta)).isoformat()})
+    return JSONResponse(content={"ficheros": ficheros})
+
+
+@app.post("/api/v1/shopify/stop", tags=["Shopify"])
+async def shopify_stop():
+    import shopify_pub as sp
+    if sp.stop():
+        return JSONResponse(content={"status": "stopping"})
+    return JSONResponse(status_code=400, content={
+        "status": "error", "message": "No hay job de Shopify corriendo."})

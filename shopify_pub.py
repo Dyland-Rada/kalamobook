@@ -581,6 +581,91 @@ def generar_fichas(limite: int | None = None,
     return job
 
 
+# ─── Publicar en la tienda ───────────────────────────────────────────
+def publicar(limite: int | None = None, dry_run: bool = True,
+             canal_online: bool = True) -> dict:
+    """
+    Sube a Shopify las fichas que estan como 'generado'.
+
+    Shopify corta en 1.000 variantes nuevas al dia por encima de 50.000, asi
+    que hay tope. Lo que no entra hoy se queda como 'generado' y sale manana.
+    Empezar SIEMPRE con dry_run=True: dice que subiria sin tocar la tienda.
+    """
+    global _job
+    import shopify_api as sa
+
+    ensure_schema()
+    tope = min(limite or sa.TOPE_DIARIO, sa.TOPE_DIARIO)
+    _job = {
+        "status": "running", "accion": "publicar", "dry_run": dry_run,
+        "started_at": datetime.now().isoformat(), "stage": "leyendo fichas",
+        "disponibles": 0, "tope": tope, "publicados": 0, "fallidos": 0,
+        "errors": [], "elapsed_s": 0,
+    }
+    job = _job
+    t0 = time.monotonic()
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        db.execute_query(cur, f"SELECT COUNT(*) FROM {TABLA} WHERE estado='generado'")
+        job["disponibles"] = int(cur.fetchone()[0])
+        db.execute_query(cur, f"""
+            SELECT {", ".join(d for _, d in COLUMNAS)}
+            FROM {TABLA} WHERE estado='generado' ORDER BY handle LIMIT {tope}
+        """)
+        filas = [dict(zip(CABECERAS, r)) for r in cur.fetchall()]
+        job["a_publicar"] = len(filas)
+
+        if dry_run:
+            job["muestra"] = [{"handle": f["Handle"], "title": f["Title"],
+                               "tags": f["Tags"]} for f in filas[:20]]
+            job["stage"] = "dry_run_done"
+            job["status"] = "completed"
+            return job
+
+        canales_ids = []
+        if canal_online:
+            for c in sa.canales():
+                if c["nombre"] in ("Online Store", "Shop"):
+                    canales_ids.append(f"gid://shopify/Publication/{c['id']}")
+
+        job["stage"] = "publicando"
+        for fila in filas:
+            if job["status"] != "running":
+                break
+            try:
+                res = sa.crear_producto(fila, canales_ids or None)
+                db.execute_query(cur, f"""
+                    UPDATE {TABLA} SET estado='publicado', cargado_en=NOW()
+                    WHERE handle = ?
+                """, (fila["Handle"],))
+                conn.commit()
+                job["publicados"] += 1
+                if job["publicados"] % 50 == 0:
+                    print(f"[ShopifyPub] {job['publicados']}/{len(filas)} "
+                          f"({time.monotonic() - t0:.0f}s)", flush=True)
+            except Exception as e:
+                job["fallidos"] += 1
+                if len(job["errors"]) < 40:
+                    job["errors"].append(f"{fila['Handle']}: {str(e)[:130]}")
+        if job["status"] == "running":
+            job["status"] = "completed"
+        job["stage"] = "done"
+    except Exception as e:
+        job["status"] = "error"
+        job["errors"].append(f"{type(e).__name__}: {e}"[:300])
+        print(f"[ShopifyPub] publicar FAIL: {e!r}")
+    finally:
+        conn.close()
+        job["elapsed_s"] = round(time.monotonic() - t0, 1)
+        if not dry_run:
+            _audit("publicar",
+                   f"Publicados en Shopify {job['publicados']:,} productos "
+                   f"({job['fallidos']} fallidos, {job['elapsed_s']}s)", job,
+                   error=(job["status"] == "error" or job["fallidos"] > 0))
+    return job
+
+
 # ─── Exportar el XLSX Matrixify ──────────────────────────────────────
 def exportar_xlsx(destino: str | None = None, estado: str = "generado",
                   limite: int | None = None) -> dict:
