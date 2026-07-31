@@ -39,3 +39,6 @@ azeta_parcial_*.csv
 
 # Reportes generados de auto-scrape
 reports/
+
+# Ficheros de trabajo de analisis (no se commitean)
+scratch_*.json
