@@ -279,8 +279,25 @@ def resumen() -> dict:
 # Con estos filtros quedan 35.911 publicables de verdad.
 DESC_MINIMA = int(os.environ.get("SHOPIFY_DESC_MINIMA", "120"))
 
+# El precio va en cascada. `list_price` es el precio web ya calculado, pero
+# esta vacio en 3.248 libros a los que el sync nunca se lo escribio; el PVP
+# de verdad lo manda el proveedor en su CEGALD y Server A lo guarda en
+# libros_proveedor.precio_con_iva. Sin esta cascada se quedaban fuera.
+# El umbral de 2,90 es la regla API-15: por debajo no se publica.
+_PRECIO_SQL = """
+    COALESCE(NULLIF(m.list_price, 0), NULLIF(m.pvp_base, 0), prov.precio)
+"""
+_JOIN_PRECIO = """
+    LEFT JOIN LATERAL (
+        SELECT MAX(lp.precio_con_iva) AS precio
+        FROM libros_proveedor lp
+        WHERE lp.isbn = m.barcode AND lp.stock_disponible > 0
+    ) prov ON true
+"""
+
 _SQL_CANDIDATOS = f"""
     FROM odoo_books_mirror m
+    {_JOIN_PRECIO}
     WHERE m.barcode IS NOT NULL
       AND m.barcode ~ '^97[89]'
       AND NULLIF(m.name, '') IS NOT NULL
@@ -289,7 +306,7 @@ _SQL_CANDIDATOS = f"""
                    NULLIF(m.gbooks_thumbnail,'')) IS NOT NULL
       AND NULLIF(m.description,'') IS NOT NULL
       AND LENGTH(m.description) >= {DESC_MINIMA}
-      AND m.list_price IS NOT NULL AND m.list_price > 0
+      AND {_PRECIO_SQL} >= 2.90
       AND EXISTS (SELECT 1 FROM libros_proveedor lp
                   WHERE lp.isbn = m.barcode AND lp.stock_disponible > 0)
       AND NOT EXISTS (SELECT 1 FROM {TABLA} s WHERE s.handle = m.barcode)
@@ -327,6 +344,7 @@ def candidatos_descartados() -> dict:
     cur = conn.cursor()
     base = f"""
         FROM odoo_books_mirror m
+        {_JOIN_PRECIO}
         WHERE m.barcode IS NOT NULL
           AND COALESCE(NULLIF(m.cdl_image_url,''),
                        NULLIF(m.gbooks_thumbnail,'')) IS NOT NULL
@@ -340,7 +358,7 @@ def candidatos_descartados() -> dict:
             SELECT COUNT(*),
                    COUNT(*) FILTER (WHERE NULLIF(m.name,'') IS NULL
                                        OR m.name = m.barcode),
-                   COUNT(*) FILTER (WHERE m.list_price IS NULL OR m.list_price <= 0),
+                   COUNT(*) FILTER (WHERE COALESCE({_PRECIO_SQL}, 0) < 2.90),
                    COUNT(*) FILTER (WHERE LENGTH(m.description) < {DESC_MINIMA}),
                    COUNT(*) FILTER (WHERE m.barcode !~ '^97[89]'),
                    COUNT(*) FILTER (WHERE NULLIF(m.cdl_author,'') IS NULL)
