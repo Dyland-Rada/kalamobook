@@ -272,33 +272,86 @@ def resumen() -> dict:
     return out
 
 
+# Minimo para que una ficha no salga coja en la tienda. Medido sobre los
+# 52.773 candidatos brutos del 31/07: 6.124 sin titulo (saldrian con el ISBN
+# por nombre), 11.412 sin precio (no se pueden vender), 3.228 con una
+# descripcion de una linea y 299 con un codigo interno que no es ISBN.
+# Con estos filtros quedan 35.911 publicables de verdad.
+DESC_MINIMA = int(os.environ.get("SHOPIFY_DESC_MINIMA", "120"))
+
+_SQL_CANDIDATOS = f"""
+    FROM odoo_books_mirror m
+    WHERE m.barcode IS NOT NULL
+      AND m.barcode ~ '^97[89]'
+      AND NULLIF(m.name, '') IS NOT NULL
+      AND m.name <> m.barcode
+      AND COALESCE(NULLIF(m.cdl_image_url,''),
+                   NULLIF(m.gbooks_thumbnail,'')) IS NOT NULL
+      AND NULLIF(m.description,'') IS NOT NULL
+      AND LENGTH(m.description) >= {DESC_MINIMA}
+      AND m.list_price IS NOT NULL AND m.list_price > 0
+      AND EXISTS (SELECT 1 FROM libros_proveedor lp
+                  WHERE lp.isbn = m.barcode AND lp.stock_disponible > 0)
+      AND NOT EXISTS (SELECT 1 FROM {TABLA} s WHERE s.handle = m.barcode)
+"""
+
+
 def candidatos_sin_publicar(limite: int | None = None) -> list[str]:
     """
-    ISBN que deberian estar en la tienda y no estan: con stock, imagen y
-    descripcion, y sin fila en shopify_productos.
+    ISBN que deberian estar en la tienda y no estan.
 
-    El peso NO filtra: si falta se estima en 350 g (regla del cliente), que
-    es lo que distingue a los de etiqueta 2.
+    Exige: ISBN de verdad (978/979), titulo propio, portada, descripcion con
+    cuerpo, precio y stock. El peso NO filtra: si falta se estima en 350 g
+    (regla del cliente), que es lo que distingue a los de etiqueta 2.
     """
     ensure_schema()
     conn = db.get_connection()
     cur = conn.cursor()
     try:
-        sql = f"""
-            SELECT m.barcode
-            FROM odoo_books_mirror m
-            WHERE m.barcode IS NOT NULL
-              AND COALESCE(NULLIF(m.cdl_image_url,''),
-                           NULLIF(m.gbooks_thumbnail,'')) IS NOT NULL
-              AND NULLIF(m.description,'') IS NOT NULL
-              AND EXISTS (SELECT 1 FROM libros_proveedor lp
-                          WHERE lp.isbn = m.barcode AND lp.stock_disponible > 0)
-              AND NOT EXISTS (SELECT 1 FROM {TABLA} s WHERE s.handle = m.barcode)
-        """
+        sql = f"SELECT m.barcode {_SQL_CANDIDATOS}"
         if limite:
             sql += f" LIMIT {int(limite)}"
         db.execute_query(cur, sql)
         return [r[0] for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def candidatos_descartados() -> dict:
+    """
+    Por que se queda fuera cada candidato bruto. Para la tarjeta web: dice
+    que hace falta conseguir para poder publicarlos.
+    """
+    ensure_schema()
+    conn = db.get_connection()
+    cur = conn.cursor()
+    base = f"""
+        FROM odoo_books_mirror m
+        WHERE m.barcode IS NOT NULL
+          AND COALESCE(NULLIF(m.cdl_image_url,''),
+                       NULLIF(m.gbooks_thumbnail,'')) IS NOT NULL
+          AND NULLIF(m.description,'') IS NOT NULL
+          AND EXISTS (SELECT 1 FROM libros_proveedor lp
+                      WHERE lp.isbn = m.barcode AND lp.stock_disponible > 0)
+          AND NOT EXISTS (SELECT 1 FROM {TABLA} s WHERE s.handle = m.barcode)
+    """
+    try:
+        db.execute_query(cur, f"""
+            SELECT COUNT(*),
+                   COUNT(*) FILTER (WHERE NULLIF(m.name,'') IS NULL
+                                       OR m.name = m.barcode),
+                   COUNT(*) FILTER (WHERE m.list_price IS NULL OR m.list_price <= 0),
+                   COUNT(*) FILTER (WHERE LENGTH(m.description) < {DESC_MINIMA}),
+                   COUNT(*) FILTER (WHERE m.barcode !~ '^97[89]'),
+                   COUNT(*) FILTER (WHERE NULLIF(m.cdl_author,'') IS NULL)
+            {base}
+        """)
+        r = cur.fetchone()
+        return {"brutos": int(r[0]), "sin_titulo": int(r[1]),
+                "sin_precio": int(r[2]), "descripcion_corta": int(r[3]),
+                "sin_isbn": int(r[4]), "sin_autor": int(r[5])}
+    except Exception as e:
+        return {"error": str(e)[:150]}
     finally:
         conn.close()
 
