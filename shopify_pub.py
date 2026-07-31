@@ -399,6 +399,81 @@ def taxonomia() -> dict:
     return {"madres": madres, "cats": cats}
 
 
+# ─── Auditoria contra la tienda ──────────────────────────────────────
+def auditar(escribir: bool = True) -> dict:
+    """
+    Compara la tienda con nuestra tabla y la pone al dia.
+
+    Los ficheros Matrixify no son toda la verdad: el 31/07 habia 11.971
+    productos en Shopify que no venian de ahi (los mete la app de Odoo). Sin
+    cruzar contra la tienda, 11.697 de nuestros "candidatos" ya estaban
+    publicados y habriamos gastado ~34M de tokens en regenerarlos.
+
+    Con escribir=True los que falten se anotan como publicados, para que la
+    consulta de candidatos deje de proponerlos.
+    """
+    global _job
+    import shopify_api as sa
+    from psycopg2.extras import execute_values
+
+    ensure_schema()
+    _job = {
+        "status": "running", "accion": "auditar",
+        "started_at": datetime.now().isoformat(), "stage": "exportando de Shopify",
+        "en_shopify": 0, "en_tabla": 0, "solo_en_shopify": 0,
+        "solo_en_tabla": 0, "anotados": 0, "candidatos": 0,
+        "errors": [], "elapsed_s": 0,
+    }
+    job = _job
+    t0 = time.monotonic()
+    try:
+        productos = sa.exportar_handles()
+        handles = {p["handle"] for p in productos if p.get("handle")}
+        job["en_shopify"] = len(handles)
+
+        conn = db.get_connection()
+        cur = conn.cursor()
+        try:
+            db.execute_query(cur, f"SELECT handle FROM {TABLA}")
+            tabla = {r[0] for r in cur.fetchall()}
+            job["en_tabla"] = len(tabla)
+            faltan = sorted(handles - tabla)
+            job["solo_en_shopify"] = len(faltan)
+            job["solo_en_tabla"] = len(tabla - handles)
+
+            if escribir and faltan:
+                job["stage"] = "anotando los que faltaban"
+                execute_values(cur, f"""
+                    INSERT INTO {TABLA} (handle, estado, fichero_origen, cargado_en)
+                    VALUES %s
+                    ON CONFLICT (handle) DO UPDATE
+                    SET estado='publicado', cargado_en=NOW()
+                """, [(h,) for h in faltan],
+                    template="(%s, 'publicado', 'shopify-api', NOW())",
+                    page_size=1000)
+                conn.commit()
+                job["anotados"] = len(faltan)
+        finally:
+            conn.close()
+
+        job["candidatos"] = len(candidatos_sin_publicar())
+        job["status"] = "completed"
+        job["stage"] = "done"
+    except Exception as e:
+        job["status"] = "error"
+        job["errors"].append(f"{type(e).__name__}: {e}"[:300])
+        print(f"[ShopifyPub] auditar FAIL: {e!r}")
+    finally:
+        job["elapsed_s"] = round(time.monotonic() - t0, 1)
+        _audit("auditar",
+               f"Auditoria Shopify: {job['en_shopify']:,} en la tienda, "
+               f"{job['en_tabla']:,} en la tabla, {job['solo_en_shopify']:,} solo "
+               f"en la tienda ({job['anotados']:,} anotados), quedan "
+               f"{job['candidatos']:,} por publicar ({job['elapsed_s']}s)", job,
+               error=(job["status"] == "error"))
+    return job
+
+
 # ─── Generar fichas ──────────────────────────────────────────────────
 CONCURRENCIA = int(os.environ.get("SHOPIFY_GEN_CONCURRENCIA", "10"))
 DIR_SALIDA = os.environ.get("SHOPIFY_DIR", "reports")
