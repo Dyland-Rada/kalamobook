@@ -399,6 +399,175 @@ def taxonomia() -> dict:
     return {"madres": madres, "cats": cats}
 
 
+# ─── Generar fichas ──────────────────────────────────────────────────
+CONCURRENCIA = int(os.environ.get("SHOPIFY_GEN_CONCURRENCIA", "10"))
+DIR_SALIDA = os.environ.get("SHOPIFY_DIR", "reports")
+
+
+def _guardar_fichas(filas: list[dict]):
+    """Deja las fichas en la tabla como 'generado', listas para exportar."""
+    from psycopg2.extras import execute_values
+    destino = [dest for _, dest in COLUMNAS]
+    sql = f"""
+        INSERT INTO {TABLA} ({", ".join(destino)}, estado, generado_en, cargado_en)
+        VALUES %s
+        ON CONFLICT (handle) DO UPDATE SET
+            {", ".join(f"{d}=EXCLUDED.{d}" for d in destino if d != "handle")},
+            estado='generado', generado_en=NOW(), cargado_en=NOW()
+    """
+    plantilla = "(" + ",".join(["%s"] * len(destino)) + ", 'generado', NOW(), NOW())"
+    valores = []
+    for f in filas:
+        fila = []
+        for cab, dest in COLUMNAS:
+            v = f.get(cab)
+            if dest in ("variant_inventory_qty", "variant_grams"):
+                v = _int_o_none(v)
+            fila.append(v)
+        valores.append(tuple(fila))
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        execute_values(cur, sql, valores, template=plantilla,
+                       page_size=len(valores))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def generar_fichas(limite: int | None = None,
+                   concurrencia: int | None = None,
+                   lote_guardado: int = 50) -> dict:
+    """
+    Genera con IA las fichas de los candidatos y las guarda como 'generado'.
+
+    NO publica nada: solo escribe en nuestra tabla. La subida a la tienda es
+    otro paso (XLSX o API). Se guarda por lotes segun van saliendo, asi que
+    una interrupcion no tira por la borda lo ya generado.
+    """
+    global _job
+    import concurrent.futures as cf
+    import shopify_ficha as sf
+
+    ensure_schema()
+    isbns = candidatos_sin_publicar(limite=limite)
+    conc = concurrencia or CONCURRENCIA
+    _job = {
+        "status": "running", "accion": "generar",
+        "started_at": datetime.now().isoformat(), "stage": "generando",
+        "total": len(isbns), "generadas": 0, "fallidas": 0,
+        "tokens_entrada": 0, "tokens_salida": 0, "llamadas": 0,
+        "concurrencia": conc, "errors": [], "elapsed_s": 0,
+    }
+    job = _job
+    t0 = time.monotonic()
+    try:
+        sf.taxonomia()          # cachear antes de repartir hilos
+        pendientes = []
+        with cf.ThreadPoolExecutor(max_workers=conc) as ex:
+            futuros = {ex.submit(sf.generar, i): i for i in isbns}
+            for fut in cf.as_completed(futuros):
+                if job["status"] != "running":
+                    break
+                isbn = futuros[fut]
+                try:
+                    fila, uso = fut.result()
+                    pendientes.append(fila)
+                    job["generadas"] += 1
+                    job["tokens_entrada"] += uso["prompt_tokens"]
+                    job["tokens_salida"] += uso["completion_tokens"]
+                    job["llamadas"] += uso["llamadas"]
+                except Exception as e:
+                    job["fallidas"] += 1
+                    if len(job["errors"]) < 40:
+                        job["errors"].append(f"{isbn}: {type(e).__name__}: {str(e)[:110]}")
+                if len(pendientes) >= lote_guardado:
+                    _guardar_fichas(pendientes)
+                    pendientes = []
+                    print(f"[ShopifyPub] {job['generadas']:,}/{job['total']:,} "
+                          f"({time.monotonic() - t0:.0f}s)", flush=True)
+        if pendientes:
+            _guardar_fichas(pendientes)
+        if job["status"] == "running":
+            job["status"] = "completed"
+        job["stage"] = "done"
+    except Exception as e:
+        job["status"] = "error"
+        job["errors"].append(f"{type(e).__name__}: {e}"[:300])
+        print(f"[ShopifyPub] generar FAIL: {e!r}")
+    finally:
+        job["elapsed_s"] = round(time.monotonic() - t0, 1)
+        _audit("generar_fichas",
+               f"Generadas {job['generadas']:,} fichas para Shopify "
+               f"({job['fallidas']} fallidas, "
+               f"{job['tokens_entrada'] + job['tokens_salida']:,} tokens, "
+               f"{job['elapsed_s']}s)", job,
+               error=(job["status"] == "error"))
+    return job
+
+
+# ─── Exportar el XLSX Matrixify ──────────────────────────────────────
+def exportar_xlsx(destino: str | None = None, estado: str = "generado",
+                  limite: int | None = None) -> dict:
+    """
+    Escribe el XLSX que se sube con Matrixify, leyendo de la tabla.
+
+    En modo write_only para no cargar el libro entero en memoria: son cientos
+    de miles de filas con 4 KB de HTML cada una.
+    """
+    global _job
+    import openpyxl
+
+    ensure_schema()
+    os.makedirs(DIR_SALIDA, exist_ok=True)
+    if not destino:
+        marca = datetime.now().strftime("%Y%m%d_%H%M")
+        destino = os.path.join(DIR_SALIDA, f"Kalamo_Matrixify_{marca}.xlsx")
+    _job = {
+        "status": "running", "accion": "exportar",
+        "started_at": datetime.now().isoformat(), "stage": "exportando",
+        "destino": destino, "estado": estado, "filas": 0,
+        "errors": [], "elapsed_s": 0,
+    }
+    job = _job
+    t0 = time.monotonic()
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        wb = openpyxl.Workbook(write_only=True)
+        ws = wb.create_sheet("Products")
+        ws.append(CABECERAS)
+        sql = f"""SELECT {", ".join(d for _, d in COLUMNAS)}
+                  FROM {TABLA} WHERE estado = ? ORDER BY handle"""
+        if limite:
+            sql += f" LIMIT {int(limite)}"
+        db.execute_query(cur, sql, (estado,))
+        while True:
+            filas = cur.fetchmany(1000)
+            if not filas:
+                break
+            for r in filas:
+                ws.append(["" if v is None else v for v in r])
+                job["filas"] += 1
+        wb.save(destino)
+        wb.close()
+        job["tamano_mb"] = round(os.path.getsize(destino) / 1024 / 1024, 1)
+        job["status"] = "completed"
+        job["stage"] = "done"
+    except Exception as e:
+        job["status"] = "error"
+        job["errors"].append(f"{type(e).__name__}: {e}"[:300])
+        print(f"[ShopifyPub] exportar FAIL: {e!r}")
+    finally:
+        conn.close()
+        job["elapsed_s"] = round(time.monotonic() - t0, 1)
+        _audit("exportar_xlsx",
+               f"Exportadas {job['filas']:,} fichas a {os.path.basename(destino)} "
+               f"({job.get('tamano_mb', 0)} MB, {job['elapsed_s']}s)", job,
+               error=(job["status"] == "error"))
+    return job
+
+
 def _audit(evento: str, resumen_txt: str, detalle: dict, error: bool = False):
     try:
         import audit_log
