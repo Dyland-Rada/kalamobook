@@ -1188,6 +1188,7 @@
             <!-- ═══ RESUMEN GLOBAL DEL CATÁLOGO ═══ -->
             <div class="card">
                 <div class="card-title"><ion-icon name="bar-chart-outline"></ion-icon> Resumen del catálogo local</div>
+                    <button class="ayuda-btn" onclick="abrirAyuda('d_resumen')" title="Qué es esto y cómo se usa">?</button>
                 <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px; margin-top:8px;">
                     <div class="stat-box">
                         <div class="stat-number" style="color:#1abc9c" id="mirror-stat-local">0</div>
@@ -1233,6 +1234,7 @@
             <div class="card">
                 <div class="card-title">
                     <ion-icon name="download-outline"></ion-icon> Espejo Odoo → Postgres
+                    <button class="ayuda-btn" onclick="abrirAyuda('d_espejo')" title="Qué es esto y cómo se usa">?</button>
                     <span class="status-badge" id="mirror-status-badge" style="font-size:0.7rem;">IDLE</span>
                 </div>
                 <p style="color:#888; font-size:0.88rem;">
@@ -1266,6 +1268,7 @@
             <div class="card">
                 <div class="card-title">
                     <ion-icon name="library-outline"></ion-icon> Enriquecimiento Google Books (rápido, async)
+                    <button class="ayuda-btn" onclick="abrirAyuda('d_gbooks')" title="Qué es esto y cómo se usa">?</button>
                     <span class="status-badge" id="gbf-status-badge" style="font-size:0.7rem;">IDLE</span>
                 </div>
                 <p style="color:#888; font-size:0.88rem;">
@@ -1300,6 +1303,7 @@
             <div class="card">
                 <div class="card-title">
                     <ion-icon name="bug-outline"></ion-icon> Casa del Libro — fast path (sitemap) <span style="font-size:.6rem; font-weight:700; letter-spacing:.05em; background:rgba(148,163,184,.14); color:#94a3b8; border:1px solid rgba(148,163,184,.3); padding:2px 8px; border-radius:20px; margin-left:8px;" title="Lo reemplaza el HTTP ultra-rapido, que trae mas campos y va mas rapido">SUPERADO</span>
+                    <button class="ayuda-btn" onclick="abrirAyuda('d_cdlsitemap')" title="Qué es esto y cómo se usa">?</button>
                     <span class="status-badge" id="cdl-status-badge" style="font-size:0.7rem;">IDLE</span>
                 </div>
                 <p style="color:#888; font-size:0.88rem;">
@@ -1335,6 +1339,7 @@
             <div class="card" style="border:2px solid rgba(46,204,113,0.4);">
                 <div class="card-title">
                     <ion-icon name="flash-outline"></ion-icon> Casa del Libro — HTTP ultra-rápido (recomendado)
+                    <button class="ayuda-btn" onclick="abrirAyuda('d_cdlhttp')" title="Qué es esto y cómo se usa">?</button>
                     <span class="status-badge" id="cdlh-status-badge" style="font-size:0.7rem;">IDLE</span>
                 </div>
                 <p style="color:#888; font-size:0.88rem;">
@@ -1366,6 +1371,7 @@
             <div class="card">
                 <div class="card-title">
                     <ion-icon name="search-outline"></ion-icon> Casa del Libro — búsqueda por ISBN (cobertura total)
+                    <button class="ayuda-btn" onclick="abrirAyuda('d_cdlbusca')" title="Qué es esto y cómo se usa">?</button>
                     <span class="status-badge" id="cds-status-badge" style="font-size:0.7rem;">IDLE</span>
                 </div>
                 <p style="color:#888; font-size:0.88rem;">
@@ -1396,6 +1402,7 @@
             <div class="card" style="border:2px solid rgba(52,152,219,0.5); background:rgba(52,152,219,0.04);">
                 <div class="card-title">
                     <ion-icon name="bar-chart-outline"></ion-icon> Auditoría: categorías inferidas + readiness Fase 2
+                    <button class="ayuda-btn" onclick="abrirAyuda('d_auditcat')" title="Qué es esto y cómo se usa">?</button>
                 </div>
                 <p style="color:#888; font-size:0.88rem;">
                     Antes de crear categorías en Odoo o disparar el push de la Fase 2, revisa qué tenemos:
@@ -1541,6 +1548,7 @@
             <!-- ═══ CATEGORÍAS ═══ -->
             <div class="card">
                 <div class="card-title"><ion-icon name="pricetag-outline"></ion-icon> Categorías</div>
+                    <button class="ayuda-btn" onclick="abrirAyuda('d_categorias')" title="Qué es esto y cómo se usa">?</button>
                 <p style="color:#888; font-size:0.88rem;">
                     Inferir categorías cruzando con scrapes (CDL + distribuidores), crearlas en Odoo y asignarlas.
                 </p>
@@ -1572,6 +1580,7 @@
             <div class="card">
                 <div class="card-title">
                     <ion-icon name="sync-outline"></ion-icon> Push directo a Odoo (cola enrichment_queue)
+                    <button class="ayuda-btn" onclick="abrirAyuda('d_pushcola')" title="Qué es esto y cómo se usa">?</button>
                     <span class="status-badge" id="odoo-status-badge" style="font-size:0.7rem;">IDLE</span>
                 </div>
                 <p style="color:#888; font-size:0.88rem;">
@@ -1634,6 +1643,7 @@
             <div class="card" style="border:2px solid rgba(211,84,0,0.6); background:rgba(211,84,0,0.05);">
                 <div class="card-title">
                     <ion-icon name="library-outline"></ion-icon> AZETA — Catálogo completo <span style="font-size:.6rem; font-weight:700; letter-spacing:.05em; background:rgba(148,163,184,.14); color:#94a3b8; border:1px solid rgba(148,163,184,.3); padding:2px 8px; border-radius:20px; margin-left:8px;" title="Bloqueado desde junio: hacen falta normalizar 89.028 rutas de categoria antes">BLOQUEADO</span> (descripción, precio EUR, peso, dimensiones)
+                    <button class="ayuda-btn" onclick="abrirAyuda('d_azetacat')" title="Qué es esto y cómo se usa">?</button>
                     <span class="status-badge" id="azetacat-status-badge" style="font-size:0.7rem;">IDLE</span>
                 </div>
                 <p style="color:#888; font-size:0.88rem;">
@@ -1682,6 +1692,7 @@
             <div class="card" style="border:2px solid rgba(155,89,182,0.7); background:rgba(155,89,182,0.06);">
                 <div class="card-title">
                     <ion-icon name="rocket-outline"></ion-icon> AZETA → Push a Odoo (Fase 2) <span style="font-size:.6rem; font-weight:700; letter-spacing:.05em; background:rgba(148,163,184,.14); color:#94a3b8; border:1px solid rgba(148,163,184,.3); padding:2px 8px; border-radius:20px; margin-left:8px;" title="Bloqueado desde junio: depende de la normalizacion de categorias">BLOQUEADO</span>
+                    <button class="ayuda-btn" onclick="abrirAyuda('d_azetapush')" title="Qué es esto y cómo se usa">?</button>
                     <span class="status-badge" id="azetapush-status-badge" style="font-size:0.7rem;">IDLE</span>
                 </div>
                 <p style="color:#888; font-size:0.88rem;">
@@ -1738,6 +1749,7 @@
             <div class="card" style="border:2px solid rgba(211,84,0,0.4);">
                 <div class="card-title">
                     <ion-icon name="storefront-outline"></ion-icon> AZETA — Stock: CSV → mirror → Odoo AZE01
+                    <button class="ayuda-btn" onclick="abrirAyuda('d_azetastock')" title="Qué es esto y cómo se usa">?</button>
                     <span class="status-badge" id="azeta-status-badge" style="font-size:0.7rem;">IDLE</span>
                 </div>
                 <p style="color:#888; font-size:0.88rem;">
@@ -1868,6 +1880,7 @@
             <div class="card" style="border:2px solid rgba(155,89,182,0.55); background:rgba(155,89,182,0.04);">
                 <div class="card-title">
                     <ion-icon name="pricetag-outline"></ion-icon> Tags Odoo: clasificar libros (Completo / Web / Foto / Stock / Bloqueado)
+                    <button class="ayuda-btn" onclick="abrirAyuda('d_tags')" title="Qué es esto y cómo se usa">?</button>
                     <span class="status-badge" id="tags-status-badge" style="font-size:0.7rem;">IDLE</span>
                 </div>
                 <p style="color:#888; font-size:0.88rem;">
@@ -1951,6 +1964,7 @@
             <div class="card" style="border:2px solid rgba(46,204,113,0.55); background:rgba(46,204,113,0.04);">
                 <div class="card-title">
                     <ion-icon name="cube-outline"></ion-icon> Sync stock SINLI → Odoo (ICARO/DISTRIFORMA/PUNXES/AKAL/ALFA OMEGA)
+                    <button class="ayuda-btn" onclick="abrirAyuda('d_syncsinli')" title="Qué es esto y cómo se usa">?</button>
                     <span class="status-badge" id="sinli-status-badge" style="font-size:0.7rem;">IDLE</span>
                 </div>
                 <p style="color:#888; font-size:0.88rem;">
@@ -2163,6 +2177,7 @@
             <!-- ═══ CATÁLOGO DE DISTRIBUIDORES ═══ -->
             <div class="card">
                 <div class="card-title"><ion-icon name="cube-outline"></ion-icon> Catálogo de distribuidores (XLSX → Postgres)</div>
+                    <button class="ayuda-btn" onclick="abrirAyuda('d_distrib')" title="Qué es esto y cómo se usa">?</button>
                 <p style="color:#888; font-size:0.88rem;">
                     Sube los XLSX de ANAYA, PLANETA, PODIPRINT, etc. Upsert por ISBN a
                     <code>distributor_books</code>.
@@ -2207,6 +2222,7 @@
             <!-- ═══ HERRAMIENTAS ═══ -->
             <div class="card">
                 <div class="card-title"><ion-icon name="build-outline"></ion-icon> Herramientas</div>
+                    <button class="ayuda-btn" onclick="abrirAyuda('d_tools')" title="Qué es esto y cómo se usa">?</button>
                 <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:12px;">
                     <button class="btn btn-primary" onclick="diagnose()" style="background:#16a085;"
                             title="Muestra el shard activo y por qué cada job tiene Target=0 o el numero que sea">
@@ -6255,6 +6271,160 @@
                       '<b>publicable en Shopify</b> automáticamente.'
             },
         };
+
+        // Ayuda de las herramientas de mantenimiento (modo desarrollador).
+        // Tono mas tecnico: quien entra aqui sabe lo que hace, pero necesita
+        // saber cuanto tarda cada cosa, si es seguro repetirla y con que choca.
+        Object.assign(AYUDA, {
+            d_resumen: {
+                icono: 'bar-chart-outline', titulo: 'Resumen del catálogo local',
+                sub: 'Cuántos libros hay en el espejo y con qué datos',
+                intro: 'Contadores de <code>odoo_books_mirror</code>, la copia local de Odoo. ' +
+                       'Sirve para ver de un vistazo cuánto falta por enriquecer.',
+                pasos: [['Excel completo', 'Descarga todo el espejo. Son más de un millón de filas: tarda.', 'seguro'],
+                        ['Excel solo con categorías', 'Más ligero, solo los que tienen categoría inferida.', 'seguro']],
+                dato: 'Si «libros en mirror» no cuadra con Odoo, hay que correr el espejo.'
+            },
+            d_espejo: {
+                icono: 'download-outline', titulo: 'Espejo Odoo → Postgres',
+                sub: 'Traer el catálogo de Odoo a la base de datos local',
+                intro: 'Copia todos los libros de Odoo a <code>odoo_books_mirror</code>. Es la base de ' +
+                       'todo lo demás: sin espejo fresco, el sync no sabe qué existe y podría duplicar.',
+                pasos: [['Iniciar', 'Recorre Odoo entero. Idempotente: se puede repetir sin miedo.', 'ojo'],
+                        ['Solo sin description_sale', 'Limita a los que no tienen ficha, para ir más rápido.', 'seguro']],
+                problemas: [['Un libro creado hace poco no aparece', 'El espejo va por lotes. Vuelve a correrlo.']],
+                dato: 'Conviene correrlo <b>una vez al día</b> o después de crear muchos productos.'
+            },
+            d_gbooks: {
+                icono: 'library-outline', titulo: 'Enriquecimiento Google Books',
+                sub: 'Rellenar fichas con la API de Google',
+                intro: 'Para cada ISBN sin datos de Google, pide su ficha: descripción, idioma, ' +
+                       'páginas, editorial y portada. Cubre catálogo extranjero, donde Casa del Libro no llega.',
+                pasos: [['Iniciar', 'Recorre los pendientes. Se puede parar y continuar.', 'ojo'],
+                        ['Reactivar últimos', 'Si Google limitó el ritmo y marcó libros como no encontrados, los devuelve a la cola.', 'seguro']],
+                problemas: [['Muchos sin match de golpe', 'Suele ser límite de peticiones, no que falten. Reactiva los últimos y reintenta más despacio.']],
+                dato: 'Con clave de API el límite es de <b>100.000 consultas al día</b>; sin clave, 1.000.'
+            },
+            d_cdlsitemap: {
+                icono: 'bug-outline', titulo: 'Casa del Libro — fast path',
+                sub: 'Versión antigua, ya superada',
+                intro: 'Scrapeaba solo los ISBN que estaban en el índice del sitemap. Lo reemplazó ' +
+                       'el <b>HTTP ultra-rápido</b>, que trae más campos y va más deprisa.',
+                problemas: [['¿Lo uso?', 'No. Usa el HTTP ultra-rápido. Este se queda por si hiciera falta comparar resultados.']],
+                dato: 'Se mantiene solo por si hay que volver atrás. No aporta nada que el otro no haga mejor.'
+            },
+            d_cdlhttp: {
+                icono: 'flash-outline', titulo: 'Casa del Libro — HTTP ultra-rápido',
+                sub: 'El enriquecedor bueno. Unos 2.000 libros por minuto',
+                intro: 'Va por HTTP directo en vez de abrir un navegador, así que vuela. Trae todos ' +
+                       'los campos: peso, alto, ancho, encuadernación, traductor, descripción y categorías.',
+                pasos: [['Iniciar', 'Arranca con 20 en paralelo. Si Casa del Libro empieza a cortar, se para solo.', 'ojo'],
+                        ['Detener', 'Para en cuanto termine lo que tiene entre manos. Nada se pierde.', 'seguro']],
+                problemas: [['Muchos timeouts seguidos', 'Casa del Libro está limitando. Párala un rato y vuelve con menos concurrencia.']],
+                dato: 'Es la herramienta para los <b>13.966 libros españoles</b> del rango 979-13 que ' +
+                      'se quedaron sin ficha por un filtro antiguo.'
+            },
+            d_cdlbusca: {
+                icono: 'search-outline', titulo: 'Casa del Libro — búsqueda por ISBN',
+                sub: 'Más lento, pero llega donde los otros no',
+                intro: 'Busca cada libro por su ISBN aunque no esté en el sitemap. Cubre lo que el ' +
+                       'fast path no ve, a cambio de ir mucho más despacio.',
+                pasos: [['Iniciar', 'Puede correr a la vez que los otros dos.', 'ojo']],
+                dato: 'Úsalo para <b>rematar</b>, cuando el HTTP rápido ya pasó y aún quedan huecos.'
+            },
+            d_auditcat: {
+                icono: 'bar-chart-outline', titulo: 'Auditoría de categorías',
+                sub: 'Cuántas rutas distintas hay y qué falta para la Fase 2',
+                intro: 'Antes de crear categorías en Odoo, cuenta cuántas rutas únicas existen y qué ' +
+                       'porcentaje de libros tiene cada campo listo.',
+                dato: 'La última auditoría dio <b>89.028 rutas distintas</b>, mezcla de mayúsculas de ' +
+                      'AZETA y capitalización de Casa del Libro. Es lo que bloquea la Fase 2: hay que ' +
+                      'normalizarlas antes de crear nada.'
+            },
+            d_categorias: {
+                icono: 'pricetag-outline', titulo: 'Categorías',
+                sub: 'Crear y asignar categorías en Odoo',
+                intro: 'Asigna a cada libro su categoría interna en Odoo a partir de la inferida.',
+                problemas: [['¿Por qué no se usa?', 'Está a la espera de normalizar las 89.028 rutas. Crearlas tal cual dejaría el árbol de Odoo inservible.']],
+                dato: 'Las categorías de la <b>tienda</b> son otra cosa: las elige la IA de una lista ' +
+                      'cerrada de 97 al generar cada ficha.'
+            },
+            d_pushcola: {
+                icono: 'sync-outline', titulo: 'Push directo a Odoo',
+                sub: 'Subir a Odoo lo que hay en la cola de enriquecimiento',
+                intro: 'Escribe en Odoo la descripción de los libros que ya se enriquecieron y esperan ' +
+                       'en <code>enrichment_queue</code>.',
+                pasos: [['Iniciar', 'Va por lotes. Se puede parar y continuar.', 'ojo']],
+                dato: 'La cola se reparte entre varios workers con bloqueo, así que <b>dos servidores ' +
+                      'nunca cogen el mismo libro</b>.'
+            },
+            d_azetacat: {
+                icono: 'library-outline', titulo: 'AZETA — Catálogo completo',
+                sub: 'Bloqueado',
+                intro: 'Descarga el catálogo entero de AZETA (un ZIP de unos 200 MB) y vuelca al espejo ' +
+                       'descripción, peso, dimensiones, precio y categorías.',
+                problemas: [['¿Por qué está bloqueado?', 'Su salida alimenta la Fase 2, que espera la normalización de categorías. El catálogo sí se puede descargar; lo que no se puede es empujarlo.']],
+                dato: 'Ya cubrió a <b>991.409 libros</b> del espejo en su última corrida.'
+            },
+            d_azetapush: {
+                icono: 'rocket-outline', titulo: 'AZETA — Push Fase 2',
+                sub: 'Bloqueado',
+                intro: 'Subiría a Odoo todo lo de AZETA: descripción, peso, precio y categoría.',
+                problemas: [['¿Por qué no se usa?', 'Depende de crear las categorías, y eso está parado. Además solo el 42,7% de los libros tiene todos los campos completos.']],
+                dato: 'El stock de AZETA <b>sí sube</b>, por la tarjeta de abajo. Esto es solo la ficha.'
+            },
+            d_azetastock: {
+                icono: 'storefront-outline', titulo: 'AZETA — Stock',
+                sub: 'El ciclo horario de AZETA, lanzable a mano',
+                intro: 'Descarga el CSV de stock de AZETA, lo guarda y lo sube a su almacén AZE01. ' +
+                       'Corre solo cada hora; estos botones son para forzarlo.',
+                pasos: [['Ciclo completo', 'Descarga, sube y apaga lo que ya no viene. Es lo que hace el cron.', 'ojo'],
+                        ['Solo descargar', 'Trae el CSV sin tocar Odoo.', 'seguro'],
+                        ['Solo subir', 'Empuja a Odoo lo que ya está descargado.', 'ojo']],
+                dato: 'AZETA va por su cuenta: el sync de los demás proveedores <b>nunca escribe en ' +
+                      'AZE01</b>, para que no se pisen.'
+            },
+            d_tags: {
+                icono: 'pricetag-outline', titulo: 'Tags de completitud',
+                sub: 'Clasificar cada libro según lo completa que esté su ficha',
+                intro: 'Pone a cada libro una etiqueta según lo que tenga.',
+                numeros: [['#4ade80', 'Completo', 'Imagen, descripción, peso y medidas.'],
+                          ['#3498db', 'Web', 'Imagen y descripción, sin medidas.'],
+                          ['#e67e22', 'Foto', 'Descripción pero sin imagen.'],
+                          ['#8b93a7', 'Stock', 'Ni imagen ni descripción.']],
+                dato: 'Solo los <b>Completo</b> y <b>Web</b> se pueden publicar en la tienda.'
+            },
+            d_syncsinli: {
+                icono: 'cube-outline', titulo: 'Sync stock SINLI',
+                sub: 'El sync horario de todos los proveedores menos AZETA',
+                intro: 'Sube a Odoo el stock y el precio de los libros que hayan cambiado. Corre solo ' +
+                       'cada hora; estos botones son para forzarlo o para ponerse al día.',
+                pasos: [['Una pasada', 'Un lote de hasta 2.000 libros.', 'ojo'],
+                        ['Backlog', 'Bucle hasta vaciar los pendientes. Puede tardar horas.', 'ojo'],
+                        ['Reemplazo CEGALD', 'Apaga lo que un proveedor ya no reporta. Siempre en simulación primero.', 'ojo']],
+                problemas: [['Dice que no pudo coger el lock', 'Hay otra pasada corriendo. Si quedó atascada tras un deploy, se libera sola en 30 minutos.'],
+                            ['Pendientes que no bajan', 'Mira los errores recientes al final de la tarjeta.']],
+                dato: 'El apagado por ausencia <b>no apaga nada</b> si el CEGALD trae menos de la mitad ' +
+                      'de lo que hay con stock, o si tiene más de 48 horas.'
+            },
+            d_distrib: {
+                icono: 'cube-outline', titulo: 'Catálogo de distribuidores',
+                sub: 'Importar los XLSX que mandan los distribuidores',
+                intro: 'Carga a <code>distributor_books</code> los catálogos completos en Excel. Es la ' +
+                       'tercera fuente de datos, después de Casa del Libro y Google Books.',
+                pasos: [['Importar', 'Sube el fichero y lo procesa por lotes.', 'ojo']],
+                dato: 'De aquí salió el catálogo de PODIPRINT: <b>99.999 títulos</b> con autor y ' +
+                      'editorial que Casa del Libro no tenía.'
+            },
+            d_tools: {
+                icono: 'build-outline', titulo: 'Herramientas',
+                sub: 'Diagnóstico y utilidades sueltas',
+                intro: 'Consultas puntuales: estado de los proxies, buscar un ISBN en Google Books, ' +
+                       'ver el esquema de una tabla o forzar migraciones.',
+                dato: 'Para diagnosticar un libro concreto, mejor el <b>buscador por ISBN</b> de la ' +
+                      'tarjeta del sync: enseña su estado en la base de datos y en Odoo a la vez.'
+            },
+        });
 
         function abrirAyuda(clave) {
             const a = AYUDA[clave];
