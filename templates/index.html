@@ -906,7 +906,19 @@
                     <p>Panel de operaciones · stock &amp; catálogo</p>
                 </div>
             </div>
-            <a class="logout-btn" href="/logout">Cerrar sesión</a>
+            <div style="margin-left:auto; display:flex; align-items:center; gap:10px;">
+                <span id="dev-badge" style="display:none; font-size:.66rem; font-weight:700;
+                      letter-spacing:.06em; color:#fbbf24; background:rgba(251,191,36,.13);
+                      border:1px solid rgba(251,191,36,.35); padding:3px 9px; border-radius:20px;">
+                    MODO DESARROLLADOR</span>
+                <button id="dev-toggle" onclick="toggleModoDev()" title="Modo desarrollador: muestra las herramientas de mantenimiento"
+                        style="background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.1);
+                               color:#6b7280; width:32px; height:32px; border-radius:8px; cursor:pointer;
+                               display:flex; align-items:center; justify-content:center; transition:all .15s;">
+                    <ion-icon name="code-slash-outline" style="font-size:1.05rem;"></ion-icon>
+                </button>
+                <a class="logout-btn" href="/logout">Cerrar sesión</a>
+            </div>
         </header>
 
         <!-- ═══ TABS (solo operativo) ═══ -->
@@ -1287,7 +1299,7 @@
             <!-- ═══ JOB 3 — CDL BULK VIA SITEMAP (fast path) ═══ -->
             <div class="card">
                 <div class="card-title">
-                    <ion-icon name="bug-outline"></ion-icon> Casa del Libro — fast path (sitemap)
+                    <ion-icon name="bug-outline"></ion-icon> Casa del Libro — fast path (sitemap) <span style="font-size:.6rem; font-weight:700; letter-spacing:.05em; background:rgba(148,163,184,.14); color:#94a3b8; border:1px solid rgba(148,163,184,.3); padding:2px 8px; border-radius:20px; margin-left:8px;" title="Lo reemplaza el HTTP ultra-rapido, que trae mas campos y va mas rapido">SUPERADO</span>
                     <span class="status-badge" id="cdl-status-badge" style="font-size:0.7rem;">IDLE</span>
                 </div>
                 <p style="color:#888; font-size:0.88rem;">
@@ -1621,7 +1633,7 @@
             <!-- ═══ AZETA CATÁLOGO COMPLETO (~1M libros con todo) ═══ -->
             <div class="card" style="border:2px solid rgba(211,84,0,0.6); background:rgba(211,84,0,0.05);">
                 <div class="card-title">
-                    <ion-icon name="library-outline"></ion-icon> AZETA — Catálogo completo (descripción, precio EUR, peso, dimensiones)
+                    <ion-icon name="library-outline"></ion-icon> AZETA — Catálogo completo <span style="font-size:.6rem; font-weight:700; letter-spacing:.05em; background:rgba(148,163,184,.14); color:#94a3b8; border:1px solid rgba(148,163,184,.3); padding:2px 8px; border-radius:20px; margin-left:8px;" title="Bloqueado desde junio: hacen falta normalizar 89.028 rutas de categoria antes">BLOQUEADO</span> (descripción, precio EUR, peso, dimensiones)
                     <span class="status-badge" id="azetacat-status-badge" style="font-size:0.7rem;">IDLE</span>
                 </div>
                 <p style="color:#888; font-size:0.88rem;">
@@ -1669,7 +1681,7 @@
             <!-- ═══ FASE 2: AZETA PUSH A ODOO ═══ -->
             <div class="card" style="border:2px solid rgba(155,89,182,0.7); background:rgba(155,89,182,0.06);">
                 <div class="card-title">
-                    <ion-icon name="rocket-outline"></ion-icon> AZETA → Push a Odoo (Fase 2)
+                    <ion-icon name="rocket-outline"></ion-icon> AZETA → Push a Odoo (Fase 2) <span style="font-size:.6rem; font-weight:700; letter-spacing:.05em; background:rgba(148,163,184,.14); color:#94a3b8; border:1px solid rgba(148,163,184,.3); padding:2px 8px; border-radius:20px; margin-left:8px;" title="Bloqueado desde junio: depende de la normalizacion de categorias">BLOQUEADO</span>
                     <span class="status-badge" id="azetapush-status-badge" style="font-size:0.7rem;">IDLE</span>
                 </div>
                 <p style="color:#888; font-size:0.88rem;">
@@ -6068,7 +6080,42 @@
         document.addEventListener('DOMContentLoaded', () => {
             // Auditoria es la pestaña por defecto: cargar sus datos y auto-refresh
             if (typeof auditLoadAll === 'function') { auditLoadAll(); auditStartAutoRefresh(); }
+            aplicarModoDev();
         });
+
+        // ═══ MODO DESARROLLADOR ═══
+        // Las herramientas de mantenimiento (espejo, enriquecedores, catalogos,
+        // lanzadores manuales de los crones) no las necesita quien opera a
+        // diario, pero no se borran: se esconden detras de este interruptor.
+        const TABS_DEV = ['odoo'];
+
+        function modoDevActivo() {
+            return localStorage.getItem('kalamoModoDev') === '1';
+        }
+
+        function aplicarModoDev() {
+            const on = modoDevActivo();
+            TABS_DEV.forEach(t => {
+                const btn = document.getElementById('tab-' + t);
+                if (btn) btn.style.display = on ? '' : 'none';
+                if (!on) {
+                    const cont = document.getElementById('content-' + t);
+                    if (cont && cont.classList.contains('active')) switchTab('audit');
+                }
+            });
+            document.getElementById('dev-badge').style.display = on ? '' : 'none';
+            const b = document.getElementById('dev-toggle');
+            b.style.color = on ? '#fbbf24' : '#6b7280';
+            b.style.borderColor = on ? 'rgba(251,191,36,.4)' : 'rgba(255,255,255,.1)';
+            b.style.background = on ? 'rgba(251,191,36,.1)' : 'rgba(255,255,255,.05)';
+        }
+
+        function toggleModoDev() {
+            const nuevo = !modoDevActivo();
+            localStorage.setItem('kalamoModoDev', nuevo ? '1' : '0');
+            aplicarModoDev();
+            if (nuevo) switchTab('odoo');
+        }
 
         // ═══ AYUDA CONTEXTUAL ═══
         const AYUDA = {
