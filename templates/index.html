@@ -928,6 +928,7 @@
             <button class="tab-btn" onclick="switchTab('odoo')" id="tab-odoo"><ion-icon name="sync-outline"></ion-icon> Odoo Sync</button>
             <button class="tab-btn" onclick="switchTab('manual')" id="tab-manual"><ion-icon name="create-outline"></ion-icon> Relleno manual</button>
             <button class="tab-btn" onclick="switchTab('shopify')" id="tab-shopify"><ion-icon name="storefront-outline"></ion-icon> Shopify</button>
+            <button class="tab-btn" onclick="switchTab('salud')" id="tab-salud"><ion-icon name="pulse-outline"></ion-icon> Salud <span id="tab-salud-punto" style="display:none; width:8px; height:8px; border-radius:50%; margin-left:5px;"></span></button>
         </div>
 
         <!-- ═══ TAB 1: INDIVIDUAL SEARCH (interno, oculto) ═══ -->
@@ -2622,6 +2623,53 @@
             </div>
         </div>
 
+        <!-- ═══ TAB: SALUD ═══ -->
+        <div class="tab-content" id="content-salud">
+            <div class="card" id="salud-card" style="border:2px solid rgba(148,163,184,.3);">
+                <div class="card-title">
+                    <ion-icon name="pulse-outline"></ion-icon> Salud del sistema
+                    <button class="ayuda-btn" onclick="abrirAyuda('salud')" title="Qué es esto y cómo se usa">?</button>
+                    <span class="status-badge" id="salud-badge" style="font-size:.7rem;">—</span>
+                    <button class="btn-edit" style="float:right;" onclick="saludRevisar()">
+                        <ion-icon name="refresh-outline"></ion-icon> Revisar ahora</button>
+                </div>
+                <p style="color:#8b93a7; font-size:.8rem; margin-top:6px;">
+                    Comprueba que todo está en marcha, <strong>arregla lo que es seguro arreglar</strong>
+                    —crones parados, locks atascados— y avisa por Telegram de lo que no puede tocar.
+                </p>
+
+                <div style="margin-top:14px; display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px;">
+                    <div class="stat-box"><div class="stat-number" style="color:#4ade80" id="salud-ok">—</div>
+                        <div class="stat-label">Correctos</div></div>
+                    <div class="stat-box"><div class="stat-number" style="color:#fbbf24" id="salud-avisos">—</div>
+                        <div class="stat-label">Avisos</div></div>
+                    <div class="stat-box"><div class="stat-number" style="color:#f87171" id="salud-errores">—</div>
+                        <div class="stat-label">Errores</div></div>
+                    <div class="stat-box"><div class="stat-number" style="color:#3498db" id="salud-arreglados">—</div>
+                        <div class="stat-label">Arreglados solos</div></div>
+                </div>
+
+                <div id="salud-lista" style="margin-top:18px;">
+                    <span style="color:#8b93a7">Pulsa <strong>Revisar ahora</strong> para comprobarlo todo.</span>
+                </div>
+
+                <div class="section-label" style="color:#2ecc71; margin-top:20px;">
+                    <ion-icon name="time-outline"></ion-icon> Vigilancia automática
+                </div>
+                <p style="color:#8b93a7; font-size:.8rem;">
+                    Revisa cada 15 minutos y avisa por Telegram <strong>solo cuando algo cambia</strong>,
+                    no en cada pasada. Para que arranque solo tras un reinicio, hace falta
+                    <code>VIGILANTE_ENABLED=1</code>.
+                </p>
+                <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+                    <button class="btn btn-success" onclick="saludCron(true)">▶ Activar vigilancia</button>
+                    <button class="btn btn-danger" onclick="saludCron(false)">
+                        <ion-icon name="stop-circle-outline"></ion-icon> Detener</button>
+                    <span id="salud-cron" style="color:#8b93a7; font-size:.85rem;"></span>
+                </div>
+            </div>
+        </div>
+
         <!-- ═══ TAB: SHOPIFY ═══ -->
         <div class="tab-content" id="content-shopify">
             <div class="card" style="border:2px solid rgba(46,204,113,0.45);">
@@ -2742,6 +2790,7 @@
             if (tab === 'catalog') { catalogSearch(1); loadSuppliersDatalist(); }
             if (tab === 'manual') manualSub(manualTipo);
             if (tab === 'shopify') shLoad(true); else shPollStop();
+            if (tab === 'salud') saludCargar();
             if (tab === 'audit') { auditLoadAll(); auditStartAutoRefresh(); asLoad(); }
             else { auditStopAutoRefresh(); }
             if (tab !== 'odoo') {
@@ -6099,6 +6148,73 @@
             aplicarModoDev();
         });
 
+        // ═══ SALUD DEL SISTEMA ═══
+        const SALUD_COLOR = { ok: '#4ade80', aviso: '#fbbf24', error: '#f87171' };
+        const SALUD_ICONO = { ok: 'checkmark-circle', aviso: 'alert-circle', error: 'close-circle' };
+
+        function saludPintar(u) {
+            if (!u || !u.chequeos) return;
+            const r = u.resumen || {};
+            document.getElementById('salud-ok').textContent = r.ok ?? '—';
+            document.getElementById('salud-avisos').textContent = r.avisos ?? '—';
+            document.getElementById('salud-errores').textContent = r.errores ?? '—';
+            document.getElementById('salud-arreglados').textContent = r.arreglados ?? '—';
+            const color = SALUD_COLOR[u.salud] || '#8b93a7';
+            const b = document.getElementById('salud-badge');
+            b.textContent = u.salud === 'ok' ? 'TODO BIEN'
+                          : u.salud === 'aviso' ? 'CON AVISOS' : 'HAY PROBLEMAS';
+            b.style.color = color;
+            document.getElementById('salud-card').style.borderColor = color + '66';
+            const p = document.getElementById('tab-salud-punto');
+            p.style.display = u.salud === 'ok' ? 'none' : 'inline-block';
+            p.style.background = color;
+
+            document.getElementById('salud-lista').innerHTML = u.chequeos.map(c => {
+                const col = SALUD_COLOR[c.estado];
+                return `<div style="display:flex; gap:11px; align-items:flex-start; padding:11px 0;
+                             border-bottom:1px solid rgba(255,255,255,.045);">
+                    <ion-icon name="${SALUD_ICONO[c.estado]}" style="color:${col}; font-size:1.15rem; margin-top:1px; flex-shrink:0;"></ion-icon>
+                    <div style="flex:1;">
+                        <div style="color:#e8ecf5; font-size:.87rem; font-weight:600;">${c.titulo}
+                            ${c.arreglado ? '<span style="font-size:.62rem; background:rgba(52,152,219,.16); color:#3498db; border-radius:20px; padding:2px 8px; margin-left:7px; font-weight:700;">ARREGLADO</span>' : ''}
+                        </div>
+                        <div style="color:#8b93a7; font-size:.8rem; margin-top:2px;">${c.detalle}</div>
+                        ${c.accion ? `<div style="color:#fbbf24; font-size:.76rem; margin-top:3px;"><ion-icon name="arrow-forward-outline"></ion-icon> ${c.accion}</div>` : ''}
+                    </div></div>`;
+            }).join('') + `<p style="color:#666; font-size:.74rem; margin-top:10px;">
+                Última revisión: ${u.cuando ? u.cuando.slice(0,19).replace('T',' ') : '—'} · ${u.elapsed_s || 0}s</p>`;
+        }
+
+        async function saludCargar() {
+            try {
+                const d = await (await fetch('/api/v1/vigilante/estado')).json();
+                if (d.ultima?.chequeos) saludPintar(d.ultima);
+                const c = d.cron || {};
+                document.getElementById('salud-cron').textContent = c.task_running
+                    ? `activa · ${c.runs_total || 0} revisiones · ${c.avisos_enviados || 0} avisos enviados`
+                    : 'parada';
+            } catch (e) {}
+        }
+
+        async function saludRevisar() {
+            const l = document.getElementById('salud-lista');
+            l.innerHTML = '<span style="color:#fbbf24">Comprobando… (consulta Odoo y Shopify, unos segundos)</span>';
+            try {
+                const d = await (await fetch('/api/v1/vigilante/revisar?arreglar=true', { method: 'POST' })).json();
+                saludPintar(d);
+            } catch (e) {
+                l.innerHTML = '<span style="color:#f87171">No se pudo completar la revisión.</span>';
+            }
+        }
+
+        async function saludCron(activar) {
+            const r = await fetch(`/api/v1/vigilante/cron/${activar ? 'start' : 'stop'}`, { method: 'POST' });
+            const d = await r.json();
+            document.getElementById('salud-cron').textContent = d.status === 'error'
+                ? d.message : (activar ? 'activada' : 'detenida');
+            saludCargar();
+        }
+
         // ═══ MODO DESARROLLADOR ═══
         // Las herramientas de mantenimiento (espejo, enriquecedores, catalogos,
         // lanzadores manuales de los crones) no las necesita quien opera a
@@ -6269,6 +6385,32 @@
                 ],
                 dato: 'Con título, portada, descripción y precio, el libro pasa a ser ' +
                       '<b>publicable en Shopify</b> automáticamente.'
+            },
+            salud: {
+                icono: 'pulse-outline', titulo: 'Salud del sistema',
+                sub: 'El vigilante: comprueba, arregla y avisa',
+                intro: 'Repasa que todo este en marcha. Lo que puede arreglar solo lo arregla; ' +
+                       'de lo demas avisa por Telegram. No decide nada: son reglas fijas, no una IA.',
+                numeros: [
+                    ['#4ade80', 'Correctos', 'Comprobaciones que pasaron sin problema.'],
+                    ['#fbbf24', 'Avisos', 'Algo que mirar, pero que no rompe nada ahora mismo.'],
+                    ['#f87171', 'Errores', 'Algo esta roto y hay que actuar.'],
+                    ['#3498db', 'Arreglados solos', 'Problemas que el vigilante resolvio sin ayuda.'],
+                ],
+                pasos: [
+                    ['Revisar ahora', 'Pasa las nueve comprobaciones y arregla lo que puede. Tarda unos segundos porque consulta Odoo y Shopify.', 'ojo'],
+                    ['Activar vigilancia', 'Lo deja repasando cada 15 minutos.', 'seguro'],
+                ],
+                problemas: [
+                    ['Un cron sale PARADO y no lo levanta',
+                     'Arrancalo desde su tarjeta. Si vuelve a caerse, falta su variable de entorno para que arranque solo tras un reinicio.'],
+                    ['Un proveedor lleva dias sin mandar',
+                     'El vigilante no puede hacer nada: el problema esta en la entrada, en Server A.'],
+                    ['Odoo o Shopify en rojo',
+                     'Sin ellos no se puede sincronizar ni publicar. Comprueba que el servicio este arriba.'],
+                ],
+                dato: 'Los avisos de Telegram solo salen <b>cuando algo cambia de estado</b>. ' +
+                      'Si no, un proveedor mudo mandaria un mensaje cada cuarto de hora.'
             },
         };
 

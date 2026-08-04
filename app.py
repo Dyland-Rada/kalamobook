@@ -212,6 +212,16 @@ async def startup():
         except Exception as e:
             print(f"[Startup] SINLI sync cron FALLO: {type(e).__name__}: {e}")
 
+    # Auto-arrancar el vigilante de salud
+    if os.environ.get("VIGILANTE_ENABLED", "").lower() in ("1", "true", "yes"):
+        try:
+            import vigilante
+            if vigilante.start_cron():
+                print(f"[Startup] Vigilante AUTO-ARRANCADO "
+                      f"(cada {vigilante.INTERVALO_S}s)")
+        except Exception as e:
+            print(f"[Startup] Vigilante FALLO: {type(e).__name__}: {e}")
+
     # Auto-arrancar el ciclo diario de libros nuevos (auto-scrape)
     if os.environ.get("AUTO_SCRAPE_CRON_ENABLED", "").lower() in ("1", "true", "yes"):
         try:
@@ -3423,3 +3433,52 @@ async def shopify_stop():
         return JSONResponse(content={"status": "stopping"})
     return JSONResponse(status_code=400, content={
         "status": "error", "message": "No hay job de Shopify corriendo."})
+
+
+# ─── Vigilante: salud del sistema ────────────────────────────────────
+
+@app.get("/api/v1/vigilante/estado", tags=["Vigilante"])
+async def vigilante_estado():
+    """Ultima revision hecha y estado del cron del vigilante."""
+    import vigilante
+    return JSONResponse(content={
+        "ultima": vigilante.get_estado(),
+        "cron": vigilante.get_cron_status(),
+    })
+
+
+@app.post("/api/v1/vigilante/revisar", tags=["Vigilante"])
+async def vigilante_revisar(
+    arreglar: bool = Query(True, description="arreglar lo que sea seguro"),
+    avisar: bool = Query(False, description="mandar aviso por Telegram"),
+):
+    """
+    Pasa todas las comprobaciones ahora mismo. Con arreglar=true levanta los
+    crones parados y libera los locks atascados; el resto solo lo reporta.
+    """
+    import vigilante
+    return JSONResponse(content=await vigilante.revisar(arreglar=arreglar,
+                                                         avisar=avisar))
+
+
+@app.post("/api/v1/vigilante/cron/start", tags=["Vigilante"])
+async def vigilante_cron_start():
+    """
+    Deja el vigilante corriendo. Para que arranque solo tras un reinicio:
+    VIGILANTE_ENABLED=1.
+    """
+    import vigilante
+    if vigilante.start_cron():
+        return JSONResponse(content={"status": "started",
+                                      "interval_s": vigilante.INTERVALO_S})
+    return JSONResponse(status_code=400, content={
+        "status": "error", "message": "Ya estaba corriendo o sin event loop."})
+
+
+@app.post("/api/v1/vigilante/cron/stop", tags=["Vigilante"])
+async def vigilante_cron_stop():
+    import vigilante
+    if vigilante.stop_cron():
+        return JSONResponse(content={"status": "stopping"})
+    return JSONResponse(status_code=400, content={
+        "status": "error", "message": "No estaba corriendo."})
