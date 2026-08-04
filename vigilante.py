@@ -31,6 +31,14 @@ CEGALD_DIAS_AVISO = float(os.environ.get("VIGILANTE_CEGALD_DIAS", "3"))
 LOCK_MIN_AVISO = int(os.environ.get("VIGILANTE_LOCK_MIN", "45"))
 ERRORES_AVISO = int(os.environ.get("VIGILANTE_ERRORES", "50"))
 
+# Quien ejecuta la revision. Va en cada apunte del historial para que una
+# prueba desde otra maquina no se confunda con lo que pasa en produccion.
+ORIGEN = os.environ.get("WORKER_NAME", "?")
+# El proceso del servidor es el unico que puede opinar sobre los crones,
+# porque su estado vive en memoria. Lo marca el mismo interruptor que los
+# arranca al inicio.
+EN_SERVIDOR = os.environ.get("VIGILANTE_ENABLED", "").lower() in ("1", "true", "yes")
+
 OK, AVISO, ERROR = "ok", "aviso", "error"
 
 _ultima: dict | None = None
@@ -59,8 +67,19 @@ def _chequeo(clave, titulo, estado, detalle, arreglado=None, accion=None):
 
 # ─── Comprobaciones ──────────────────────────────────────────────────
 def _revisar_crones(arreglar: bool) -> list[dict]:
-    """Los tres crones que deben estar siempre en marcha."""
+    """
+    Los tres crones que deben estar siempre en marcha.
+
+    OJO: el estado de un cron vive en la memoria del proceso que lo ejecuta.
+    Si el vigilante corre fuera del servidor —una prueba desde un portatil—
+    ve sus propios crones, que no existen, y los daria por caidos. Eso paso
+    el 04/08 y metio tres errores falsos en el historial compartido. Por eso
+    fuera del servidor este chequeo no opina.
+    """
     salida = []
+    if not EN_SERVIDOR:
+        return [_chequeo("crones", "Crones", OK,
+                         "no se comprueban: esta revision no corre en el servidor")]
     definicion = [
         ("cron_azeta", "Cron de stock AZETA", "azeta_push_odoo",
          "get_cron_status", "start_stock_cron"),
@@ -251,7 +270,8 @@ async def revisar(arreglar: bool = True) -> dict:
     salud = ERROR if errores else (AVISO if avisos else OK)
 
     _ultima = {
-        "status": "completado", "salud": salud,
+        "status": "completado", "salud": salud, "origen": ORIGEN,
+        "en_servidor": EN_SERVIDOR,
         "cuando": datetime.now().isoformat(),
         "chequeos": chequeos,
         "resumen": {"ok": len(chequeos) - len(errores) - len(avisos),
@@ -264,12 +284,14 @@ async def revisar(arreglar: bool = True) -> dict:
     _ultima["cambios"] = cambios
 
     try:
+        if not EN_SERVIDOR:
+            return _ultima      # una prueba fuera del servidor no ensucia el historial
         import audit_log
         audit_log.log_event(
             "vigilante", f"revision_{salud}",
-            f"Vigilante: {len(errores)} errores, {len(avisos)} avisos, "
+            f"Vigilante [{ORIGEN}]: {len(errores)} errores, {len(avisos)} avisos, "
             f"{len(arreglados)} arreglados solos",
-            detalle={"salud": salud, "cambios": cambios,
+            detalle={"salud": salud, "cambios": cambios, "origen": ORIGEN,
                      "problemas": [f"{c['titulo']}: {c['detalle']}"
                                    for c in errores + avisos]},
             nivel="error" if errores else "info")

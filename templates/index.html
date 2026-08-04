@@ -6194,7 +6194,8 @@
                         ${c.accion ? `<div style="color:#fbbf24; font-size:.76rem; margin-top:3px;"><ion-icon name="arrow-forward-outline"></ion-icon> ${c.accion}</div>` : ''}
                     </div></div>`;
             }).join('') + `<p style="color:#666; font-size:.74rem; margin-top:10px;">
-                Última revisión: ${u.cuando ? u.cuando.slice(0,19).replace('T',' ') : '—'} · ${u.elapsed_s || 0}s</p>`;
+                Última revisión: ${u.cuando ? u.cuando.slice(0,19).replace('T',' ') : '—'} · ${u.elapsed_s || 0}s
+                ${u.en_servidor === false ? '· <span style="color:#fbbf24">ejecutada fuera del servidor, no se ha registrado</span>' : ''}</p>`;
         }
 
         async function saludCargar() {
