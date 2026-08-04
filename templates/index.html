@@ -199,6 +199,99 @@
             gap: 8px;
         }
 
+        /* ── AYUDA CONTEXTUAL ──────────────────────────────── */
+        .ayuda-btn {
+            width: 22px; height: 22px; border-radius: 50%;
+            border: 1px solid rgba(99,102,241,.45);
+            background: rgba(99,102,241,.12); color: #a5b4fc;
+            font-size: .75rem; font-weight: 700; cursor: pointer;
+            display: inline-flex; align-items: center; justify-content: center;
+            transition: all .15s; flex-shrink: 0; margin-left: 2px;
+        }
+        .ayuda-btn:hover {
+            background: #6366f1; color: #fff; transform: scale(1.12);
+            box-shadow: 0 0 12px rgba(99,102,241,.5);
+        }
+        .ayuda-fondo {
+            position: fixed; inset: 0; background: rgba(8,10,20,.72);
+            backdrop-filter: blur(3px); z-index: 998; opacity: 0;
+            pointer-events: none; transition: opacity .22s;
+        }
+        .ayuda-fondo.abierto { opacity: 1; pointer-events: auto; }
+        .ayuda-panel {
+            position: fixed; top: 0; right: 0; height: 100%; width: 480px;
+            max-width: 94vw; background: #12141f; z-index: 999;
+            border-left: 1px solid rgba(255,255,255,.09);
+            box-shadow: -18px 0 60px rgba(0,0,0,.55);
+            transform: translateX(102%); transition: transform .26s cubic-bezier(.4,0,.2,1);
+            display: flex; flex-direction: column;
+        }
+        .ayuda-panel.abierto { transform: translateX(0); }
+        .ayuda-cab {
+            padding: 20px 22px 16px; border-bottom: 1px solid rgba(255,255,255,.07);
+            display: flex; align-items: flex-start; gap: 12px;
+            background: linear-gradient(160deg, rgba(99,102,241,.16), transparent 70%);
+        }
+        .ayuda-cab ion-icon { font-size: 1.5rem; color: #818cf8; margin-top: 2px; }
+        .ayuda-cab h3 { font-size: 1.12rem; color: #fff; font-weight: 700; margin: 0 0 3px; }
+        .ayuda-cab p { font-size: .78rem; color: #8b93a7; margin: 0; }
+        .ayuda-cerrar {
+            margin-left: auto; background: none; border: 0; color: #8b93a7;
+            font-size: 1.4rem; cursor: pointer; line-height: 1; padding: 0 2px;
+        }
+        .ayuda-cerrar:hover { color: #fff; }
+        .ayuda-cuerpo { padding: 18px 22px 40px; overflow-y: auto; flex: 1; }
+        .ayuda-intro {
+            font-size: .87rem; color: #c9d1e0; line-height: 1.6; margin-bottom: 22px;
+            padding-left: 12px; border-left: 2px solid rgba(99,102,241,.5);
+        }
+        .ayuda-seccion {
+            font-size: .68rem; text-transform: uppercase; letter-spacing: .09em;
+            color: #6b7280; font-weight: 700; margin: 22px 0 11px;
+            display: flex; align-items: center; gap: 7px;
+        }
+        .ayuda-seccion::after {
+            content: ''; flex: 1; height: 1px; background: rgba(255,255,255,.07);
+        }
+        .ayuda-num {
+            display: flex; gap: 11px; align-items: flex-start;
+            padding: 9px 0; border-bottom: 1px solid rgba(255,255,255,.045);
+        }
+        .ayuda-num:last-child { border-bottom: 0; }
+        .ayuda-punto {
+            width: 9px; height: 9px; border-radius: 50%; margin-top: 5px; flex-shrink: 0;
+        }
+        .ayuda-num b { color: #e8ecf5; font-size: .84rem; display: block; margin-bottom: 2px; }
+        .ayuda-num span { color: #8b93a7; font-size: .79rem; line-height: 1.5; }
+        .ayuda-paso {
+            display: flex; gap: 12px; margin-bottom: 14px; align-items: flex-start;
+        }
+        .ayuda-paso-n {
+            width: 25px; height: 25px; border-radius: 50%; flex-shrink: 0;
+            background: rgba(99,102,241,.18); border: 1px solid rgba(99,102,241,.45);
+            color: #a5b4fc; font-size: .76rem; font-weight: 700;
+            display: flex; align-items: center; justify-content: center;
+        }
+        .ayuda-paso b { color: #e8ecf5; font-size: .85rem; display: block; margin-bottom: 3px; }
+        .ayuda-paso span { color: #8b93a7; font-size: .79rem; line-height: 1.55; }
+        .ayuda-tag {
+            display: inline-block; font-size: .64rem; padding: 2px 7px; border-radius: 4px;
+            margin-left: 6px; font-weight: 700; letter-spacing: .04em; vertical-align: middle;
+        }
+        .ayuda-tag.seguro { background: rgba(74,222,128,.15); color: #4ade80; }
+        .ayuda-tag.ojo { background: rgba(251,191,36,.15); color: #fbbf24; }
+        .ayuda-aviso {
+            background: rgba(251,191,36,.07); border-left: 2px solid #fbbf24;
+            padding: 11px 13px; border-radius: 0 7px 7px 0; margin-bottom: 10px;
+        }
+        .ayuda-aviso b { color: #fbbf24; font-size: .81rem; display: block; margin-bottom: 3px; }
+        .ayuda-aviso span { color: #a8b0c0; font-size: .79rem; line-height: 1.55; }
+        .ayuda-dato {
+            background: rgba(99,102,241,.08); border-radius: 8px; padding: 12px 14px;
+            margin-top: 18px; font-size: .79rem; color: #a8b0c0; line-height: 1.55;
+        }
+        .ayuda-dato b { color: #a5b4fc; }
+
         /* ── FORM ELEMENTS ─────────────────────────────────── */
         .search-row {
             display: flex;
@@ -2254,6 +2347,7 @@
             <div class="card">
                 <div class="card-title">
                     <ion-icon name="cube-outline"></ion-icon> Stock por proveedor — encendidos en Odoo
+                    <button class="ayuda-btn" onclick="abrirAyuda('stockprov')" title="Qué es esto y cómo se usa">?</button>
                     <button class="btn-edit" style="float:right;" onclick="loadStockProveedor()">
                         <ion-icon name="refresh-outline"></ion-icon> Refrescar</button>
                 </div>
@@ -2266,6 +2360,7 @@
             <div class="card" style="border:2px solid rgba(230,126,34,0.45);">
                 <div class="card-title">
                     <ion-icon name="power-outline"></ion-icon> Proveedores — pausar y reactivar
+                    <button class="ayuda-btn" onclick="abrirAyuda('proveedores')" title="Qué es esto y cómo se usa">?</button>
                     <button class="btn-edit" style="float:right;" onclick="loadProveedores()">
                         <ion-icon name="refresh-outline"></ion-icon> Refrescar</button>
                     <button class="btn-edit" style="float:right; margin-right:8px;"
@@ -2317,6 +2412,7 @@
             <div class="card" style="border:2px solid rgba(46,204,113,0.4);">
                 <div class="card-title">
                     <ion-icon name="sparkles-outline"></ion-icon> Libros nuevos — ciclo diario
+                    <button class="ayuda-btn" onclick="abrirAyuda('libnuevos')" title="Qué es esto y cómo se usa">?</button>
                     <span class="status-badge" id="as-badge" style="font-size:.7rem;">—</span>
                     <button class="btn-edit" style="float:right;" onclick="asLoad()">
                         <ion-icon name="refresh-outline"></ion-icon> Refrescar</button>
@@ -2350,6 +2446,7 @@
             <div class="card" style="border:2px solid rgba(52,152,219,0.5);">
                 <div class="card-title">
                     <ion-icon name="clipboard-outline"></ion-icon> Auditoría — qué se recibió y qué se actualizó
+                    <button class="ayuda-btn" onclick="abrirAyuda('auditoria')" title="Qué es esto y cómo se usa">?</button>
                     <label style="float:right; font-size:0.8rem; color:#888; font-weight:normal;">
                         <input type="checkbox" id="audit-autorefresh" checked> auto-refresh (10s)
                     </label>
@@ -2502,6 +2599,7 @@
             <div class="card" style="border:2px solid rgba(46,204,113,0.45);">
                 <div class="card-title">
                     <ion-icon name="storefront-outline"></ion-icon> Shopify — publicación de libros
+                    <button class="ayuda-btn" onclick="abrirAyuda('shopify')" title="Qué es esto y cómo se usa">?</button>
                     <span class="status-badge" id="sh-badge" style="font-size:.7rem;">—</span>
                     <button class="btn-edit" style="float:right;" onclick="shLoad(true)">
                         <ion-icon name="refresh-outline"></ion-icon> Refrescar</button>
@@ -2578,6 +2676,10 @@
         <!-- ═══ TAB: RELLENO MANUAL ═══ -->
         <div class="tab-content" id="content-manual">
             <div class="card">
+                <div class="card-title">
+                    <ion-icon name="create-outline"></ion-icon> Relleno manual de fichas
+                    <button class="ayuda-btn" onclick="abrirAyuda('manual')" title="Qué es esto y cómo se usa">?</button>
+                </div>
                 <div class="subtabs">
                     <button class="subtab-btn active" id="msub-no_scrapeados" onclick="manualSub('no_scrapeados')">
                         <ion-icon name="alert-circle-outline"></ion-icon> No scrapeados / pendientes</button>
@@ -5967,7 +6069,197 @@
             // Auditoria es la pestaña por defecto: cargar sus datos y auto-refresh
             if (typeof auditLoadAll === 'function') { auditLoadAll(); auditStartAutoRefresh(); }
         });
+
+        // ═══ AYUDA CONTEXTUAL ═══
+        const AYUDA = {
+            shopify: {
+                icono: 'storefront-outline',
+                titulo: 'Publicación en Shopify',
+                sub: 'De libro con stock a ficha publicada en la tienda',
+                intro: 'Un libro pasa por tres estados. Los contadores de arriba son ' +
+                       'esos estados, no grupos distintos: el mismo libro va avanzando.',
+                numeros: [
+                    ['#3498db', 'Productos en Shopify', 'Lo que hay en la tienda ahora mismo. Se pregunta en vivo a Shopify.'],
+                    ['#4ade80', 'Fichados como publicados', 'Lo que tenemos anotado como ya subido. Es nuestra memoria para no repetir trabajo.'],
+                    ['#e67e22', 'Fichas listas sin subir', 'La IA ya las escribió, pero todavía no están en la tienda. Puedes revisarlas antes.'],
+                    ['#fbbf24', 'Por publicar', 'Libros que cumplen todo y no están. Ojo: tienen los datos sueltos, aún no tienen ficha.'],
+                ],
+                pasos: [
+                    ['Auditar', 'Lee la tienda y anota lo que ya está publicado. Solo lee, no cambia nada. Tarda un minuto y pico.', 'seguro'],
+                    ['Generar fichas', 'La IA escribe la descripción, el SEO y las categorías. No publica nada: las fichas quedan guardadas.', 'seguro'],
+                    ['Subir', 'Por API crea los productos directamente. El XLSX genera el fichero para Matrixify.', 'ojo'],
+                ],
+                problemas: [
+                    ['El contador de fichas listas no baja tras descargar el XLSX',
+                     'Descargar no es publicar. Sube el fichero a Matrixify y luego pulsa Auditar: ahí se cuadra.'],
+                    ['Publicar dice que subiría más de los que generé',
+                     'Se acumulan las de días anteriores que aún no se subieron. Es normal.'],
+                ],
+                dato: 'La primera auditoría descartó <b>11.697 libros</b> que ya estaban ' +
+                      'publicados por otra vía. Generarles ficha habría costado unos ' +
+                      '<b>34 millones de tokens</b> para nada. Por eso se audita antes de generar.'
+            },
+            proveedores: {
+                icono: 'power-outline',
+                titulo: 'Proveedores',
+                sub: 'Pausar, reactivar y dar de alta distribuidores',
+                intro: 'Cada proveedor tiene su propio almacén en Odoo. Si uno deja de ' +
+                       'servir, solo se apaga lo suyo: un libro que sirvan dos sigue disponible.',
+                numeros: [
+                    ['#8b93a7', 'Catálogo', 'Todo lo que vende ese proveedor. No todo tiene stock.'],
+                    ['#c9d1e0', 'Reportados', 'Lo que manda en sus ficheros de stock.'],
+                    ['#c9d1e0', 'Con stock', 'De los reportados, los disponibles ahora mismo.'],
+                    ['#c9d1e0', 'En Odoo', 'Cuántos existen ya como producto.'],
+                    ['#4ade80', 'Encendidos', 'Los que de verdad tienen stock en la tienda. Es el número que importa.'],
+                ],
+                pasos: [
+                    ['Pausar', 'Deja de sincronizarse y su stock va a 0, solo en SU almacén. Antes te dice cuántos libros apagaría.', 'ojo'],
+                    ['Reactivar', 'Quita la pausa y marca sus libros para que el stock vuelva a subir.', 'seguro'],
+                    ['Empujar', 'Fuerza que su stock se vuelva a subir sin esperar a su próximo fichero.', 'seguro'],
+                    ['Conciliar stock', 'Compara la base de datos con Odoo y sube lo que falte.', 'seguro'],
+                ],
+                problemas: [
+                    ['«Encendidos» muy por debajo de «Con stock»',
+                     'Hay stock sin subir. Pulsa Conciliar stock.'],
+                    ['«Último CEGALD» lleva días en ámbar',
+                     'Ese proveedor ha dejado de mandar ficheros. El problema está en la entrada, no aquí.'],
+                    ['Reactivé un proveedor y no vuelve su stock',
+                     'Pulsa Empujar. El sistema solo mira los libros cuya cantidad cambia, y si vuelve con el mismo stock no se entera.'],
+                ],
+                dato: 'Reactivar <b>re-empuja siempre</b>. Se midió: en un día, AKAL solo ' +
+                      'movió 1 libro de 3.808. Esperar al siguiente fichero dejaría a 0 ' +
+                      'todo lo que no cambie de cantidad.'
+            },
+            stockprov: {
+                icono: 'cube-outline',
+                titulo: 'Stock por proveedor',
+                sub: 'Cuántos libros tiene encendidos cada uno en Odoo',
+                intro: 'Cuenta los libros con stock mayor que cero en el almacén de cada ' +
+                       'proveedor, contando solo productos activos. Se pregunta a Odoo en vivo.',
+                numeros: [
+                    ['#4ade80', 'Encendidos', 'Libros que un cliente puede comprar ahora mismo de ese proveedor.'],
+                ],
+                problemas: [
+                    ['Un proveedor se desploma de un día para otro',
+                     'O dejó de mandar stock, o alguien lo pausó. Míralo en la tarjeta de Proveedores.'],
+                    ['Sale «error» en vez de un número',
+                     'No se pudo consultar Odoo. Refresca; si sigue, Odoo puede estar caído.'],
+                ],
+                dato: 'Es el mejor primer vistazo de la mañana: si todos los números se ' +
+                      'parecen a los de ayer, el sistema funcionó por la noche.'
+            },
+            libnuevos: {
+                icono: 'sparkles-outline',
+                titulo: 'Libros nuevos',
+                sub: 'El ciclo diario que crea en Odoo lo que llega nuevo',
+                intro: 'Una vez al día busca libros con stock que aún no están en Odoo, ' +
+                       'los busca en Casa del Libro, los crea con su ficha y manda un correo.',
+                numeros: [
+                    ['#3498db', 'Nuevos detectados', 'Libros con stock que no estaban en Odoo.'],
+                    ['#2ecc71', 'Con ficha', 'Los que se encontraron en Casa del Libro.'],
+                    ['#e67e22', 'Sin ficha', 'No se encontraron. Van al correo y a Relleno manual.'],
+                ],
+                pasos: [
+                    ['Activar ciclo diario', 'Lo deja corriendo solo, una vez al día.', 'seguro'],
+                    ['Ejecutar ahora', 'Lanza una pasada al momento. Crea productos en Odoo.', 'ojo'],
+                ],
+                problemas: [
+                    ['Muchos sin ficha',
+                     'Normal en libros extranjeros: Casa del Libro es española y no los tiene.'],
+                    ['No llegó el correo',
+                     'Mira el detalle de la tarjeta: dice si el aviso a Server A falló y por qué.'],
+                ],
+                dato: 'Los proveedores marcados con <b>crear nuevos: OFF</b> quedan fuera. ' +
+                      'Sin ese freno, la primera corrida habría creado <b>99.830 fichas ' +
+                      'sin título</b> de un proveedor de impresión bajo demanda.'
+            },
+            auditoria: {
+                icono: 'clipboard-outline',
+                titulo: 'Auditoría',
+                sub: 'Qué se recibió y qué se actualizó',
+                intro: 'Todo lo que hace el sistema queda registrado. Esta tarjeta es el ' +
+                       'historial: sirve para responder «¿esto corrió anoche?» y «¿qué pasó?».',
+                numeros: [
+                    ['#16a085', 'Recibidos hoy', 'Libros que entraron de los proveedores.'],
+                    ['#3498db', 'Eventos hoy', 'Trabajos que se ejecutaron.'],
+                    ['#e74c3c', 'Errores hoy', 'Si no es cero, mira el log de abajo.'],
+                ],
+                problemas: [
+                    ['Un proceso no aparece en «Última actividad»',
+                     'Ese cron no ha corrido nunca o está parado.'],
+                    ['Fantasmas altos en un proveedor',
+                     'Tiene libros con stock que ya no reporta. Se corrige con el apagado por ausencia.'],
+                ],
+                dato: 'Todo se guarda en la base de datos, así que <b>sobrevive a los ' +
+                      'reinicios</b> del servidor.'
+            },
+            manual: {
+                icono: 'create-outline',
+                titulo: 'Relleno manual',
+                sub: 'Completar a mano las fichas que no se encontraron',
+                intro: 'Libros que se crearon en Odoo pero sin datos, porque no aparecían ' +
+                       'en ninguna fuente. Al rellenarlos aquí quedan listos para publicarse.',
+                pasos: [
+                    ['Elegir el día', 'Se agrupan por la fecha en que se intentó buscarlos.', 'seguro'],
+                    ['Rellenar', 'Título, autor, editorial, precio, imagen y descripción.', 'seguro'],
+                    ['Guardar', 'Se escribe en Odoo y se reclasifica la ficha al momento.', 'ojo'],
+                ],
+                dato: 'Con título, portada, descripción y precio, el libro pasa a ser ' +
+                      '<b>publicable en Shopify</b> automáticamente.'
+            },
+        };
+
+        function abrirAyuda(clave) {
+            const a = AYUDA[clave];
+            if (!a) return;
+            let h = '';
+            if (a.intro) h += `<div class="ayuda-intro">${a.intro}</div>`;
+            if (a.numeros?.length) {
+                h += `<div class="ayuda-seccion"><ion-icon name="stats-chart-outline"></ion-icon> Los números</div>`;
+                h += a.numeros.map(([c, t, d]) =>
+                    `<div class="ayuda-num"><div class="ayuda-punto" style="background:${c}"></div>
+                     <div><b>${t}</b><span>${d}</span></div></div>`).join('');
+            }
+            if (a.pasos?.length) {
+                h += `<div class="ayuda-seccion"><ion-icon name="hand-left-outline"></ion-icon> Qué puedes hacer</div>`;
+                h += a.pasos.map(([t, d, tipo], i) =>
+                    `<div class="ayuda-paso"><div class="ayuda-paso-n">${i + 1}</div>
+                     <div><b>${t}<span class="ayuda-tag ${tipo}">${tipo === 'seguro' ? 'no cambia nada' : 'modifica datos'}</span></b>
+                     <span>${d}</span></div></div>`).join('');
+            }
+            if (a.problemas?.length) {
+                h += `<div class="ayuda-seccion"><ion-icon name="alert-circle-outline"></ion-icon> Si algo va mal</div>`;
+                h += a.problemas.map(([s, r]) =>
+                    `<div class="ayuda-aviso"><b>${s}</b><span>${r}</span></div>`).join('');
+            }
+            if (a.dato) h += `<div class="ayuda-dato"><ion-icon name="bulb-outline"></ion-icon> ${a.dato}</div>`;
+            document.getElementById('ayuda-icono').setAttribute('name', a.icono);
+            document.getElementById('ayuda-titulo').textContent = a.titulo;
+            document.getElementById('ayuda-sub').textContent = a.sub;
+            document.getElementById('ayuda-cuerpo').innerHTML = h;
+            document.getElementById('ayuda-panel').classList.add('abierto');
+            document.getElementById('ayuda-fondo').classList.add('abierto');
+        }
+        function cerrarAyuda() {
+            document.getElementById('ayuda-panel').classList.remove('abierto');
+            document.getElementById('ayuda-fondo').classList.remove('abierto');
+        }
+        document.addEventListener('keydown', e => { if (e.key === 'Escape') cerrarAyuda(); });
     </script>
+
+    <!-- Panel de ayuda contextual -->
+    <div class="ayuda-fondo" id="ayuda-fondo" onclick="cerrarAyuda()"></div>
+    <aside class="ayuda-panel" id="ayuda-panel">
+        <div class="ayuda-cab">
+            <ion-icon id="ayuda-icono" name="help-circle-outline"></ion-icon>
+            <div>
+                <h3 id="ayuda-titulo">Ayuda</h3>
+                <p id="ayuda-sub"></p>
+            </div>
+            <button class="ayuda-cerrar" onclick="cerrarAyuda()">&times;</button>
+        </div>
+        <div class="ayuda-cuerpo" id="ayuda-cuerpo"></div>
+    </aside>
 </body>
 
 </html>
