@@ -3450,15 +3450,22 @@ async def vigilante_estado():
 @app.post("/api/v1/vigilante/revisar", tags=["Vigilante"])
 async def vigilante_revisar(
     arreglar: bool = Query(True, description="arreglar lo que sea seguro"),
-    avisar: bool = Query(False, description="mandar aviso por Telegram"),
 ):
     """
     Pasa todas las comprobaciones ahora mismo. Con arreglar=true levanta los
     crones parados y libera los locks atascados; el resto solo lo reporta.
     """
     import vigilante
-    return JSONResponse(content=await vigilante.revisar(arreglar=arreglar,
-                                                         avisar=avisar))
+    return JSONResponse(content=await vigilante.revisar(arreglar=arreglar))
+
+
+@app.get("/api/v1/vigilante/historial", tags=["Vigilante"])
+async def vigilante_historial(limit: int = Query(25, ge=1, le=100)):
+    """Las ultimas revisiones registradas, con lo que cambio en cada una."""
+    import audit_log
+    return JSONResponse(content={
+        "revisiones": audit_log.get_events(categoria="vigilante", limit=limit),
+    })
 
 
 @app.post("/api/v1/vigilante/cron/start", tags=["Vigilante"])

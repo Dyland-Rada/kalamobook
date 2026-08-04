@@ -1,6 +1,6 @@
 """
 Vigilante: comprueba que el sistema esta vivo, arregla lo que es seguro
-arreglar y avisa por Telegram de lo que no puede tocar.
+arreglar y deja constancia de lo que no puede tocar.
 
 Es a proposito determinista, no una IA: lo que falla aqui es predecible y se
 detecta con reglas. Un modelo que decida reiniciar cosas en produccion es un
@@ -10,14 +10,14 @@ Lo que SI puede arreglar solo:
   - Un cron parado tras un reinicio -> lo arranca
   - Un lock del sync atascado por un deploy -> lo libera
 
-Lo que solo puede avisar:
+Lo que solo puede reportar:
   - Un proveedor que dejo de mandar ficheros (el problema esta en Server A)
   - Odoo, Shopify o la base de datos caidos
   - Errores repetidos del sync
 
-Cada revision queda en event_log, y solo se avisa por Telegram cuando algo
-CAMBIA de estado: sin eso, un proveedor mudo generaria un mensaje cada
-cuarto de hora.
+Cada revision queda en event_log, y las incidencias se ven en la pestana
+Salud del panel. No manda nada a ningun sitio: se consulta cuando se
+quiere, no interrumpe.
 """
 import asyncio
 import os
@@ -26,7 +26,7 @@ from datetime import datetime
 
 import db
 
-INTERVALO_S = int(os.environ.get("VIGILANTE_INTERVALO_S", "900"))   # 15 min
+INTERVALO_S = int(os.environ.get("VIGILANTE_INTERVALO_S", "43200"))  # 12 h
 CEGALD_DIAS_AVISO = float(os.environ.get("VIGILANTE_CEGALD_DIAS", "3"))
 LOCK_MIN_AVISO = int(os.environ.get("VIGILANTE_LOCK_MIN", "45"))
 ERRORES_AVISO = int(os.environ.get("VIGILANTE_ERRORES", "50"))
@@ -37,7 +37,7 @@ _ultima: dict | None = None
 _cron_task = None
 _cron_state: dict = {
     "enabled": False, "interval_s": INTERVALO_S, "last_run_at": None,
-    "runs_total": 0, "avisos_enviados": 0, "errors": [],
+    "runs_total": 0, "errors": [],
 }
 _estado_previo: dict[str, str] = {}
 
@@ -232,7 +232,7 @@ def _revisar_bd() -> dict:
 
 
 # ─── Revision completa ───────────────────────────────────────────────
-async def revisar(arreglar: bool = True, avisar: bool = True) -> dict:
+async def revisar(arreglar: bool = True) -> dict:
     """Pasa todas las comprobaciones. Devuelve el parte completo."""
     global _ultima
     t0 = time.monotonic()
@@ -260,8 +260,8 @@ async def revisar(arreglar: bool = True, avisar: bool = True) -> dict:
         "elapsed_s": round(time.monotonic() - t0, 1),
     }
 
-    if avisar:
-        await _avisar_si_cambio(chequeos, arreglados)
+    cambios = _registrar_cambios(chequeos, arreglados)
+    _ultima["cambios"] = cambios
 
     try:
         import audit_log
@@ -269,7 +269,7 @@ async def revisar(arreglar: bool = True, avisar: bool = True) -> dict:
             "vigilante", f"revision_{salud}",
             f"Vigilante: {len(errores)} errores, {len(avisos)} avisos, "
             f"{len(arreglados)} arreglados solos",
-            detalle={"salud": salud,
+            detalle={"salud": salud, "cambios": cambios,
                      "problemas": [f"{c['titulo']}: {c['detalle']}"
                                    for c in errores + avisos]},
             nivel="error" if errores else "info")
@@ -278,37 +278,27 @@ async def revisar(arreglar: bool = True, avisar: bool = True) -> dict:
     return _ultima
 
 
-async def _avisar_si_cambio(chequeos: list[dict], arreglados: list[dict]):
+def _registrar_cambios(chequeos: list[dict], arreglados: list[dict]) -> list[str]:
     """
-    Solo se avisa cuando algo CAMBIA de estado. Sin esto, un proveedor mudo
-    mandaria un mensaje cada cuarto de hora hasta que alguien lo mirara.
+    Guarda los cambios de estado para poder verlos en el panel. Solo se
+    apunta lo que CAMBIA: si no, un proveedor mudo llenaria el historial de
+    la misma linea cada revision.
     """
     global _estado_previo
-    lineas = []
+    cambios = []
     for c in chequeos:
         previo = _estado_previo.get(c["clave"])
-        if previo == c["estado"]:
-            continue
-        if c["estado"] == ERROR:
-            lineas.append(f"🔴 *{c['titulo']}*\n{c['detalle']}")
-        elif c["estado"] == AVISO:
-            lineas.append(f"🟡 *{c['titulo']}*\n{c['detalle']}")
-        elif previo in (ERROR, AVISO):
-            lineas.append(f"🟢 *{c['titulo']}* recuperado")
-        _estado_previo[c["clave"]] = c["estado"]
-
+        if previo != c["estado"]:
+            if c["estado"] == ERROR:
+                cambios.append(f"ERROR — {c['titulo']}: {c['detalle']}")
+            elif c["estado"] == AVISO:
+                cambios.append(f"AVISO — {c['titulo']}: {c['detalle']}")
+            elif previo in (ERROR, AVISO):
+                cambios.append(f"RESUELTO — {c['titulo']}")
+            _estado_previo[c["clave"]] = c["estado"]
     for c in arreglados:
-        lineas.append(f"🔧 *{c['titulo']}*: {c['detalle']}")
-
-    if not lineas:
-        return
-    try:
-        import notify
-        if notify.is_configured():
-            await notify.send_telegram("*Vigilante*\n\n" + "\n\n".join(lineas))
-            _cron_state["avisos_enviados"] += 1
-    except Exception as e:
-        print(f"[Vigilante] no pude avisar: {e}")
+        cambios.append(f"ARREGLADO — {c['titulo']}: {c['detalle']}")
+    return cambios
 
 
 # ─── Cron ────────────────────────────────────────────────────────────
@@ -317,7 +307,7 @@ async def _cron_loop():
     print(f"[Vigilante] Arrancado, cada {_cron_state['interval_s']}s")
     while _cron_state["enabled"]:
         try:
-            r = await revisar(arreglar=True, avisar=True)
+            r = await revisar(arreglar=True)
             _cron_state["last_run_at"] = datetime.now().isoformat()
             _cron_state["runs_total"] += 1
             print(f"[Vigilante] revision #{_cron_state['runs_total']}: "
@@ -355,7 +345,7 @@ def stop_cron() -> bool:
 
 
 if __name__ == "__main__":
-    r = asyncio.run(revisar(arreglar=False, avisar=False))
+    r = asyncio.run(revisar(arreglar=False))
     print(f"SALUD: {r['salud']}  {r['resumen']}\n")
     for c in r["chequeos"]:
         icono = {"ok": "OK ", "aviso": "?? ", "error": "!! "}[c["estado"]]

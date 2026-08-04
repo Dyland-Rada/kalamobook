@@ -2634,8 +2634,9 @@
                         <ion-icon name="refresh-outline"></ion-icon> Revisar ahora</button>
                 </div>
                 <p style="color:#8b93a7; font-size:.8rem; margin-top:6px;">
-                    Comprueba que todo está en marcha, <strong>arregla lo que es seguro arreglar</strong>
-                    —crones parados, locks atascados— y avisa por Telegram de lo que no puede tocar.
+                    Comprueba que todo está en marcha y <strong>arregla lo que es seguro
+                    arreglar</strong> —crones parados, locks atascados—. De lo que no puede tocar
+                    deja constancia aquí abajo.
                 </p>
 
                 <div style="margin-top:14px; display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px;">
@@ -2657,15 +2658,26 @@
                     <ion-icon name="time-outline"></ion-icon> Vigilancia automática
                 </div>
                 <p style="color:#8b93a7; font-size:.8rem;">
-                    Revisa cada 15 minutos y avisa por Telegram <strong>solo cuando algo cambia</strong>,
-                    no en cada pasada. Para que arranque solo tras un reinicio, hace falta
-                    <code>VIGILANTE_ENABLED=1</code>.
+                    Revisa <strong>cada 12 horas</strong> y deja el resultado aquí. No manda avisos
+                    a ningún sitio: se consulta cuando hace falta. Para que arranque solo tras un
+                    reinicio, hace falta <code>VIGILANTE_ENABLED=1</code>.
                 </p>
                 <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
                     <button class="btn btn-success" onclick="saludCron(true)">▶ Activar vigilancia</button>
                     <button class="btn btn-danger" onclick="saludCron(false)">
                         <ion-icon name="stop-circle-outline"></ion-icon> Detener</button>
                     <span id="salud-cron" style="color:#8b93a7; font-size:.85rem;"></span>
+                </div>
+
+                <div class="section-label" style="color:#e67e22; margin-top:20px;">
+                    <ion-icon name="list-outline"></ion-icon> Historial de incidencias
+                </div>
+                <p style="color:#8b93a7; font-size:.78rem; margin-top:2px;">
+                    Solo se apunta lo que <strong>cambia</strong>: cuando algo se rompe, cuando se
+                    recupera y cuando el vigilante lo arregla solo.
+                </p>
+                <div id="salud-historial" style="margin-top:8px;">
+                    <span style="color:#8b93a7; font-size:.82rem;">— sin incidencias registradas —</span>
                 </div>
             </div>
         </div>
@@ -6191,8 +6203,9 @@
                 if (d.ultima?.chequeos) saludPintar(d.ultima);
                 const c = d.cron || {};
                 document.getElementById('salud-cron').textContent = c.task_running
-                    ? `activa · ${c.runs_total || 0} revisiones · ${c.avisos_enviados || 0} avisos enviados`
+                    ? `activa · cada ${Math.round((c.interval_s || 43200) / 3600)} h · ${c.runs_total || 0} revisiones`
                     : 'parada';
+                saludHistorial();
             } catch (e) {}
         }
 
@@ -6205,6 +6218,32 @@
             } catch (e) {
                 l.innerHTML = '<span style="color:#f87171">No se pudo completar la revisión.</span>';
             }
+        }
+
+        async function saludHistorial() {
+            try {
+                const d = await (await fetch('/api/v1/vigilante/historial?limit=20')).json();
+                const el = document.getElementById('salud-historial');
+                const filas = (d.revisiones || []).filter(r => (r.detalle?.cambios || []).length);
+                if (!filas.length) {
+                    el.innerHTML = '<span style="color:#8b93a7; font-size:.82rem;">— sin incidencias registradas —</span>';
+                    return;
+                }
+                el.innerHTML = filas.slice(0, 12).map(r => {
+                    const cuando = (r.ts || '').slice(0, 16).replace('T', ' ');
+                    return (r.detalle.cambios || []).map(c => {
+                        const tipo = c.split(' —')[0];
+                        const col = tipo === 'ERROR' ? '#f87171' : tipo === 'AVISO' ? '#fbbf24'
+                                  : tipo === 'ARREGLADO' ? '#3498db' : '#4ade80';
+                        return `<div style="display:flex; gap:10px; padding:7px 0; font-size:.81rem;
+                                     border-bottom:1px solid rgba(255,255,255,.04);">
+                            <span style="color:#666; white-space:nowrap;">${cuando}</span>
+                            <span style="color:${col}; font-weight:600; white-space:nowrap;">${tipo}</span>
+                            <span style="color:#a8b0c0;">${c.split('— ').slice(1).join('— ')}</span>
+                        </div>`;
+                    }).join('');
+                }).join('');
+            } catch (e) {}
         }
 
         async function saludCron(activar) {
@@ -6390,7 +6429,7 @@
                 icono: 'pulse-outline', titulo: 'Salud del sistema',
                 sub: 'El vigilante: comprueba, arregla y avisa',
                 intro: 'Repasa que todo este en marcha. Lo que puede arreglar solo lo arregla; ' +
-                       'de lo demas avisa por Telegram. No decide nada: son reglas fijas, no una IA.',
+                       'de lo demas deja constancia. No decide nada: son reglas fijas, no una IA.',
                 numeros: [
                     ['#4ade80', 'Correctos', 'Comprobaciones que pasaron sin problema.'],
                     ['#fbbf24', 'Avisos', 'Algo que mirar, pero que no rompe nada ahora mismo.'],
@@ -6399,7 +6438,7 @@
                 ],
                 pasos: [
                     ['Revisar ahora', 'Pasa las nueve comprobaciones y arregla lo que puede. Tarda unos segundos porque consulta Odoo y Shopify.', 'ojo'],
-                    ['Activar vigilancia', 'Lo deja repasando cada 15 minutos.', 'seguro'],
+                    ['Activar vigilancia', 'Lo deja repasando cada 12 horas.', 'seguro'],
                 ],
                 problemas: [
                     ['Un cron sale PARADO y no lo levanta',
@@ -6409,8 +6448,8 @@
                     ['Odoo o Shopify en rojo',
                      'Sin ellos no se puede sincronizar ni publicar. Comprueba que el servicio este arriba.'],
                 ],
-                dato: 'Los avisos de Telegram solo salen <b>cuando algo cambia de estado</b>. ' +
-                      'Si no, un proveedor mudo mandaria un mensaje cada cuarto de hora.'
+                dato: 'En el historial solo se apunta lo que <b>cambia de estado</b>. Si no, un ' +
+                      'proveedor mudo repetiria la misma linea en cada revision.'
             },
         };
 
