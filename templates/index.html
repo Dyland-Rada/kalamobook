@@ -2385,6 +2385,29 @@
                 </div>
             </div>
 
+            <!-- Buscador unificado por ISBN -->
+            <div class="card" style="border:2px solid rgba(99,102,241,.45);">
+                <div class="card-title">
+                    <ion-icon name="search-outline"></ion-icon> Buscar un libro — BD, Odoo y Shopify
+                    <button class="ayuda-btn" onclick="abrirAyuda('buscador')" title="Qué es esto y cómo se usa">?</button>
+                </div>
+                <p style="color:#8b93a7; font-size:.8rem; margin-top:6px;">
+                    Pega un ISBN o EAN y te dice quién lo tiene, cuánto stock, cuándo cambió por
+                    última vez, si está en Odoo y si se puede comprar en la web.
+                    <strong>Y por qué no, si no se puede.</strong>
+                </p>
+                <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:10px;">
+                    <input type="text" id="bi-isbn" placeholder="9788468370910"
+                           style="padding:9px 12px; background:#2c2f3e; color:#eee; border:1px solid #444;
+                                  border-radius:6px; min-width:230px; font-family:monospace; font-size:.95rem;"
+                           onkeypress="if(event.key==='Enter')biBuscar()">
+                    <button class="btn btn-primary" style="background:#6366f1;" onclick="biBuscar()">
+                        <ion-icon name="search-outline"></ion-icon> Buscar</button>
+                    <span id="bi-cargando" style="color:#8b93a7; font-size:.85rem; display:none;">Consultando los cuatro sistemas…</span>
+                </div>
+                <div id="bi-resultado" style="margin-top:16px;"></div>
+            </div>
+
             <!-- Gestión de proveedores: pausar / reactivar / alta -->
             <div class="card" style="border:2px solid rgba(230,126,34,0.45);">
                 <div class="card-title">
@@ -6160,6 +6183,92 @@
             aplicarModoDev();
         });
 
+        // ═══ BUSCADOR UNIFICADO POR ISBN ═══
+        const BI_NIVEL = { ok: ['#4ade80', 'checkmark-circle'], aviso: ['#fbbf24', 'alert-circle'], error: ['#f87171', 'close-circle'] };
+
+        function biFecha(f) { return f ? String(f).slice(0, 16).replace('T', ' ') : '—'; }
+
+        async function biBuscar() {
+            const isbn = document.getElementById('bi-isbn').value.trim();
+            if (!isbn) return;
+            const out = document.getElementById('bi-resultado');
+            document.getElementById('bi-cargando').style.display = '';
+            out.innerHTML = '';
+            let d;
+            try {
+                d = await (await fetch('/api/v1/buscar-isbn?isbn=' + encodeURIComponent(isbn))).json();
+            } catch (e) {
+                out.innerHTML = '<span style="color:#f87171">No se pudo consultar.</span>';
+                document.getElementById('bi-cargando').style.display = 'none';
+                return;
+            }
+            document.getElementById('bi-cargando').style.display = 'none';
+            if (d.error) { out.innerHTML = `<span style="color:#f87171">${d.error}</span>`; return; }
+            const s = d.resumen, n = v => (v === null || v === undefined) ? '—' : v;
+
+            // Diagnóstico primero: es lo que se viene a buscar
+            let h = d.diagnostico.map(x => {
+                const [col, ico] = BI_NIVEL[x.nivel] || BI_NIVEL.aviso;
+                return `<div style="display:flex; gap:10px; align-items:flex-start; padding:10px 12px;
+                             background:${col}12; border-left:2px solid ${col}; border-radius:0 7px 7px 0; margin-bottom:7px;">
+                    <ion-icon name="${ico}" style="color:${col}; font-size:1.1rem; margin-top:1px; flex-shrink:0;"></ion-icon>
+                    <div><div style="color:#e8ecf5; font-size:.86rem;">${x.texto}</div>
+                    ${x.accion ? `<div style="color:${col}; font-size:.78rem; margin-top:3px;">→ ${x.accion}</div>` : ''}</div></div>`;
+            }).join('');
+
+            // El stock, de punta a punta
+            const paso = (t, v, col) => `<div class="stat-box" style="min-width:0;">
+                <div class="stat-number" style="color:${col}; font-size:1.5rem;">${n(v)}</div>
+                <div class="stat-label">${t}</div></div>`;
+            h += `<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:10px; margin:14px 0;">
+                ${paso('En el proveedor', s.stock_proveedor, '#3498db')}
+                ${paso('En Odoo', s.stock_odoo, s.stock_odoo > 0 ? '#4ade80' : '#f87171')}
+                ${paso('En la tienda', s.stock_shopify, (s.stock_shopify > 0) ? '#4ade80' : '#f87171')}
+                </div>
+                <p style="color:#8b93a7; font-size:.8rem; margin-bottom:14px;">
+                <ion-icon name="time-outline"></ion-icon> Último cambio de stock:
+                <strong style="color:#c9d1e0;">${biFecha(s.ultimo_cambio_stock)}</strong></p>`;
+
+            const tabla = (titulo, filas) => filas.length ? `
+                <div class="section-label" style="color:#8b93a7; margin-top:16px;">${titulo}</div>
+                <table style="width:100%; font-size:.82rem; border-collapse:collapse;">${filas.join('')}</table>` : '';
+            const fila = (k, v) => `<tr><td style="padding:5px 10px 5px 0; color:#8b93a7; white-space:nowrap;">${k}</td>
+                <td style="padding:5px 0; color:#e8ecf5;">${v}</td></tr>`;
+
+            h += tabla('Proveedores', d.proveedores.map(p => fila(
+                p.proveedor + (p.proveedor_activo ? '' : ' <span style="color:#f87171">(pausado)</span>'),
+                `stock <strong>${p.stock}</strong> · ${p.precio ? p.precio + ' €' : 'sin precio'} · almacén ${p.almacen || '<span style="color:#f87171">sin mapear</span>'} · cambió ${biFecha(p.cambio_stock)}`)));
+
+            const o = d.odoo || {};
+            h += tabla('Odoo', !o.existe ? [fila('Estado', '<span style="color:#f87171">no existe</span>')] : [
+                fila('Producto', `${o.nombre || '(sin nombre)'} · id ${o.odoo_id}`),
+                fila('Estado', `${o.activo ? 'activo' : '<span style="color:#f87171">archivado</span>'} · ${o.admite_stock ? 'admite stock' : '<span style="color:#f87171">NO admite stock</span>'} · variante ${o.variante_activa ? 'activa' : '<span style="color:#f87171">archivada</span>'}`),
+                fila('Precio', o.precio),
+                ...(o.almacenes || []).filter(a => a.cantidad > 0).map(a =>
+                    fila(a.almacen, `<strong>${a.cantidad}</strong> · modificado ${biFecha(a.modificado)}`)),
+            ]);
+
+            const t = d.shopify || {};
+            h += tabla('Shopify', t.existe === false ? [fila('Estado', '<span style="color:#fbbf24">no publicado</span>')]
+                : t.existe === null ? [fila('Estado', t.error || 'no se pudo consultar')] : [
+                fila('Producto', t.titulo),
+                fila('Estado', `${t.estado} · en ${t.canales} canales`),
+                fila('Stock', `<strong style="color:${t.stock > 0 ? '#4ade80' : '#f87171'}">${n(t.stock)}</strong> · seguimiento ${t.seguimiento_inventario ? 'activado' : 'desactivado'}`),
+                fila('Precio', t.precio),
+                fila('Modificado', biFecha(t.modificado)),
+            ]);
+
+            const f = d.ficha;
+            if (f) h += tabla('Ficha que tenemos', [
+                fila('Autor / editorial', `${f.autor || '—'} · ${f.editorial || '—'}`),
+                fila('Descripción', f.descripcion_caracteres ? f.descripcion_caracteres + ' caracteres' : '<span style="color:#fbbf24">no tiene</span>'),
+                fila('Portada', f.imagen ? `<a href="${f.imagen}" target="_blank" style="color:#6366f1;">ver</a>` : '<span style="color:#fbbf24">no tiene</span>'),
+                fila('Peso', f.peso || '—'),
+                fila('Categoría del distribuidor', f.categoria_distribuidor || '—'),
+            ]);
+            out.innerHTML = h;
+        }
+
         // ═══ SALUD DEL SISTEMA ═══
         const SALUD_COLOR = { ok: '#4ade80', aviso: '#fbbf24', error: '#f87171' };
         const SALUD_ICONO = { ok: 'checkmark-circle', aviso: 'alert-circle', error: 'close-circle' };
@@ -6425,6 +6534,31 @@
                 ],
                 dato: 'Con título, portada, descripción y precio, el libro pasa a ser ' +
                       '<b>publicable en Shopify</b> automáticamente.'
+            },
+            buscador: {
+                icono: 'search-outline', titulo: 'Buscar un libro',
+                sub: 'Su vida entera en los cuatro sistemas, de una vez',
+                intro: 'Pega un ISBN y consulta a la vez la base de datos, Odoo y Shopify. ' +
+                       'Lo importante no son los datos, es el <b>diagnostico</b>: te dice por que ' +
+                       'un libro con stock no se puede comprar en la web, y que boton lo arregla.',
+                numeros: [
+                    ['#3498db', 'En el proveedor', 'Lo que dice el ultimo fichero del distribuidor.'],
+                    ['#4ade80', 'En Odoo', 'El stock real en su almacen. Si es 0 teniendo el proveedor, algo no subio.'],
+                    ['#4ade80', 'En la tienda', 'Lo que ve un cliente. Si es 0 teniendo Odoo, el inventario no se sincroniza.'],
+                ],
+                pasos: [
+                    ['Buscar', 'Acepta el ISBN con guiones o sin ellos. Tarda unos segundos porque pregunta a Odoo y a Shopify en vivo.', 'seguro'],
+                ],
+                problemas: [
+                    ['Dice que no lo tiene ningun proveedor',
+                     'No ha llegado en ningun fichero. El problema esta en la entrada, en Server A.'],
+                    ['Tiene stock en Odoo pero 0 en la tienda',
+                     'El inventario de Odoo no se esta sincronizando a Shopify. Es un problema general, no de ese libro.'],
+                    ['No admite stock / variante archivada',
+                     'Usa Reparar catalogo en la tarjeta de Proveedores.'],
+                ],
+                dato: 'Nace de una revision del 05/08: 40 EAN de AZETA aparecian sin stock en la web ' +
+                      'teniendolo en Odoo. Comprobarlo a mano eran cuatro consultas a cuatro sistemas.'
             },
             salud: {
                 icono: 'pulse-outline', titulo: 'Salud del sistema',

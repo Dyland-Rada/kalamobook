@@ -3489,3 +3489,17 @@ async def vigilante_cron_stop():
         return JSONResponse(content={"status": "stopping"})
     return JSONResponse(status_code=400, content={
         "status": "error", "message": "No estaba corriendo."})
+
+
+@app.get("/api/v1/buscar-isbn", tags=["Auditoria"])
+async def buscar_isbn(isbn: str = Query(..., description="ISBN o EAN, con o sin guiones")):
+    """
+    La vida entera de un libro en una consulta: que proveedores lo tienen y
+    desde cuando, su ficha, su stock real en cada almacen de Odoo y si esta
+    publicado en Shopify con inventario.
+
+    Lo importante es el diagnostico: explica POR QUE un libro con stock no
+    se puede comprar en la web, y que boton lo arregla.
+    """
+    import buscador_isbn
+    return JSONResponse(content=await buscador_isbn.buscar(isbn))
