@@ -72,11 +72,17 @@ async def _contactos(odoo: OdooClient, crear_faltantes: bool) -> dict[str, int]:
     for email, nombre in filas:
         n = (nombre or "").strip().upper()
         pid = por_nombre.get(n)
-        if not pid:                      # emparejado laxo por el principio
-            for k, v in por_nombre.items():
-                if k[:12] == n[:12]:
-                    pid = v
-                    break
+        if not pid:
+            # Emparejado por prefijo, en los dos sentidos y con el nombre mas
+            # corto como referencia. Comparar los 12 primeros caracteres de
+            # ambos NO vale: 'AZETA' contra 'AZETA DISTRIBUCIONES' no casaba
+            # y creo un contacto duplicado con 52.466 relaciones equivocadas.
+            candidatos = [(k, v) for k, v in por_nombre.items()
+                          if k and n and (k.startswith(n) or n.startswith(k))
+                          and min(len(k), len(n)) >= 5]
+            if candidatos:
+                # el mas parecido en longitud, para no casar con un prefijo comun
+                pid = min(candidatos, key=lambda x: abs(len(x[0]) - len(n)))[1]
         if not pid and crear_faltantes and nombre:
             # `company_type` no existe en este Odoo (es calculado): se marca
             # con is_company, que es el campo real.
