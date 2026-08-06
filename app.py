@@ -3491,6 +3491,61 @@ async def vigilante_cron_stop():
         "status": "error", "message": "No estaba corriendo."})
 
 
+# ─── Auditoria de datos: el stock que decimos tener vs el que hay ────
+
+@app.post("/api/v1/auditoria/lanzar", tags=["Auditoria"])
+async def auditoria_lanzar():
+    """
+    Compara libro a libro el stock de cada proveedor con el de su almacen en
+    Odoo. Tarda varios minutos porque lee todo el inventario; se sigue con
+    /estado. No modifica nada: solo mide.
+    """
+    import threading
+    import sys
+    import auditoria
+
+    if auditoria.get_status().get("status") == "running":
+        return JSONResponse(status_code=409, content={
+            "status": "error", "message": "Ya hay una auditoria corriendo."})
+
+    def _run_in_thread():
+        if sys.platform == 'win32':
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
+        try:
+            new_loop.run_until_complete(auditoria.auditar())
+        finally:
+            new_loop.close()
+
+    threading.Thread(target=_run_in_thread, daemon=True).start()
+    return JSONResponse(content={"status": "started"})
+
+
+@app.get("/api/v1/auditoria/estado", tags=["Auditoria"])
+async def auditoria_estado():
+    """Resultado de la ultima auditoria, o su avance si esta corriendo."""
+    import auditoria
+    return JSONResponse(content=auditoria.get_status())
+
+
+@app.post("/api/v1/auditoria/parar", tags=["Auditoria"])
+async def auditoria_parar():
+    import auditoria
+    if auditoria.stop():
+        return JSONResponse(content={"status": "stopping"})
+    return JSONResponse(status_code=400, content={
+        "status": "error", "message": "No estaba corriendo."})
+
+
+@app.get("/api/v1/auditoria/historial", tags=["Auditoria"])
+async def auditoria_historial(limit: int = Query(20, ge=1, le=100)):
+    """Auditorias anteriores, para ver si la fiabilidad mejora o empeora."""
+    import audit_log
+    return JSONResponse(content={
+        "auditorias": audit_log.get_events(categoria="auditoria", limit=limit)})
+
+
 @app.get("/api/v1/buscar-isbn", tags=["Auditoria"])
 async def buscar_isbn(isbn: str = Query(..., description="ISBN o EAN, con o sin guiones")):
     """
