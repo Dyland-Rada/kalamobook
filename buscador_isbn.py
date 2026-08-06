@@ -70,6 +70,7 @@ def _ficha(isbn: str) -> dict | None:
         db.execute_query(cur, """
             SELECT m.odoo_id, m.name, m.list_price, m.pvp_base,
                    m.cdl_author, m.cdl_editorial, m.cdl_weight,
+                   m.cdl_height, m.cdl_width,
                    m.cdl_image_url, m.gbooks_thumbnail,
                    LENGTH(COALESCE(m.description,'')) AS desc_len,
                    m.inferred_categories, m.nuevo_creado_en, m.synced_at,
@@ -87,15 +88,33 @@ def _ficha(isbn: str) -> dict | None:
             "precio_web": float(r[2]) if r[2] is not None else None,
             "pvp_base": float(r[3]) if r[3] is not None else None,
             "autor": r[4], "editorial": r[5], "peso": r[6],
-            "imagen": r[7] or r[8],
-            "descripcion_caracteres": int(r[9] or 0),
-            "categoria_distribuidor": r[10],
-            "creado_por_nosotros": str(r[11]) if r[11] else None,
-            "espejo_actualizado": str(r[12]) if r[12] else None,
-            "titulo_en_books": r[13], "titulo_en_catalogo": r[14],
+            "alto": r[7], "ancho": r[8],
+            "imagen": r[9] or r[10],
+            "descripcion_caracteres": int(r[11] or 0),
+            "categoria_distribuidor": r[12],
+            "creado_por_nosotros": str(r[13]) if r[13] else None,
+            "espejo_actualizado": str(r[14]) if r[14] else None,
+            "titulo_en_books": r[15], "titulo_en_catalogo": r[16],
         }
     finally:
         conn.close()
+
+
+def _etiqueta_que_le_toca(ficha: dict | None) -> str | None:
+    """
+    Que etiqueta le corresponde con los datos que tenemos AHORA. Si no
+    coincide con la que lleva en Odoo, es que se enriquecio despues de
+    clasificarlo y hay que volver a pasarle los tags.
+    """
+    if not ficha:
+        return None
+    try:
+        from odoo_tags import _classify
+        return _classify(ficha.get("imagen"),
+                         "x" if ficha.get("descripcion_caracteres") else None,
+                         ficha.get("peso"), ficha.get("alto"), ficha.get("ancho"))
+    except Exception:
+        return None
 
 
 def _publicacion(isbn: str) -> dict | None:
@@ -132,7 +151,7 @@ async def _odoo(isbn: str) -> dict:
             "product.template",
             [["barcode", "=", isbn], ["active", "in", [True, False]]],
             ["id", "name", "active", "is_storable", "list_price",
-             "qty_available", "write_date"], limit=1)
+             "qty_available", "write_date", "product_tag_ids"], limit=1)
         if not tmpl:
             return {"existe": False}
         t = tmpl[0]
@@ -142,8 +161,11 @@ async def _odoo(isbn: str) -> dict:
             "precio": t.get("list_price"),
             "stock_total": t.get("qty_available"),
             "modificado": t.get("write_date"),
-            "almacenes": [], "variante_activa": None,
+            "almacenes": [], "variante_activa": None, "etiquetas": [],
         }
+        if t.get("product_tag_ids"):
+            tags = await o.read("product.tag", t["product_tag_ids"], ["name"])
+            salida["etiquetas"] = [x["name"] for x in tags]
         var = await o.search_read(
             "product.product",
             [["product_tmpl_id", "=", t["id"]], ["active", "in", [True, False]]],
@@ -261,6 +283,16 @@ def _diagnosticar(prov, ficha, odoo, tienda, publicacion) -> list[dict]:
         if tienda.get("estado") != "ACTIVE":
             di("aviso", f"En la tienda esta como {tienda.get('estado')}.")
 
+    etiquetas = odoo.get("etiquetas") or []
+    toca = _etiqueta_que_le_toca(ficha)
+    estado_tags = [e for e in etiquetas if e in ("Completo", "Web", "Foto", "Stock")]
+    if toca and estado_tags and toca not in estado_tags:
+        di("aviso",
+           f"Etiquetado como {estado_tags[0]} pero con los datos de hoy le tocaria {toca}.",
+           "Se arregla volviendo a clasificar en Tags Odoo")
+    if "Bloqueado" in etiquetas:
+        di("aviso", "Lleva la etiqueta Bloqueado: alguien lo aparto a proposito.")
+
     if not d:
         di("ok", "Todo correcto: tiene stock, esta en Odoo y publicado con inventario.")
     return d
@@ -298,6 +330,11 @@ async def buscar(isbn_bruto: str) -> dict:
             "en_odoo": bool(odoo.get("existe")),
             "en_shopify": tienda.get("existe"),
             "ultimo_cambio_stock": max(fechas) if fechas else None,
+        },
+        "etiquetas": {
+            "en_odoo": odoo.get("etiquetas", []),
+            "le_corresponde": _etiqueta_que_le_toca(ficha),
+            "en_shopify": publicacion.get("tags") if publicacion else None,
         },
         "diagnostico": _diagnosticar(prov, ficha, odoo, tienda, publicacion),
         "proveedores": prov,

@@ -6258,6 +6258,29 @@
                 fila('Modificado', biFecha(t.modificado)),
             ]);
 
+            // Etiquetas: lo que lleva y lo que le tocaria
+            const et = d.etiquetas || {};
+            const COLOR_TAG = { Completo:'#4ade80', Web:'#3498db', Foto:'#e67e22', Stock:'#8b93a7', Bloqueado:'#f87171' };
+            const chip = (t, activo) => `<span style="display:inline-block; font-size:.72rem; font-weight:700;
+                padding:3px 10px; border-radius:20px; margin-right:6px;
+                background:${(COLOR_TAG[t]||'#8b93a7')}${activo?'26':'14'};
+                color:${COLOR_TAG[t]||'#8b93a7'};
+                border:1px solid ${(COLOR_TAG[t]||'#8b93a7')}${activo?'66':'33'};">${t}</span>`;
+            const enOdoo = et.en_odoo || [];
+            const filasEt = [];
+            filasEt.push(fila('En Odoo', enOdoo.length ? enOdoo.map(t => chip(t, true)).join('')
+                : '<span style="color:#fbbf24">sin etiquetar</span>'));
+            if (et.le_corresponde) {
+                const desfase = enOdoo.length && !enOdoo.includes(et.le_corresponde);
+                filasEt.push(fila('Le corresponde',
+                    chip(et.le_corresponde, false) + (desfase
+                        ? '<span style="color:#fbbf24; font-size:.78rem;">← no coincide, hay que reclasificar</span>'
+                        : '<span style="color:#4ade80; font-size:.78rem;">coincide</span>')));
+            }
+            if (et.en_shopify) filasEt.push(fila('Categorías en la tienda',
+                `<span style="color:#a5b4fc; font-size:.78rem;">${et.en_shopify}</span>`));
+            h += tabla('Etiquetas', filasEt);
+
             const f = d.ficha;
             if (f) h += tabla('Ficha que tenemos', [
                 fila('Autor / editorial', `${f.autor || '—'} · ${f.editorial || '—'}`),
