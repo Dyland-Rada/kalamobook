@@ -2774,6 +2774,23 @@
                              grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:8px;"></div>
                     </div>
 
+                    <div class="section-label" style="color:#a78bfa; margin-top:20px;">
+                        <ion-icon name="add-circle-outline"></ion-icon> Libros que faltan en Odoo
+                    </div>
+                    <p style="color:#8b93a7; font-size:.78rem; margin-top:2px;">
+                        Libros que un proveedor manda y no existen en Odoo, casi todos porque vienen
+                        <strong>con stock 0</strong>. Crearlos los hace <strong>buscables por ISBN</strong>
+                        sin hacerlos vendibles: sin stock no se venden igual.
+                    </p>
+                    <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:8px;">
+                        <button class="btn" onclick="faltCalcular()">
+                            <ion-icon name="search-outline"></ion-icon> Ver cuántos faltan</button>
+                        <button class="btn btn-success" onclick="faltCrear()">
+                            <ion-icon name="add-outline"></ion-icon> Crearlos con stock 0</button>
+                        <span id="falt-estado" style="color:#8b93a7; font-size:.85rem;"></span>
+                    </div>
+                    <div id="falt-res" style="margin-top:10px;"></div>
+
                     <div class="section-label" style="color:#e67e22; margin-top:20px;">
                         <ion-icon name="library-outline"></ion-icon> Integridad del catálogo
                     </div>
@@ -2903,7 +2920,7 @@
             if (tab === 'catalog') { catalogSearch(1); loadSuppliersDatalist(); }
             if (tab === 'manual') manualSub(manualTipo);
             if (tab === 'shopify') shLoad(true); else shPollStop();
-            if (tab === 'salud') { saludCargar(); auditSondear(); }
+            if (tab === 'salud') { saludCargar(); auditSondear(); faltSondear(); }
             if (tab === 'audit') { auditLoadAll(); auditStartAutoRefresh(); asLoad(); }
             else { auditStopAutoRefresh(); }
             if (tab !== 'odoo') {
@@ -6567,6 +6584,59 @@
                     </div>`).join('');
         }
 
+        // ── Crear los libros que faltan en Odoo ──
+        let faltTimer = null;
+
+        function faltPintar(j) {
+            const e = document.getElementById('falt-estado');
+            if (j.status === 'running') {
+                e.textContent = j.stage || 'trabajando…'; e.style.color = '#3498db';
+            } else if (j.status === 'error') {
+                e.textContent = 'falló'; e.style.color = '#f87171';
+            } else {
+                e.textContent = '';
+            }
+            const n = (v) => (v || 0).toLocaleString('es');
+            document.getElementById('falt-res').innerHTML = j.faltantes === undefined ? '' : `
+                <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:8px;">
+                    <div class="stat-box"><div class="stat-number" style="color:#a78bfa">${n(j.faltantes)}</div>
+                        <div class="stat-label">Faltan en Odoo</div></div>
+                    <div class="stat-box"><div class="stat-number" style="color:#4ade80">${n(j.con_titulo)}</div>
+                        <div class="stat-label">Con ficha</div></div>
+                    <div class="stat-box"><div class="stat-number" style="color:#fbbf24">${n(j.sin_titulo)}</div>
+                        <div class="stat-label">Solo el ISBN</div></div>
+                    <div class="stat-box"><div class="stat-number" style="color:#3498db">${n(j.creados)}</div>
+                        <div class="stat-label">Creados</div></div>
+                </div>
+                ${j.scrapeados ? `<div style="color:#8b93a7; font-size:.79rem; margin-top:6px;">
+                    ${n(j.scrapeados)} fichas recuperadas de Casa del Libro antes de crearlos.</div>` : ''}`;
+        }
+
+        async function faltSondear() {
+            try {
+                const j = await (await fetch('/api/v1/auditoria/crear-faltantes/estado')).json();
+                faltPintar(j);
+                if (j.status !== 'running' && faltTimer) { clearInterval(faltTimer); faltTimer = null; }
+            } catch (e) {}
+        }
+
+        async function faltCalcular() {
+            document.getElementById('falt-estado').textContent = 'contando…';
+            const j = await (await fetch('/api/v1/auditoria/crear-faltantes?dry_run=true',
+                                         { method: 'POST' })).json();
+            faltPintar(j);
+        }
+
+        async function faltCrear() {
+            if (!confirm('Se crearán en Odoo los libros que faltan, activos y con stock 0.\n\n' +
+                         'No se pueden vender (no tienen stock), pero sí buscar por ISBN.\n¿Seguir?')) return;
+            document.getElementById('falt-estado').textContent = 'lanzando…';
+            await fetch('/api/v1/auditoria/crear-faltantes?dry_run=false&scrapear=true',
+                        { method: 'POST' });
+            if (!faltTimer) faltTimer = setInterval(faltSondear, 4000);
+            faltSondear();
+        }
+
         async function auditSondear() {
             try {
                 const j = await (await fetch('/api/v1/auditoria/estado')).json();
@@ -6823,6 +6893,8 @@
                 ],
                 pasos: [
                     ['Auditar ahora', 'Lee las 643.000 lineas de inventario de Odoo y las cruza con los catorce ficheros de proveedor. Tarda unos minutos y no cambia nada.', 'seguro'],
+                    ['Ver cuantos faltan', 'Cuenta los libros que un proveedor manda y no estan en Odoo. Solo cuenta.', 'seguro'],
+                    ['Crearlos con stock 0', 'Los crea de verdad. Antes busca titulo y portada en Casa del Libro para los espanoles. Se crean ACTIVOS y a cero: buscables por ISBN, pero no vendibles.', 'ojo'],
                 ],
                 problemas: [
                     ['Sale un proveedor SIN ALMACEN',
@@ -6835,6 +6907,8 @@
                      'Es esperado: el sync aun no ha pasado. Preocupa solo si sigue igual al dia siguiente.'],
                     ['Libros con stock que no manda nadie',
                      'Herencia de la carga de mayo de 2026. No los actualiza ningun fichero, asi que nunca bajaran solos.'],
+                    ['El cliente busca un ISBN y no lo encuentra',
+                     'Casi siempre el proveedor lo manda con cero existencias, y el ciclo diario solo crea libros CON stock. Con «Crearlos con stock 0» pasa a ser buscable. Si tampoco aparece asi, es que no nos lo manda nadie.'],
                 ],
                 dato: 'Se mide en <b>dos planos</b>, y confundirlos lleva a conclusiones falsas. ' +
                       '<b>Por libro</b> (los cuatro numeros de arriba) suma los catorce almacenes: ' +

@@ -3538,6 +3538,57 @@ async def auditoria_parar():
         "status": "error", "message": "No estaba corriendo."})
 
 
+@app.post("/api/v1/auditoria/crear-faltantes", tags=["Auditoria"])
+async def auditoria_crear_faltantes(
+    dry_run: bool = Query(True, description="empezar siempre por aqui"),
+    limite: int | None = Query(None, ge=1),
+    scrapear: bool = Query(True, description="buscar ficha en Casa del Libro antes"),
+    solo_proveedor: str | None = Query(None),
+):
+    """
+    Crea en Odoo los libros que un proveedor manda y no estan alli, aunque
+    vengan con stock 0. Sirve para que se puedan buscar por ISBN: sin stock
+    no se venden igual.
+
+    Se crean ACTIVOS a proposito. Con la regla del ciclo diario (sin precio
+    -> archivado) casi todos naceran invisibles, que es justo lo que se
+    quiere evitar.
+    """
+    import threading
+    import sys
+    import crear_faltantes
+
+    if crear_faltantes.get_status().get("status") == "running":
+        return JSONResponse(status_code=409, content={
+            "status": "error", "message": "Ya hay una creacion corriendo."})
+
+    if dry_run:
+        return JSONResponse(content=await crear_faltantes.crear(
+            dry_run=True, limite=limite, scrapear=False,
+            solo_proveedor=solo_proveedor))
+
+    def _run_in_thread():
+        if sys.platform == 'win32':
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
+        try:
+            new_loop.run_until_complete(crear_faltantes.crear(
+                dry_run=False, limite=limite, scrapear=scrapear,
+                solo_proveedor=solo_proveedor))
+        finally:
+            new_loop.close()
+
+    threading.Thread(target=_run_in_thread, daemon=True).start()
+    return JSONResponse(content={"status": "started", "limite": limite})
+
+
+@app.get("/api/v1/auditoria/crear-faltantes/estado", tags=["Auditoria"])
+async def auditoria_crear_faltantes_estado():
+    import crear_faltantes
+    return JSONResponse(content=crear_faltantes.get_status())
+
+
 @app.get("/api/v1/auditoria/historial", tags=["Auditoria"])
 async def auditoria_historial(limit: int = Query(20, ge=1, le=100)):
     """Auditorias anteriores, para ver si la fiabilidad mejora o empeora."""

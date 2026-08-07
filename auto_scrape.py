@@ -43,6 +43,9 @@ WEBHOOK_RETRIES = int(os.environ.get("SCRAPE_WEBHOOK_RETRIES", "3"))
 # pudiendo tenerlas (detectado 2026-07-30).
 PREFIJOS_ES = ("97884", "97913")
 
+# Cuantas veces se reintenta un ISBN que CDL rechaza antes de rendirse.
+MAX_REINTENTOS_BLOQUEO = int(os.environ.get("AUTO_SCRAPE_MAX_BLOQUEOS", "3"))
+
 _BOOK_COLS = ["title", "author", "editorial", "image_url", "description",
               "weight", "height", "width"]
 
@@ -148,7 +151,7 @@ async def _scrape_missing(targets: list[dict]) -> int:
     for t in pend:
         queue.put_nowait(t)
     saved = []
-    counter = {"i": 0, "found": 0}
+    counter = {"i": 0, "found": 0, "bloqueados": 0}
 
     async def worker(session):
         while True:
@@ -167,8 +170,16 @@ async def _scrape_missing(targets: list[dict]) -> int:
                     saved.append({"isbn": t["isbn"], **{c: t.get(c) for c in _BOOK_COLS}})
                     counter["found"] += 1
             except cdl.CDLBlocked:
-                await asyncio.sleep(1.0)
-                queue.put_nowait(t)
+                # Se reintenta, pero con tope. Sin tope y con CDL bloqueando
+                # de verdad -por ejemplo sin PROXY_POOL- el item vuelve a la
+                # cola para siempre y la corrida no termina nunca: no falla,
+                # se queda colgada, que es peor porque nadie se entera.
+                t["_bloqueos"] = t.get("_bloqueos", 0) + 1
+                if t["_bloqueos"] <= MAX_REINTENTOS_BLOQUEO:
+                    await asyncio.sleep(1.0)
+                    queue.put_nowait(t)
+                else:
+                    counter["bloqueados"] += 1
             except Exception:
                 pass
 
@@ -176,6 +187,10 @@ async def _scrape_missing(targets: list[dict]) -> int:
     async with aiohttp.ClientSession(connector=conn) as s:
         await asyncio.gather(*[worker(s) for _ in range(CONCURRENCY)])
     _save_books(saved)
+    if counter["bloqueados"]:
+        auto_scrape_job["bloqueados"] = counter["bloqueados"]
+        print(f"[AutoScrape] {counter['bloqueados']:,} ISBN abandonados por "
+              f"bloqueo de CDL (revisar PROXY_POOL)", flush=True)
     return counter["found"]
 
 
