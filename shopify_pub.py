@@ -421,7 +421,7 @@ def auditar(escribir: bool = True) -> dict:
         "status": "running", "accion": "auditar",
         "started_at": datetime.now().isoformat(), "stage": "exportando de Shopify",
         "en_shopify": 0, "en_tabla": 0, "solo_en_shopify": 0,
-        "solo_en_tabla": 0, "anotados": 0, "candidatos": 0,
+        "solo_en_tabla": 0, "anotados": 0, "corregidos": 0, "candidatos": 0,
         "errors": [], "elapsed_s": 0,
     }
     job = _job
@@ -453,6 +453,24 @@ def auditar(escribir: bool = True) -> dict:
                     page_size=1000)
                 conn.commit()
                 job["anotados"] = len(faltan)
+
+            # Los que YA estaban en la tabla pero mal marcados. Antes solo se
+            # anotaban los desconocidos (handles - tabla), asi que una ficha
+            # generada y publicada despues se quedaba en 'generado' para
+            # siempre: cada intento de publicar la reintentaba y Shopify
+            # respondia "Handle already in use". Seis fichas del 31/07 se
+            # quedaron asi y reaparecian en cada corrida.
+            if escribir:
+                job["stage"] = "corrigiendo los mal marcados"
+                ya = sorted(handles & tabla)
+                if ya:
+                    for i in range(0, len(ya), 5000):
+                        db.execute_query(cur, f"""
+                            UPDATE {TABLA} SET estado='publicado', cargado_en=NOW()
+                            WHERE estado <> 'publicado' AND handle = ANY(%s)
+                        """, (ya[i:i + 5000],))
+                        job["corregidos"] += cur.rowcount or 0
+                    conn.commit()
         finally:
             conn.close()
 
@@ -468,7 +486,8 @@ def auditar(escribir: bool = True) -> dict:
         _audit("auditar",
                f"Auditoria Shopify: {job['en_shopify']:,} en la tienda, "
                f"{job['en_tabla']:,} en la tabla, {job['solo_en_shopify']:,} solo "
-               f"en la tienda ({job['anotados']:,} anotados), quedan "
+               f"en la tienda ({job['anotados']:,} anotados, "
+               f"{job['corregidos']:,} mal marcados corregidos), quedan "
                f"{job['candidatos']:,} por publicar ({job['elapsed_s']}s)", job,
                error=(job["status"] == "error"))
     return job
@@ -600,7 +619,7 @@ def publicar(limite: int | None = None, dry_run: bool = True,
         "status": "running", "accion": "publicar", "dry_run": dry_run,
         "started_at": datetime.now().isoformat(), "stage": "leyendo fichas",
         "disponibles": 0, "tope": tope, "publicados": 0, "fallidos": 0,
-        "errors": [], "elapsed_s": 0,
+        "ya_estaban": 0, "errors": [], "elapsed_s": 0,
     }
     job = _job
     t0 = time.monotonic()
@@ -645,6 +664,18 @@ def publicar(limite: int | None = None, dry_run: bool = True,
                     print(f"[ShopifyPub] {job['publicados']}/{len(filas)} "
                           f"({time.monotonic() - t0:.0f}s)", flush=True)
             except Exception as e:
+                # "Handle already in use" no es un fallo: es Shopify diciendo
+                # que ese libro YA esta publicado y nuestra tabla no se habia
+                # enterado. Se marca y se sigue, que si no vuelve a intentarse
+                # en cada corrida y siempre falla igual.
+                if "handle" in str(e).lower() and "already in use" in str(e).lower():
+                    db.execute_query(cur, f"""
+                        UPDATE {TABLA} SET estado='publicado', cargado_en=NOW()
+                        WHERE handle = ?
+                    """, (fila["Handle"],))
+                    conn.commit()
+                    job["ya_estaban"] = job.get("ya_estaban", 0) + 1
+                    continue
                 job["fallidos"] += 1
                 if len(job["errors"]) < 40:
                     job["errors"].append(f"{fila['Handle']}: {str(e)[:130]}")
