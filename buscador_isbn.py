@@ -53,8 +53,13 @@ def _proveedores(isbn: str) -> list[dict]:
             "proveedor": r[0], "email": r[1],
             "stock": int(r[2] or 0),
             "precio": float(r[3]) if r[3] is not None else None,
-            "cambio_stock": str(r[4]) if r[4] else None,
-            "visto_por_ultima_vez": str(r[5]) if r[5] else None,
+            # OJO con estos dos, estaban cruzados. El que dice cuando cambio
+            # el stock es stock_actualizado_en. actualizado_en se mueve por
+            # cualquier motivo, incluidos nuestros propios re-empujes: 31.051
+            # filas de AZETA comparten el mismo instante del 30/07 porque ese
+            # dia se forzo un resync, no porque cambiaran todas a la vez.
+            "cambio_stock": str(r[5]) if r[5] else None,
+            "fila_actualizada": str(r[4]) if r[4] else None,
             "almacen": r[6],
             "proveedor_activo": bool(r[7]),
         } for r in cur.fetchall()]
@@ -282,6 +287,12 @@ def _diagnosticar(prov, ficha, odoo, tienda, publicacion) -> list[dict]:
                "El inventario de Odoo no se esta sincronizando a Shopify")
         if tienda.get("estado") != "ACTIVE":
             di("aviso", f"En la tienda esta como {tienda.get('estado')}.")
+    else:
+        # existe es None: no se pudo preguntar a Shopify. Hay que decirlo,
+        # porque si no el diagnostico final acababa afirmando que el libro
+        # estaba "publicado con inventario" sin haberlo mirado.
+        di("aviso", f"No se pudo consultar la tienda ({tienda.get('error') or 'sin respuesta'}).",
+           "Lo de Shopify que sale aqui no es fiable hasta que responda")
 
     etiquetas = odoo.get("etiquetas") or []
     toca = _etiqueta_que_le_toca(ficha)
