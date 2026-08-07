@@ -121,6 +121,13 @@ def _stock_bd() -> tuple[dict, dict[str, str], dict[int, str], set[str]]:
       {email: codigo_almacen}
       {odoo_id: barcode}
       proveedores pausados
+      {email: {...}} proveedores que mandan stock y no tienen almacen
+
+    Lo ultimo importa mas de lo que parece. Un proveedor sin almacen no
+    aparece en ninguna comparacion, asi que su stock no cuenta como fallo:
+    la auditoria daria un 99,8% perfecto ignorando a un proveedor entero.
+    Paso con ARCOBALENO: 40.122 unidades que no llegaban a Odoo y que la
+    primera version de este modulo se saltaba en silencio.
     """
     conn = db.get_connection()
     cur = conn.cursor()
@@ -154,7 +161,76 @@ def _stock_bd() -> tuple[dict, dict[str, str], dict[int, str], set[str]]:
             barcode[oid] = bc
             clave = (oid, code)
             esperado[clave] = esperado.get(clave, 0.0) + float(stock or 0)
-        return esperado, almacen, barcode, pausados
+
+        # Proveedores vivos sin almacen: su stock no tiene donde aterrizar.
+        db.execute_query(cur, """
+            SELECT lp.proveedor_email,
+                   count(*) FILTER (WHERE lp.stock_disponible > 0),
+                   COALESCE(sum(lp.stock_disponible)
+                            FILTER (WHERE lp.stock_disponible > 0), 0),
+                   max(lp.stock_actualizado_en)
+            FROM libros_proveedor lp
+            WHERE NOT EXISTS (SELECT 1 FROM proveedor_almacen_odoo m
+                              WHERE m.proveedor_email = lp.proveedor_email)
+            GROUP BY 1
+        """)
+        sin_almacen = {}
+        for email, libros, uds, ult in cur.fetchall():
+            if libros:
+                sin_almacen[email] = {
+                    "libros": int(libros), "unidades": int(uds or 0),
+                    "ultimo_fichero": ult.isoformat() if ult else None}
+        return esperado, almacen, barcode, pausados, sin_almacen
+    finally:
+        conn.close()
+
+
+def _stock_rancio() -> dict:
+    """
+    Libros con stock en nuestra BD que el proveedor ya no lista en su ultima
+    foto CEGALD. Es el fallo al reves: aqui Odoo puede estar bien y quien
+    miente somos nosotros. Se ve poco porque nadie compara la foto de hoy
+    con lo que quedo de ayer.
+
+    Solo se puede medir en los proveedores que mandan CEGALD; los que solo
+    mandan stock (AZETA, Logista, Machado, Penguin, PODIPRINT) no tienen
+    foto contra la que comparar.
+    """
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        db.execute_query(cur, """
+            WITH ult AS (
+              SELECT proveedor_email, max(registrado_en) mx
+              FROM cegald_isbns_v2 GROUP BY 1),
+            foto AS (
+              SELECT DISTINCT ce.proveedor_email, ce.isbn
+              FROM cegald_isbns_v2 ce
+              JOIN ult ON ult.proveedor_email = ce.proveedor_email
+              WHERE ce.registrado_en >= ult.mx - INTERVAL '24 hours')
+            SELECT lp.proveedor_email,
+                   count(*) FILTER (WHERE lp.stock_disponible > 0
+                                      AND f.isbn IS NULL),
+                   COALESCE(sum(lp.stock_disponible)
+                            FILTER (WHERE lp.stock_disponible > 0
+                                      AND f.isbn IS NULL), 0)
+            FROM libros_proveedor lp
+            JOIN ult u ON u.proveedor_email = lp.proveedor_email
+            LEFT JOIN foto f ON f.proveedor_email = lp.proveedor_email
+                            AND f.isbn = lp.isbn
+            GROUP BY 1
+        """)
+        por = {}
+        for email, libros, uds in cur.fetchall():
+            if libros:
+                por[email] = {"libros": int(libros), "unidades": int(uds or 0)}
+        return {"por_proveedor": dict(sorted(por.items(),
+                                             key=lambda x: -x[1]["libros"])),
+                "libros": sum(d["libros"] for d in por.values()),
+                "unidades": sum(d["unidades"] for d in por.values())}
+    except Exception:
+        conn.rollback()
+        return {}
     finally:
         conn.close()
 
@@ -212,6 +288,7 @@ async def auditar() -> dict:
         "stage": "empezando", "elapsed_s": 0, "errors": [],
         "espejo": {}, "catalogo": {}, "proveedores": {}, "totales": {},
         "por_libro": {}, "huerfanos": {}, "hallazgos": [],
+        "proveedores_sin_almacen": {},
     }
     job = _job
     t0 = time.monotonic()
@@ -245,8 +322,10 @@ async def auditar() -> dict:
             real = await _stock_odoo(odoo, ubic, job)
 
         job["stage"] = "leyendo lo que dicen los proveedores"
-        esperado, almacen, barcode, pausados = _stock_bd()
+        esperado, almacen, barcode, pausados, sin_almacen = _stock_bd()
         code_a_email = {v: k for k, v in almacen.items()}
+        job["proveedores_sin_almacen"] = sin_almacen
+        job["stock_rancio"] = _stock_rancio()
 
         job["stage"] = "comparando"
         # Almacenes que no son de ningun proveedor (el WH generico de la
@@ -411,7 +490,21 @@ def _hallazgos(job: dict) -> list[dict]:
     hu = job.get("huerfanos", {})
     pl = job.get("por_libro", {})
 
-    # Lo primero, lo que se nota en la caja: libros que no se pueden vender
+    # Antes que nada: un proveedor sin almacen no aparece en ninguna otra
+    # cuenta de este informe. Si no se dice aqui, no se dice en ningun sitio.
+    sa = job.get("proveedores_sin_almacen", {})
+    for email, d in sorted(sa.items(), key=lambda x: -x[1]["unidades"]):
+        out.append({
+            "nivel": "error",
+            "titulo": f"{email} manda stock y no tiene almacen en Odoo",
+            "detalle": f"{d['libros']:,} libros y {d['unidades']:,} unidades "
+                       f"que no llegan a Odoo. Ultimo fichero: "
+                       f"{(d.get('ultimo_fichero') or '?')[:10]}. No cuenta en "
+                       f"el resto del informe porque no hay contra que compararlo.",
+            "accion": "Dar de alta su almacen y mapearlo, como se hizo con PODIPRINT",
+        })
+
+    # Despues, lo que se nota en la caja: libros que no se pueden vender
     # aunque alguien los tenga, y libros que se venden sin que nadie los tenga.
     if pl.get("fantasma"):
         out.append({
@@ -431,6 +524,17 @@ def _hallazgos(job: dict) -> list[dict]:
             "detalle": f"{pl['unidades_no_vendibles']:,} unidades que no se "
                        f"pueden vender aunque existan.",
             "accion": "Forzar resync del proveedor que los tiene",
+        })
+    ra = job.get("stock_rancio", {})
+    if ra.get("libros"):
+        out.append({
+            "nivel": "aviso",
+            "titulo": f"{ra['libros']:,} libros con stock nuestro que el "
+                      f"proveedor ya no lista",
+            "detalle": f"{ra['unidades']:,} unidades. Aparecieron en un fichero "
+                       f"antiguo y no en el ultimo: puede que ya no los tenga. "
+                       f"Aqui el que se equivoca somos nosotros, no Odoo.",
+            "accion": "Revisar el apagado por CEGALD de esos proveedores",
         })
     if t.get("sobra_en_odoo"):
         out.append({
@@ -543,6 +647,19 @@ if __name__ == "__main__":
         print(f"{code:<9}{d['fiabilidad_pct']:>7}{d['coinciden']:>11,}"
               f"{d['sobra_en_odoo']:>9,}{d['falta_en_odoo']:>9,}"
               f"{d['cantidad_distinta']:>10,}")
+
+    if r.get("proveedores_sin_almacen"):
+        print(f"\nPROVEEDORES SIN ALMACEN (su stock no llega a Odoo):")
+        for e, d in r["proveedores_sin_almacen"].items():
+            print(f"   {e[:38]:<40}{d['libros']:>8,} libros{d['unidades']:>10,} uds"
+                  f"   ultimo {str(d.get('ultimo_fichero'))[:10]}")
+
+    if r.get("stock_rancio", {}).get("libros"):
+        ra = r["stock_rancio"]
+        print(f"\nSTOCK RANCIO (el proveedor ya no lo lista): "
+              f"{ra['libros']:,} libros, {ra['unidades']:,} uds")
+        for e, d in ra["por_proveedor"].items():
+            print(f"   {e[:38]:<40}{d['libros']:>8,} libros{d['unidades']:>10,} uds")
 
     if r.get("almacenes_sin_proveedor"):
         print(f"\nALMACENES SIN PROVEEDOR (no los alimenta ningun fichero):")

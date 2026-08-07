@@ -2761,6 +2761,19 @@
                         <table style="width:100%; font-size:.82rem; border-collapse:collapse;" id="audit-tabla"></table>
                     </div>
 
+                    <div id="audit-rancio-bloque" style="display:none;">
+                        <div class="section-label" style="color:#fbbf24; margin-top:20px;">
+                            <ion-icon name="hourglass-outline"></ion-icon> Stock rancio
+                        </div>
+                        <p style="color:#8b93a7; font-size:.78rem; margin-top:2px;">
+                            Libros con stock <strong>nuestro</strong> que el proveedor ya no lista en su
+                            último fichero. Aquí el que se equivoca no es Odoo: somos nosotros. Solo se
+                            puede medir en los nueve proveedores que mandan CEGALD.
+                        </p>
+                        <div id="audit-rancio" style="display:grid;
+                             grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:8px;"></div>
+                    </div>
+
                     <div class="section-label" style="color:#e67e22; margin-top:20px;">
                         <ion-icon name="library-outline"></ion-icon> Integridad del catálogo
                     </div>
@@ -6530,6 +6543,19 @@
                     </tr>`;
                 }).join('');
 
+            const ra = j.stock_rancio || {};
+            const rb = document.getElementById('audit-rancio-bloque');
+            rb.style.display = ra.libros ? 'block' : 'none';
+            if (ra.libros) {
+                document.getElementById('audit-rancio').innerHTML =
+                    Object.entries(ra.por_proveedor || {}).map(([e, d]) => `
+                        <div style="background:rgba(148,163,184,.06); border-radius:8px; padding:9px 12px;">
+                            <div style="color:#fbbf24; font-weight:700; font-size:1.05rem;">
+                                ${d.libros.toLocaleString('es')}</div>
+                            <div style="color:#8b93a7; font-size:.72rem; word-break:break-all;">${e}</div>
+                        </div>`).join('');
+            }
+
             const cat = j.catalogo || {};
             document.getElementById('audit-catalogo').innerHTML = Object.entries(AUDIT_CAT)
                 .filter(([k]) => cat[k] !== undefined)
@@ -6799,6 +6825,10 @@
                     ['Auditar ahora', 'Lee las 643.000 lineas de inventario de Odoo y las cruza con los catorce ficheros de proveedor. Tarda unos minutos y no cambia nada.', 'seguro'],
                 ],
                 problemas: [
+                    ['Sale un proveedor SIN ALMACEN',
+                     'Es lo mas grave que puede salir aqui. Ese proveedor manda ficheros pero su stock no tiene donde aterrizar en Odoo, asi que no llega nada — y ademas no aparece en el resto del informe, porque no hay contra que compararlo. Se arregla dando de alta su almacen, como se hizo con PODIPRINT.'],
+                    ['Stock rancio',
+                     'El proveedor lo listaba hace semanas y en su ultimo fichero ya no esta. Nuestra copia se quedo con el numero viejo. Aqui Odoo puede estar bien y el que miente es nuestro dato.'],
                     ['Mucho stock fantasma en un almacen',
                      'Suele ser un proveedor que dejo de mandar ficheros: su stock se quedo congelado. Miralo en Salud y, si confirmas, pausalo para que baje a cero.'],
                     ['Mucho «sin subir» justo despues de un fichero nuevo',
