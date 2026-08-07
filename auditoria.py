@@ -192,9 +192,18 @@ def _stock_rancio() -> dict:
     miente somos nosotros. Se ve poco porque nadie compara la foto de hoy
     con lo que quedo de ayer.
 
-    Solo se puede medir en los proveedores que mandan CEGALD; los que solo
-    mandan stock (AZETA, Logista, Machado, Penguin, PODIPRINT) no tienen
-    foto contra la que comparar.
+    Se mide de dos formas segun lo que manda cada proveedor:
+
+      con CEGALD  se compara con la ultima foto de cegald_isbns_v2
+      sin CEGALD  se compara con la ultima corrida de su fichero, usando
+                  stock_actualizado_en, que es lo mismo que mira el apagado
+                  por ausencia de AZETA
+
+    Lo segundo hacia falta y no estaba. AZETA apaga en Odoo los libros que
+    desaparecen de su CSV, pero NO los pone a cero en libros_proveedor: Odoo
+    queda bien y nuestra propia base de datos se queda diciendo que AZETA
+    tiene stock de algo que dejo de listar hace semanas. Asi se intento
+    vender el 9788418174186, que AZETA no lista desde el 28 de julio.
     """
     conn = db.get_connection()
     cur = conn.cursor()
@@ -223,7 +232,31 @@ def _stock_rancio() -> dict:
         por = {}
         for email, libros, uds in cur.fetchall():
             if libros:
-                por[email] = {"libros": int(libros), "unidades": int(uds or 0)}
+                por[email] = {"libros": int(libros), "unidades": int(uds or 0),
+                              "fuente": "cegald"}
+
+        # Los que no mandan CEGALD: ausente = no vino en su ultima corrida.
+        db.execute_query(cur, """
+            WITH ult AS (
+              SELECT proveedor_email, max(stock_actualizado_en) mx
+              FROM libros_proveedor
+              WHERE proveedor_email NOT IN (
+                    SELECT DISTINCT proveedor_email FROM cegald_isbns_v2)
+              GROUP BY 1)
+            SELECT lp.proveedor_email,
+                   count(*) FILTER (WHERE lp.stock_disponible > 0),
+                   COALESCE(sum(lp.stock_disponible)
+                            FILTER (WHERE lp.stock_disponible > 0), 0)
+            FROM libros_proveedor lp
+            JOIN ult u ON u.proveedor_email = lp.proveedor_email
+            WHERE lp.stock_actualizado_en < u.mx - INTERVAL '24 hours'
+            GROUP BY 1
+        """)
+        for email, libros, uds in cur.fetchall():
+            if libros:
+                por[email] = {"libros": int(libros), "unidades": int(uds or 0),
+                              "fuente": "ultima corrida"}
+
         return {"por_proveedor": dict(sorted(por.items(),
                                              key=lambda x: -x[1]["libros"])),
                 "libros": sum(d["libros"] for d in por.values()),
