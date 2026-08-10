@@ -53,10 +53,22 @@ def _proveedores(isbn: str) -> list[dict]:
             "proveedor": r[0], "email": r[1],
             "stock": int(r[2] or 0),
             "precio": float(r[3]) if r[3] is not None else None,
-            # OJO con estos dos, estaban cruzados. El que dice cuando cambio
-            # el stock es stock_actualizado_en. actualizado_en se mueve por
-            # cualquier motivo, incluidos nuestros propios re-empujes: 31.051
-            # filas de AZETA comparten el mismo instante del 30/07 porque ese
+            # OJO con estos dos: las dos vias de entrada usan los campos con
+            # significados CONTRARIOS, asi que ninguno vale como "cambio de
+            # stock" a secas.
+            #
+            #   AZETA (fetcher CSV)  stock_actualizado_en = NOW() siempre que
+            #                        el libro viene en el CSV; actualizado_en
+            #                        solo si el numero cambio
+            #   SINLI (n8n)          al reves
+            #
+            # Lo que si es cierto en ambos casos es que si stock_actualizado_en
+            # se movio, el proveedor mando ese libro: sirve como "confirmado
+            # por el proveedor", que es lo que importa para saber si el dato
+            # esta fresco o rancio. Por eso se muestra ese.
+            #
+            # actualizado_en ademas lo pisan nuestras propias operaciones:
+            # 31.051 filas de AZETA comparten el instante del 30/07 porque ese
             # dia se forzo un resync, no porque cambiaran todas a la vez.
             "cambio_stock": str(r[5]) if r[5] else None,
             "fila_actualizada": str(r[4]) if r[4] else None,

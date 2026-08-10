@@ -1039,11 +1039,90 @@ def _azeta_presentes() -> tuple[set[str], str | None]:
         conn.close()
 
 
+def _apagar_en_bd(presentes: set[str], dry_run: bool) -> dict:
+    """
+    Pone a 0 en libros_proveedor los AZETA con stock que NO vienen en el CSV.
+
+    Esto faltaba y costo una venta. El apagado solo escribia en Odoo, asi que
+    Odoo quedaba bien y nuestra propia tabla seguia diciendo que AZETA tenia
+    stock de libros que habia dejado de listar hacia semanas. Todo lo que lee
+    la BD -el buscador, el panel, quien prepara un pedido- veia el dato viejo.
+    Con el 9788418174186 se intento vender algo que AZETA no listaba desde
+    hacia diez dias.
+
+    Trabaja sobre TODA la tabla, no solo sobre lo que tiene quant en Odoo:
+    los que ya se apagaron en Odoo en corridas anteriores nunca se limpiaron
+    aqui y se habian acumulado 25.015.
+    """
+    out = {"candidatos": 0, "apagados": 0, "unidades": 0, "muestra": []}
+    if not presentes:
+        return out
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        # La comparacion se hace en Python, no en SQL. CREATE TEMP TABLE
+        # revienta contra esta base ("cache lookup failed for function"), y
+        # mandar 260.000 ISBN en un ANY(%s) es un parametro de varios MB.
+        # Traer las filas de AZETA y restar aqui sale mas barato que las dos.
+        db.execute_query(cur, """
+            SELECT isbn, stock_disponible, stock_actualizado_en
+            FROM libros_proveedor
+            WHERE proveedor_email = ? AND stock_disponible > 0
+        """, (AZETA_PROVEEDOR_EMAIL,))
+        ausentes = [(r[0], int(r[1] or 0), r[2])
+                    for r in cur.fetchall() if r[0] not in presentes]
+        out["candidatos"] = len(ausentes)
+        out["unidades"] = sum(s for _, s, _ in ausentes)
+        out["muestra"] = [
+            {"isbn": i, "stock": s, "desde": str(t)[:16]}
+            for i, s, t in sorted(ausentes, key=lambda x: (x[2] or ""))[:25]]
+
+        if dry_run or not ausentes:
+            return out
+
+        # NO se toca stock_actualizado_en a proposito. Ese campo es lo que
+        # _azeta_presentes usa para saber que vino en el ultimo CSV: si se
+        # sellaran estas filas con NOW() pasarian a contar como "presentes"
+        # sin estarlo, inflando el recuento en ~26.000 y aflojando la
+        # salvaguarda de completitud, que es justo la que evita un apagado
+        # masivo si AZETA manda el fichero truncado.
+        # actualizado_en si se mueve: es el marcapaginas del sync y hace
+        # falta para que empuje el 0 a Odoo.
+        isbns = [i for i, _, _ in ausentes]
+        LOTE = 5000
+        for i in range(0, len(isbns), LOTE):
+            db.execute_query(cur, """
+                UPDATE libros_proveedor
+                SET stock_disponible = 0,
+                    actualizado_en = NOW()
+                WHERE proveedor_email = ?
+                  AND stock_disponible > 0
+                  AND isbn = ANY(?)
+            """, (AZETA_PROVEEDOR_EMAIL, isbns[i:i + LOTE]))
+            out["apagados"] += cur.rowcount or 0
+            conn.commit()
+        return out
+    except Exception as e:
+        try: conn.rollback()
+        except Exception: pass
+        out["error"] = f"{type(e).__name__}: {str(e)[:200]}"
+        return out
+    finally:
+        conn.close()
+
+
 async def run_azeta_absence_shutdown(dry_run: bool = True) -> dict:
     """
-    Apagado por ausencia AZETA: libros con stock > 0 en AZE01 (Odoo) que
-    NO vinieron en el ultimo CSV de stock -> inventory_quantity = 0.
-    Solo location 14. dry_run=True por defecto (obligatorio validar antes).
+    Apagado por ausencia AZETA: libros que NO vinieron en el ultimo CSV de
+    stock se ponen a cero en los dos sitios donde consta que hay stock:
+
+      Odoo AZE01           inventory_quantity = 0   (solo location 14)
+      libros_proveedor     stock_disponible = 0
+
+    Lo segundo se anadio el 10/08: antes solo se escribia Odoo y nuestra
+    tabla se quedaba mintiendo. Ver _apagar_en_bd.
+
+    dry_run=True por defecto (obligatorio validar antes).
     """
     global absence_job
     absence_job = {
@@ -1059,6 +1138,10 @@ async def run_azeta_absence_shutdown(dry_run: bool = True) -> dict:
         "salvaguarda_activada": False,
         "salvaguarda_motivo": None,
         "ausentes_sample": [],
+        "bd_candidatos": 0,
+        "bd_apagados": 0,
+        "bd_unidades": 0,
+        "bd_muestra": [],
         "errors": [],
         "elapsed_s": 0,
     }
@@ -1153,6 +1236,24 @@ async def run_azeta_absence_shutdown(dry_run: bool = True) -> dict:
                         job["errors"].append(err)
                         print(f"[AzetaAbs] {err}")
 
+        # 5. Y lo mismo en nuestra tabla, con las mismas salvaguardas: si el
+        # CSV no es de fiar tampoco se apaga aqui. Se hace fuera del bloque
+        # de Odoo porque no depende de los quants: alcanza tambien a los que
+        # ya se apagaron en Odoo hace semanas y aqui nunca se limpiaron.
+        if job["salvaguarda_activada"]:
+            job["stage"] = "skipped_by_safeguard"
+        else:
+            job["stage"] = "apagando en la BD"
+            bd = _apagar_en_bd(presentes, dry_run=dry_run)
+            job["bd_candidatos"] = bd["candidatos"]
+            job["bd_apagados"] = bd["apagados"]
+            job["bd_unidades"] = bd["unidades"]
+            job["bd_muestra"] = bd["muestra"]
+            if bd.get("error"):
+                job["errors"].append(f"bd: {bd['error']}")
+            print(f"[AzetaAbs] BD: {bd['candidatos']:,} con stock que AZETA ya "
+                  f"no lista ({bd['unidades']:,} uds), {bd['apagados']:,} apagados")
+
         if job["status"] == "running":
             job["status"] = "completed"
     except Exception as e:
@@ -1167,6 +1268,8 @@ async def run_azeta_absence_shutdown(dry_run: bool = True) -> dict:
             f"{job['con_stock_odoo']:,} con stock en AZE01, "
             f"{job['ausentes']:,} ausentes"
             f"{', ' + str(job['apagados']) + ' apagados' if not dry_run else ''}. "
+            f"BD: {job['bd_candidatos']:,} con stock que ya no lista"
+            f"{', ' + str(job['bd_apagados']) + ' apagados' if not dry_run else ''}. "
             f"Salvaguarda: "
             f"{job['salvaguarda_motivo'] if job['salvaguarda_activada'] else 'OK'}"
         )
@@ -1181,6 +1284,7 @@ async def run_azeta_absence_shutdown(dry_run: bool = True) -> dict:
                     "presentes", "con_stock_odoo", "ausentes", "apagados",
                     "ausentes_pct", "salvaguarda_activada",
                     "salvaguarda_motivo", "csv_max_ts", "csv_age_hours",
+                    "bd_candidatos", "bd_apagados", "bd_unidades",
                     "dry_run", "elapsed_s")},
                 nivel="error" if (job["status"] == "error"
                                    or job["salvaguarda_activada"]) else "info",

@@ -6340,7 +6340,7 @@
                 ${paso('En la tienda', s.stock_shopify, (s.stock_shopify > 0) ? '#4ade80' : '#f87171')}
                 </div>
                 <p style="color:#8b93a7; font-size:.8rem; margin-bottom:14px;">
-                <ion-icon name="time-outline"></ion-icon> Último cambio de stock:
+                <ion-icon name="time-outline"></ion-icon> El proveedor confirmó este stock por última vez:
                 <strong style="color:#c9d1e0;">${biFecha(s.ultimo_cambio_stock)}</strong></p>`;
 
             const tabla = (titulo, filas) => filas.length ? `
@@ -6351,7 +6351,7 @@
 
             h += tabla('Proveedores', d.proveedores.map(p => fila(
                 p.proveedor + (p.proveedor_activo ? '' : ' <span style="color:#f87171">(pausado)</span>'),
-                `stock <strong>${p.stock}</strong> · ${p.precio ? p.precio + ' €' : 'sin precio'} · almacén ${p.almacen || '<span style="color:#f87171">sin mapear</span>'} · cambió ${biFecha(p.cambio_stock)}`)));
+                `stock <strong>${p.stock}</strong> · ${p.precio ? p.precio + ' €' : 'sin precio'} · almacén ${p.almacen || '<span style="color:#f87171">sin mapear</span>'} · confirmado ${biFecha(p.cambio_stock)}`)));
 
             const o = d.odoo || {};
             h += tabla('Odoo', !o.existe ? [fila('Estado', '<span style="color:#f87171">no existe</span>')] : [
