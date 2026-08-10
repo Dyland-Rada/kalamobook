@@ -6567,11 +6567,14 @@
                     <th style="padding:6px 8px; color:#fbbf24;">Sin subir</th>
                     <th style="padding:6px 8px;">Distinta</th>
                 </tr>` + filas.map(d => {
-                    const c = d.fiabilidad_pct >= 98 ? '#4ade80' : d.fiabilidad_pct >= 90 ? '#fbbf24' : '#f87171';
+                    const pausa = d.fiabilidad_pct === null || d.fiabilidad_pct === undefined;
+                    const c = pausa ? '#8b93a7'
+                            : d.fiabilidad_pct >= 98 ? '#4ade80'
+                            : d.fiabilidad_pct >= 90 ? '#fbbf24' : '#f87171';
                     return `<tr style="text-align:right; border-top:1px solid rgba(255,255,255,.05);">
                         <td style="text-align:left; padding:6px 8px; color:#e8eaf0;">${d.almacen}
                             ${d.pausado ? '<span style="color:#f87171; font-size:.7rem;"> pausado</span>' : ''}</td>
-                        <td style="padding:6px 8px; color:${c}; font-weight:600;">${d.fiabilidad_pct}%</td>
+                        <td style="padding:6px 8px; color:${c}; font-weight:600;">${pausa ? 'en pausa' : d.fiabilidad_pct + '%'}</td>
                         <td style="padding:6px 8px; color:#8b93a7;">${(d.coinciden || 0).toLocaleString('es')}</td>
                         <td style="padding:6px 8px; color:${d.sobra_en_odoo ? '#f87171' : '#8b93a7'};">${(d.sobra_en_odoo || 0).toLocaleString('es')}</td>
                         <td style="padding:6px 8px; color:${d.falta_en_odoo ? '#fbbf24' : '#8b93a7'};">${(d.falta_en_odoo || 0).toLocaleString('es')}</td>

@@ -157,6 +157,12 @@ def _stock_bd() -> tuple[dict, dict[str, str], dict[int, str], set[str]]:
             code = almacen.get(email)
             if not code:
                 continue
+            # Un proveedor pausado tiene su almacen a cero A PROPOSITO. Si
+            # entrara en la comparacion saldrian sus libros como "huecos del
+            # sync" y taparian los fallos de verdad: con los tres pausados
+            # del 10/08 serian 152.655 falsas alarmas.
+            if email in pausados:
+                continue
             oid = int(odoo_id)
             barcode[oid] = bc
             clave = (oid, code)
@@ -180,7 +186,54 @@ def _stock_bd() -> tuple[dict, dict[str, str], dict[int, str], set[str]]:
                 sin_almacen[email] = {
                     "libros": int(libros), "unidades": int(uds or 0),
                     "ultimo_fichero": ult.isoformat() if ult else None}
-        return esperado, almacen, barcode, pausados, sin_almacen
+
+        # Los pausados salen de la comparacion, pero hay que contarlos: son
+        # libros que dejan de venderse, y algunos siguen anunciados.
+        detalle_pausa = {}
+        if pausados:
+            db.execute_query(cur, """
+                SELECT lp.proveedor_email,
+                       count(*) FILTER (WHERE lp.stock_disponible > 0),
+                       COALESCE(sum(lp.stock_disponible)
+                                FILTER (WHERE lp.stock_disponible > 0), 0),
+                       count(*) FILTER (WHERE lp.stock_disponible > 0
+                                          AND s.handle IS NOT NULL)
+                FROM libros_proveedor lp
+                LEFT JOIN shopify_productos s ON s.handle = lp.isbn
+                WHERE lp.proveedor_email = ANY(%s)
+                GROUP BY 1
+            """, (list(pausados),))
+            for email, libros, uds, en_shop in cur.fetchall():
+                if libros:
+                    detalle_pausa[email] = {
+                        "libros": int(libros), "unidades": int(uds or 0),
+                        "publicados_en_shopify": int(en_shop or 0)}
+
+            # Lo que de verdad hace dano: libros que SOLO servian los
+            # pausados. Se quedan a cero de verdad, y los que ademas estan
+            # publicados se pueden seguir comprando durante semanas, porque
+            # el conector de Shopify va muy por detras.
+            db.execute_query(cur, """
+                WITH x AS (
+                  SELECT lp.isbn,
+                         bool_or(lp.proveedor_email = ANY(%s)
+                                 AND lp.stock_disponible > 0) pausado,
+                         bool_or(NOT (lp.proveedor_email = ANY(%s))
+                                 AND lp.stock_disponible > 0) otro
+                  FROM libros_proveedor lp GROUP BY lp.isbn)
+                SELECT count(*) FILTER (WHERE pausado AND otro),
+                       count(*) FILTER (WHERE pausado AND NOT otro),
+                       count(*) FILTER (WHERE pausado AND NOT otro
+                                          AND s.handle IS NOT NULL)
+                FROM x LEFT JOIN shopify_productos s ON s.handle = x.isbn
+            """, (list(pausados), list(pausados)))
+            cubiertos, huerfanos, anunciados = cur.fetchone()
+            detalle_pausa["_global"] = {
+                "los_cubre_otro": int(cubiertos or 0),
+                "sin_ningun_proveedor": int(huerfanos or 0),
+                "anunciados_sin_proveedor": int(anunciados or 0),
+            }
+        return esperado, almacen, barcode, pausados, sin_almacen, detalle_pausa
     finally:
         conn.close()
 
@@ -355,9 +408,17 @@ async def auditar() -> dict:
             real = await _stock_odoo(odoo, ubic, job)
 
         job["stage"] = "leyendo lo que dicen los proveedores"
-        esperado, almacen, barcode, pausados, sin_almacen = _stock_bd()
+        (esperado, almacen, barcode, pausados,
+         sin_almacen, detalle_pausa) = _stock_bd()
         code_a_email = {v: k for k, v in almacen.items()}
         job["proveedores_sin_almacen"] = sin_almacen
+        glob = detalle_pausa.pop("_global", {})
+        job["pausados"] = {
+            "por_proveedor": detalle_pausa,
+            "libros": sum(d["libros"] for d in detalle_pausa.values()),
+            "unidades": sum(d["unidades"] for d in detalle_pausa.values()),
+            **glob,
+        }
         job["stock_rancio"] = _stock_rancio()
 
         job["stage"] = "comparando"
@@ -422,7 +483,10 @@ async def auditar() -> dict:
 
         for code, d in por_prov.items():
             base = d["libros_odoo"] or d["libros_proveedor"] or 1
-            d["fiabilidad_pct"] = round(100.0 * d["coinciden"] / base, 1)
+            # Un almacen pausado esta vacio queriendo. Darle un 0,0% lo pinta
+            # como averiado justo al lado de los que si fallan.
+            d["fiabilidad_pct"] = (None if d["pausado"]
+                                   else round(100.0 * d["coinciden"] / base, 1))
             d["muestras"] = muestras.get(code, {})
             for k in ("unidades_odoo", "unidades_proveedor",
                       "unidades_fantasma", "unidades_perdidas"):
@@ -523,8 +587,30 @@ def _hallazgos(job: dict) -> list[dict]:
     hu = job.get("huerfanos", {})
     pl = job.get("por_libro", {})
 
-    # Antes que nada: un proveedor sin almacen no aparece en ninguna otra
-    # cuenta de este informe. Si no se dice aqui, no se dice en ningun sitio.
+    # Lo primero de todo: un libro que se puede comprar y nadie puede servir.
+    pa = job.get("pausados", {})
+    if pa.get("anunciados_sin_proveedor"):
+        out.append({
+            "nivel": "error",
+            "titulo": f"{pa['anunciados_sin_proveedor']:,} libros anunciados en "
+                      f"Shopify que se han quedado sin ningun proveedor",
+            "detalle": f"Al pausar se pusieron a cero en Odoo, pero en la tienda "
+                       f"siguen a la venta hasta que el conector se entere, y va "
+                       f"muy por detras. Se pueden comprar y no hay quien los sirva.",
+            "accion": "Ponerlos a cero o despublicarlos en Shopify sin esperar al conector",
+        })
+    if pa.get("sin_ningun_proveedor"):
+        out.append({
+            "nivel": "aviso",
+            "titulo": f"{pa['sin_ningun_proveedor']:,} libros sin stock por la "
+                      f"pausa de {len(pa.get('por_proveedor') or {})} proveedores",
+            "detalle": f"{pa.get('los_cubre_otro', 0):,} mas los cubre otro "
+                       f"proveedor y siguen vendiendose. El resto no.",
+            "accion": "Es lo esperado mientras duren las pausas",
+        })
+
+    # Un proveedor sin almacen no aparece en ninguna otra cuenta de este
+    # informe. Si no se dice aqui, no se dice en ningun sitio.
     sa = job.get("proveedores_sin_almacen", {})
     for email, d in sorted(sa.items(), key=lambda x: -x[1]["unidades"]):
         out.append({
@@ -677,9 +763,19 @@ if __name__ == "__main__":
     print(f"\n{'almacen':<9}{'fiab%':>7}{'coinciden':>11}{'sobra':>9}"
           f"{'falta':>9}{'distinta':>10}")
     for code, d in r["proveedores"].items():
-        print(f"{code:<9}{d['fiabilidad_pct']:>7}{d['coinciden']:>11,}"
+        fiab = "PAUSA" if d["fiabilidad_pct"] is None else d["fiabilidad_pct"]
+        print(f"{code:<9}{fiab:>7}{d['coinciden']:>11,}"
               f"{d['sobra_en_odoo']:>9,}{d['falta_en_odoo']:>9,}"
               f"{d['cantidad_distinta']:>10,}")
+
+    if r.get("pausados", {}).get("por_proveedor"):
+        pa = r["pausados"]
+        print(f"\nPROVEEDORES PAUSADOS (su almacen esta a cero a proposito):")
+        for e, d in pa["por_proveedor"].items():
+            print(f"   {e[:38]:<40}{d['libros']:>8,} libros{d['unidades']:>10,} uds")
+        print(f"   libros que cubre otro proveedor      {pa.get('los_cubre_otro',0):>8,}")
+        print(f"   libros sin ningun proveedor          {pa.get('sin_ningun_proveedor',0):>8,}")
+        print(f"   de esos, anunciados en Shopify       {pa.get('anunciados_sin_proveedor',0):>8,}  <-- ojo")
 
     if r.get("proveedores_sin_almacen"):
         print(f"\nPROVEEDORES SIN ALMACEN (su stock no llega a Odoo):")
