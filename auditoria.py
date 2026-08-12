@@ -321,6 +321,60 @@ def _stock_rancio() -> dict:
         conn.close()
 
 
+DIAS_MUDO = float(os.environ.get("AUDIT_DIAS_MUDO", "5"))
+
+
+def _proveedores_mudos() -> dict:
+    """
+    Proveedores activos que llevan dias sin mandar nada. Su stock se queda
+    congelado en Odoo como si fuera de hoy.
+
+    Esto no lo pilla el stock rancio, y es importante entender por que: el
+    rancio compara cada libro contra la ULTIMA corrida del proveedor, asi
+    que si el proveedor entero lleva 20 dias mudo, su ultima corrida es la
+    de hace 20 dias y todos sus libros salen "presentes". Cuando el que
+    falla es el fichero completo, no hay contra que comparar.
+
+    Y en tres de ellos -Logista, Machado y Penguin- no hay ni apagado por
+    ausencia: sus ficheros se suben a mano a Drive y no dejan foto en
+    cegald_isbns_v2, asi que su stock no baja NUNCA solo. Se queda como
+    estaba hasta que alguien sube el siguiente fichero.
+    """
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        db.execute_query(cur, f"""
+            SELECT lp.proveedor_email,
+                   max(lp.stock_actualizado_en)::date,
+                   (now()::date - max(lp.stock_actualizado_en)::date),
+                   count(*) FILTER (WHERE lp.stock_disponible > 0),
+                   count(*) FILTER (WHERE lp.stock_disponible > 0
+                                      AND s.handle IS NOT NULL)
+            FROM libros_proveedor lp
+            LEFT JOIN shopify_productos s ON s.handle = lp.isbn
+            LEFT JOIN proveedor_pausa pa
+                   ON pa.proveedor_email = lp.proveedor_email
+            WHERE COALESCE(pa.activo, true)
+            GROUP BY 1
+            HAVING (now()::date - max(lp.stock_actualizado_en)::date) >= {DIAS_MUDO}
+               AND count(*) FILTER (WHERE lp.stock_disponible > 0) > 0
+            ORDER BY 3 DESC
+        """)
+        por = {}
+        for email, ult, dias, libros, en_shop in cur.fetchall():
+            por[email] = {"ultimo_fichero": str(ult), "dias": int(dias),
+                          "libros_congelados": int(libros),
+                          "a_la_venta": int(en_shop or 0)}
+        return {"por_proveedor": por,
+                "libros_congelados": sum(d["libros_congelados"] for d in por.values()),
+                "a_la_venta": sum(d["a_la_venta"] for d in por.values())}
+    except Exception:
+        conn.rollback()
+        return {}
+    finally:
+        conn.close()
+
+
 def _integridad_catalogo() -> dict:
     """Fallos de catalogo que se ven en el espejo sin llamar a Odoo."""
     conn = db.get_connection()
@@ -420,6 +474,7 @@ async def auditar() -> dict:
             **glob,
         }
         job["stock_rancio"] = _stock_rancio()
+        job["proveedores_mudos"] = _proveedores_mudos()
 
         job["stage"] = "comparando"
         # Almacenes que no son de ningun proveedor (el WH generico de la
@@ -586,6 +641,20 @@ def _hallazgos(job: dict) -> list[dict]:
     c = job.get("catalogo", {})
     hu = job.get("huerfanos", {})
     pl = job.get("por_libro", {})
+
+    mu = job.get("proveedores_mudos", {})
+    if mu.get("a_la_venta"):
+        peor = max(mu["por_proveedor"].items(), key=lambda x: x[1]["dias"])
+        out.append({
+            "nivel": "error",
+            "titulo": f"{mu['a_la_venta']:,} libros a la venta con stock que "
+                      f"lleva dias sin confirmarse",
+            "detalle": f"{len(mu['por_proveedor'])} proveedores sin mandar "
+                       f"fichero; el peor, {peor[0]}, lleva {peor[1]['dias']} "
+                       f"dias. Su stock sigue en Odoo como si fuera de hoy y "
+                       f"no baja solo.",
+            "accion": "Reclamar el fichero; si no llega, pausar al proveedor",
+        })
 
     # Lo primero de todo: un libro que se puede comprar y nadie puede servir.
     pa = job.get("pausados", {})
@@ -767,6 +836,14 @@ if __name__ == "__main__":
         print(f"{code:<9}{fiab:>7}{d['coinciden']:>11,}"
               f"{d['sobra_en_odoo']:>9,}{d['falta_en_odoo']:>9,}"
               f"{d['cantidad_distinta']:>10,}")
+
+    if r.get("proveedores_mudos", {}).get("por_proveedor"):
+        mu = r["proveedores_mudos"]
+        print(f"\nPROVEEDORES MUDOS (su stock en Odoo esta congelado):")
+        print(f"   {'proveedor':<38}{'ultimo':<12}{'dias':>5}{'congelados':>12}{'a la venta':>12}")
+        for e, d in mu["por_proveedor"].items():
+            print(f"   {e[:36]:<38}{d['ultimo_fichero']:<12}{d['dias']:>5}"
+                  f"{d['libros_congelados']:>12,}{d['a_la_venta']:>12,}")
 
     if r.get("pausados", {}).get("por_proveedor"):
         pa = r["pausados"]
