@@ -2783,7 +2783,7 @@
                         sin hacerlos vendibles: sin stock no se venden igual.
                     </p>
                     <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:8px;">
-                        <button class="btn" onclick="faltCalcular()">
+                        <button class="btn btn-primary" style="background:linear-gradient(135deg,#3498db,#2471a3);" onclick="faltCalcular()">
                             <ion-icon name="search-outline"></ion-icon> Ver cuántos faltan</button>
                         <button class="btn btn-success" onclick="faltCrear()">
                             <ion-icon name="add-outline"></ion-icon> Crearlos con stock 0</button>
@@ -2883,7 +2883,7 @@
                 <div class="card-title">
                     <ion-icon name="sync-outline"></ion-icon> Stock de Odoo a Shopify
                     <button class="ayuda-btn" onclick="abrirAyuda('stock_shopify')" title="Qué es esto y cómo se usa">?</button>
-                    <span class="status-badge" id="stk-badge" style="font-size:.7rem;">—</span>
+                    <span class="status-badge" id="stk-badge" style="font-size:.7rem; background:rgba(148,163,184,.15); color:#8b93a7;">SIN ESTRENAR</span>
                 </div>
                 <p style="color:#8b93a7; font-size:.8rem; margin-top:6px;">
                     Sustituye al conector, que sincronizaba <strong>3.144 productos al día</strong>
@@ -2910,18 +2910,18 @@
                     Para escribir stock no vale el ISBN: hace falta el identificador de inventario
                     de cada variante. Se trae de una vez y se repite solo cuando hay libros nuevos.
                 </p>
-                <button class="btn" onclick="stkExportar()">
+                <button class="btn btn-primary" style="background:linear-gradient(135deg,#3498db,#2471a3);" onclick="stkExportar()">
                     <ion-icon name="download-outline"></ion-icon> Traer identificadores</button>
 
                 <div class="section-label" style="color:#2ecc71; margin-top:18px;">
                     2. Sincronizar
                 </div>
                 <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
-                    <button class="btn" onclick="stkSync(true,false)">
+                    <button class="btn btn-primary" style="background:linear-gradient(135deg,#6366f1,#4338ca);" onclick="stkSync(true,false)">
                         <ion-icon name="eyedrop-outline"></ion-icon> Ensayo (no toca nada)</button>
                     <button class="btn btn-success" onclick="stkSync(false,false)">
                         <ion-icon name="cloud-upload-outline"></ion-icon> Sincronizar cambios</button>
-                    <button class="btn btn-edit" onclick="stkSync(true,true)">
+                    <button class="btn btn-primary" style="background:linear-gradient(135deg,#475569,#334155);" onclick="stkSync(true,true)">
                         Ensayo del catálogo completo</button>
                 </div>
                 <div id="stk-res" style="margin-top:12px;"></div>
@@ -6567,9 +6567,11 @@
             b.textContent = st === 'running' ? (j.stage || 'TRABAJANDO').toUpperCase()
                           : st === 'error' ? 'CON ERRORES'
                           : inv.con_identificador ? 'LISTO' : 'FALTAN IDENTIFICADORES';
-            b.style.color = st === 'error' ? '#f87171'
-                          : st === 'running' ? '#fbbf24'
-                          : inv.con_identificador ? '#4ade80' : '#8b93a7';
+            const bc = st === 'error' ? '#f87171'
+                     : st === 'running' ? '#fbbf24'
+                     : inv.con_identificador ? '#4ade80' : '#8b93a7';
+            b.style.color = bc;
+            b.style.background = bc + '22';
 
             let html = '';
             if (j.a_cambiar) {
@@ -6613,7 +6615,9 @@
         async function stkSync(seco, completo) {
             if (!seco && !confirm('Se va a escribir stock en la tienda de verdad.\n\n' +
                                   'Haz primero el ensayo y comprueba los números.\n¿Seguir?')) return;
-            document.getElementById('stk-badge').textContent = seco ? 'ENSAYANDO…' : 'LANZANDO…';
+            const bx = document.getElementById('stk-badge');
+            bx.textContent = seco ? 'ENSAYANDO…' : 'LANZANDO…';
+            bx.style.color = '#fbbf24'; bx.style.background = '#fbbf2422';
             const url = `/api/v1/shopify/stock/sincronizar?dry_run=${seco}&completo=${completo}`;
             if (seco) {
                 const j = await (await fetch(url, { method: 'POST' })).json();
