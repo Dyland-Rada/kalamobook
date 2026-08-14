@@ -3491,6 +3491,109 @@ async def vigilante_cron_stop():
         "status": "error", "message": "No estaba corriendo."})
 
 
+# ─── Stock de Odoo a Shopify, por nuestra cuenta ─────────────────────
+
+@app.post("/api/v1/shopify/stock/exportar-inventario", tags=["Shopify"])
+async def shopify_stock_exportar():
+    """
+    Trae de Shopify el identificador de inventario de cada libro. Hace falta
+    una vez antes de sincronizar: para escribir stock no vale el ISBN, hace
+    falta el inventoryItemId de la variante. Tarda unos minutos.
+    """
+    import threading
+    import shopify_stock
+
+    if shopify_stock.get_status().get("status") == "running":
+        return JSONResponse(status_code=409, content={
+            "status": "error", "message": "Ya hay una operacion corriendo."})
+    threading.Thread(target=shopify_stock.exportar_inventario,
+                     daemon=True).start()
+    return JSONResponse(content={"status": "started"})
+
+
+@app.post("/api/v1/shopify/stock/sincronizar", tags=["Shopify"])
+async def shopify_stock_sincronizar(
+    dry_run: bool = Query(True, description="empezar siempre por aqui"),
+    completo: bool = Query(False, description="ignorar el marcapaginas"),
+    limite: int | None = Query(None, ge=1),
+):
+    """
+    Lleva a Shopify el stock que ha cambiado en Odoo. Con dry_run=true dice
+    cuantos libros cambiaria y una muestra, sin tocar la tienda.
+
+    La cantidad publicada es el total de Odoo sumando los catorce almacenes,
+    que es lo que se puede servir.
+    """
+    import threading
+    import sys
+    import shopify_stock
+
+    if shopify_stock.get_status().get("status") == "running":
+        return JSONResponse(status_code=409, content={
+            "status": "error", "message": "Ya hay una sincronizacion corriendo."})
+
+    if dry_run:
+        return JSONResponse(content=await shopify_stock.sincronizar(
+            dry_run=True, completo=completo, limite=limite))
+
+    def _run_in_thread():
+        if sys.platform == 'win32':
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
+        try:
+            new_loop.run_until_complete(shopify_stock.sincronizar(
+                dry_run=False, completo=completo, limite=limite))
+        finally:
+            new_loop.close()
+
+    threading.Thread(target=_run_in_thread, daemon=True).start()
+    return JSONResponse(content={"status": "started", "completo": completo,
+                                 "limite": limite})
+
+
+@app.get("/api/v1/shopify/stock/estado", tags=["Shopify"])
+async def shopify_stock_estado():
+    """Avance o resultado de la ultima operacion de stock."""
+    import shopify_stock
+    import db as _db
+    out = {"job": shopify_stock.get_status()}
+    try:
+        conn = _db.get_connection()
+        cur = conn.cursor()
+        cur.execute(f"""SELECT count(*), count(inventory_item_gid),
+                               max(leido_en), max(escrito_en)
+                        FROM {shopify_stock.TABLA}""")
+        n, con_item, leido, escrito = cur.fetchone()
+        cur.execute("""SELECT ultimo_timestamp, ultima_ejecucion, items_procesados
+                       FROM sync_state WHERE entidad = %s""",
+                    (shopify_stock.ENTIDAD,))
+        r = cur.fetchone()
+        conn.close()
+        out["inventario"] = {
+            "libros": n, "con_identificador": con_item,
+            "ultima_lectura": leido.isoformat() if leido else None,
+            "ultima_escritura": escrito.isoformat() if escrito else None,
+        }
+        out["marcapaginas"] = {
+            "hasta": str(r[0]) if r and r[0] else None,
+            "ultima_corrida": r[1].isoformat() if r and r[1] else None,
+            "ultimos_items": r[2] if r else None,
+        } if r else {}
+    except Exception as e:
+        out["error"] = str(e)[:200]
+    return JSONResponse(content=out)
+
+
+@app.post("/api/v1/shopify/stock/parar", tags=["Shopify"])
+async def shopify_stock_parar():
+    import shopify_stock
+    if shopify_stock.stop():
+        return JSONResponse(content={"status": "stopping"})
+    return JSONResponse(status_code=400, content={
+        "status": "error", "message": "No estaba corriendo."})
+
+
 # ─── Auditoria de datos: el stock que decimos tener vs el que hay ────
 
 @app.post("/api/v1/auditoria/lanzar", tags=["Auditoria"])

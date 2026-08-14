@@ -2877,6 +2877,56 @@
 
                 <div id="sh-descartes" style="margin-top:18px; font-size:.78rem; color:#666;"></div>
             </div>
+
+            <!-- ── Stock a la tienda, por nuestra cuenta ── -->
+            <div class="card" id="stk-card" style="border:2px solid rgba(52,152,219,0.45);">
+                <div class="card-title">
+                    <ion-icon name="sync-outline"></ion-icon> Stock de Odoo a Shopify
+                    <button class="ayuda-btn" onclick="abrirAyuda('stock_shopify')" title="Qué es esto y cómo se usa">?</button>
+                    <span class="status-badge" id="stk-badge" style="font-size:.7rem;">—</span>
+                </div>
+                <p style="color:#8b93a7; font-size:.8rem; margin-top:6px;">
+                    Sustituye al conector, que sincronizaba <strong>3.144 productos al día</strong>
+                    mientras Odoo genera <strong>16.257 cambios diarios</strong>. Publica el total
+                    de los catorce almacenes, que es lo que se puede servir, y
+                    <strong>solo escribe lo que ha cambiado</strong>.
+                </p>
+
+                <div style="margin-top:14px; display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px;">
+                    <div class="stat-box"><div class="stat-number" style="color:#3498db" id="stk-libros">—</div>
+                        <div class="stat-label">Libros mapeados</div></div>
+                    <div class="stat-box"><div class="stat-number" style="color:#a78bfa" id="stk-tocados">—</div>
+                        <div class="stat-label">Cambiados en Odoo</div></div>
+                    <div class="stat-box"><div class="stat-number" style="color:#fbbf24" id="stk-distintos">—</div>
+                        <div class="stat-label">Distintos de la tienda</div></div>
+                    <div class="stat-box"><div class="stat-number" style="color:#4ade80" id="stk-escritos">—</div>
+                        <div class="stat-label">Escritos</div></div>
+                </div>
+
+                <div class="section-label" style="color:#3498db; margin-top:18px;">
+                    1. Traer los identificadores de Shopify
+                </div>
+                <p style="color:#8b93a7; font-size:.78rem;">
+                    Para escribir stock no vale el ISBN: hace falta el identificador de inventario
+                    de cada variante. Se trae de una vez y se repite solo cuando hay libros nuevos.
+                </p>
+                <button class="btn" onclick="stkExportar()">
+                    <ion-icon name="download-outline"></ion-icon> Traer identificadores</button>
+
+                <div class="section-label" style="color:#2ecc71; margin-top:18px;">
+                    2. Sincronizar
+                </div>
+                <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+                    <button class="btn" onclick="stkSync(true,false)">
+                        <ion-icon name="eyedrop-outline"></ion-icon> Ensayo (no toca nada)</button>
+                    <button class="btn btn-success" onclick="stkSync(false,false)">
+                        <ion-icon name="cloud-upload-outline"></ion-icon> Sincronizar cambios</button>
+                    <button class="btn btn-edit" onclick="stkSync(true,true)">
+                        Ensayo del catálogo completo</button>
+                </div>
+                <div id="stk-res" style="margin-top:12px;"></div>
+                <div id="stk-info" style="margin-top:10px; font-size:.78rem; color:#666;"></div>
+            </div>
         </div>
 
         <!-- ═══ TAB: RELLENO MANUAL ═══ -->
@@ -2919,7 +2969,7 @@
             if (tab === 'odoo') { odooPoll(); odooStartPolling(); isbnIndexPoll(); loadMirrorAndDistInitial(); startResumenAutoRefresh(); }
             if (tab === 'catalog') { catalogSearch(1); loadSuppliersDatalist(); }
             if (tab === 'manual') manualSub(manualTipo);
-            if (tab === 'shopify') shLoad(true); else shPollStop();
+            if (tab === 'shopify') { shLoad(true); stkEstado(); } else shPollStop();
             if (tab === 'salud') { saludCargar(); auditSondear(); faltSondear(); }
             if (tab === 'audit') { auditLoadAll(); auditStartAutoRefresh(); asLoad(); }
             else { auditStopAutoRefresh(); }
@@ -6501,6 +6551,81 @@
             saludCargar();
         }
 
+        // ═══ STOCK DE ODOO A SHOPIFY ═══
+        let stkTimer = null;
+
+        function stkPintar(d) {
+            const j = d.job || {}, inv = d.inventario || {}, mp = d.marcapaginas || {};
+            const n = v => (v === undefined || v === null) ? '—' : Number(v).toLocaleString('es');
+            document.getElementById('stk-libros').textContent = n(inv.con_identificador);
+            document.getElementById('stk-tocados').textContent = n(j.libros_tocados);
+            document.getElementById('stk-distintos').textContent = n(j.a_cambiar);
+            document.getElementById('stk-escritos').textContent = n(j.escritos);
+
+            const b = document.getElementById('stk-badge');
+            const st = j.status || 'idle';
+            b.textContent = st === 'running' ? (j.stage || 'TRABAJANDO').toUpperCase()
+                          : st === 'error' ? 'CON ERRORES'
+                          : inv.con_identificador ? 'LISTO' : 'FALTAN IDENTIFICADORES';
+            b.style.color = st === 'error' ? '#f87171'
+                          : st === 'running' ? '#fbbf24'
+                          : inv.con_identificador ? '#4ade80' : '#8b93a7';
+
+            let html = '';
+            if (j.a_cambiar) {
+                html += `<div style="color:#c9d1e0; font-size:.85rem;">
+                    Suben <strong style="color:#4ade80">${n(j.subidas)}</strong> ·
+                    bajan <strong style="color:#fbbf24">${n(j.bajadas)}</strong> ·
+                    a cero <strong style="color:#f87171">${n(j.a_cero)}</strong>
+                    ${j.dry_run ? ' <span style="color:#8b93a7">(ensayo: no se ha escrito nada)</span>' : ''}
+                </div>`;
+            }
+            if ((j.muestra || []).length) {
+                html += `<div style="margin-top:8px; font-size:.79rem; color:#8b93a7;">` +
+                    j.muestra.slice(0, 8).map(m =>
+                        `<div>${m.handle} · tienda <strong>${m.shopify ?? '—'}</strong> → Odoo <strong style="color:#c9d1e0">${m.odoo}</strong></div>`
+                    ).join('') + `</div>`;
+            }
+            if ((j.errors || []).length) {
+                html += `<div style="margin-top:8px; color:#f87171; font-size:.79rem;">` +
+                    j.errors.slice(0, 4).map(e => `<div>${e}</div>`).join('') + `</div>`;
+            }
+            document.getElementById('stk-res').innerHTML = html;
+
+            document.getElementById('stk-info').innerHTML =
+                `Identificadores leídos: ${inv.ultima_lectura ? biFecha(inv.ultima_lectura) : 'nunca'} ·
+                 Sincronizado hasta: ${mp.hasta ? String(mp.hasta).slice(0, 16) : 'nunca'}`;
+
+            if (st !== 'running' && stkTimer) { clearInterval(stkTimer); stkTimer = null; }
+        }
+
+        async function stkEstado() {
+            try { stkPintar(await (await fetch('/api/v1/shopify/stock/estado')).json()); }
+            catch (e) {}
+        }
+
+        async function stkExportar() {
+            await fetch('/api/v1/shopify/stock/exportar-inventario', { method: 'POST' });
+            if (!stkTimer) stkTimer = setInterval(stkEstado, 5000);
+            stkEstado();
+        }
+
+        async function stkSync(seco, completo) {
+            if (!seco && !confirm('Se va a escribir stock en la tienda de verdad.\n\n' +
+                                  'Haz primero el ensayo y comprueba los números.\n¿Seguir?')) return;
+            document.getElementById('stk-badge').textContent = seco ? 'ENSAYANDO…' : 'LANZANDO…';
+            const url = `/api/v1/shopify/stock/sincronizar?dry_run=${seco}&completo=${completo}`;
+            if (seco) {
+                const j = await (await fetch(url, { method: 'POST' })).json();
+                stkPintar({ job: j, inventario: {}, marcapaginas: {} });
+                stkEstado();
+            } else {
+                await fetch(url, { method: 'POST' });
+                if (!stkTimer) stkTimer = setInterval(stkEstado, 5000);
+                stkEstado();
+            }
+        }
+
         // ═══ AUDITORÍA DE STOCK ═══
         // Tarda minutos: se lanza, se sondea y se pinta cuando termina.
         let auditTimer = null;
@@ -6899,6 +7024,37 @@
                 ],
                 dato: 'En el historial solo se apunta lo que <b>cambia de estado</b>. Si no, un ' +
                       'proveedor mudo repetiria la misma linea en cada revision.'
+            },
+            stock_shopify: {
+                icono: 'sync-outline', titulo: 'Stock de Odoo a Shopify',
+                sub: 'El sustituto del conector',
+                intro: 'El conector sincronizaba <b>3.144 productos al dia</b> y Odoo genera ' +
+                       '<b>16.257 cambios diarios</b>: no llegaba, y el desfase se acumulaba ' +
+                       'durante semanas. Esto hace lo mismo pero solo con lo que ha cambiado, ' +
+                       'asi que el catalogo entero cabe en una corrida.',
+                numeros: [
+                    ['#3498db', 'Libros mapeados', 'Libros de los que tenemos el identificador de inventario de Shopify. Sin el no se les puede escribir stock.'],
+                    ['#a78bfa', 'Cambiados en Odoo', 'Libros cuyo stock se movio desde la ultima corrida.'],
+                    ['#fbbf24', 'Distintos de la tienda', 'De esos, los que Shopify tiene con otro numero. Son los que se van a escribir.'],
+                    ['#4ade80', 'Escritos', 'Los que ya se han actualizado en la tienda.'],
+                ],
+                pasos: [
+                    ['Traer identificadores', 'Una operacion masiva que trae de Shopify el identificador de inventario de cada variante. Hace falta una vez antes de nada, y repetirlo cuando se publiquen libros nuevos. No toca la tienda.', 'seguro'],
+                    ['Ensayo', 'Dice cuantos libros cambiaria, cuantos suben, cuantos bajan y una muestra. No escribe nada. Empezar SIEMPRE por aqui.', 'seguro'],
+                    ['Sincronizar cambios', 'Escribe de verdad en la tienda. Solo los que difieren.', 'ojo'],
+                    ['Ensayo del catalogo completo', 'Ignora el marcapaginas y repasa los 746.000. Sirve para saber cuanto se ha desviado la tienda en total.', 'seguro'],
+                ],
+                problemas: [
+                    ['Dice FALTAN IDENTIFICADORES',
+                     'Todavia no se ha hecho el paso 1, o hay libros nuevos publicados despues de la ultima vez. Pulsa «Traer identificadores».'],
+                    ['El ensayo saca una cifra enorme',
+                     'Hay un tope de seguridad por corrida: si quiere cambiar mas de 60.000 libros no escribe nada y avisa. Casi siempre significa que la lectura de Odoo vino mal, no que haya cambiado medio catalogo.'],
+                    ['Un libro no se actualiza nunca',
+                     'Mira si tiene identificador. Si esta en Shopify pero no en Odoo no se toca a proposito: que falte en Odoo puede ser fallo nuestro, y poner a cero por si acaso deja la tienda vacia.'],
+                ],
+                dato: 'La cantidad que se publica es el <b>total de los catorce almacenes</b>, no el ' +
+                      'de uno. Cada almacen es lo que tiene un proveedor, no inventario propio: lo ' +
+                      'que se puede servir es la suma.'
             },
             auditoria: {
                 icono: 'shield-checkmark-outline', titulo: 'Auditoría de stock',
