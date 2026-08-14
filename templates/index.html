@@ -6628,7 +6628,7 @@
 
         // ═══ AUDITORÍA DE STOCK ═══
         // Tarda minutos: se lanza, se sondea y se pinta cuando termina.
-        let auditTimer = null;
+        let audStockTimer = null;
 
         const AUDIT_CAT = {
             barcodes_duplicados: ['ISBN repetidos', '#f87171'],
@@ -6788,8 +6788,8 @@
             try {
                 const j = await (await fetch('/api/v1/auditoria/estado')).json();
                 auditPintar(j);
-                if (j.status !== 'running' && auditTimer) {
-                    clearInterval(auditTimer); auditTimer = null;
+                if (j.status !== 'running' && audStockTimer) {
+                    clearInterval(audStockTimer); audStockTimer = null;
                 }
             } catch (e) {}
         }
@@ -6799,7 +6799,7 @@
             b.textContent = 'LANZANDO…';
             const r = await fetch('/api/v1/auditoria/lanzar', { method: 'POST' });
             if (r.status === 409) { b.textContent = 'YA EN MARCHA'; }
-            if (!auditTimer) auditTimer = setInterval(auditSondear, 4000);
+            if (!audStockTimer) audStockTimer = setInterval(auditSondear, 4000);
             auditSondear();
         }
 
