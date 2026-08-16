@@ -3,7 +3,7 @@
 Sistema que recoge el stock de 14 distribuidores de libros, mantiene el
 catálogo de Odoo al día y publica en Shopify los libros listos para vender.
 
-Última revisión: 31 de julio de 2026.
+Última revisión: 13 de agosto de 2026.
 
 ---
 
@@ -27,7 +27,8 @@ conocidas**, con lo que costó horas descubrir.
 | [Manual técnico](MANUAL_TECNICO.md) | Arquitectura, módulos, entorno, despliegue, trampas |
 | [Flujos](FLUJOS.md) | Cada proceso paso a paso, con sus salvaguardas |
 | [Modelo de datos](MODELO_DATOS.md) | Las 41 tablas y sus 478 columnas |
-| [Referencia de la API](REFERENCIA_API.md) | Los 144 endpoints |
+| [Referencia de la API](REFERENCIA_API.md) | Los 155 endpoints |
+| [La API de Shopify](SHOPIFY_API.md) | Credenciales, permisos, límites y puesta en marcha |
 | [Coordinación con el scraper](COORDINACION_SCRAPER_VS_SYNC.md) | Reparto de escrituras entre procesos |
 | [Fetcher de AZETA](AZETA_FETCHER.md) | Detalle del caso AZETA |
 | [Cola de enriquecimiento](COORDINACION_ENRICHMENT_QUEUE.md) | Cómo se reparte el trabajo entre workers |
