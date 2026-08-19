@@ -237,6 +237,28 @@ def _shopify(isbn: str) -> dict:
         return {"existe": None, "error": f"{type(e).__name__}: {str(e)[:110]}"}
 
 
+# A partir de cuantos dias un stock nuestro deja de ser creible. Los
+# proveedores mandan fichero a diario: si uno lleva una semana sin
+# confirmar un libro, casi siempre es que ya no lo tiene.
+DIAS_DATO_VIEJO = 7
+
+
+def _dias_desde(prov: list[dict]) -> int | None:
+    """Dias desde la ultima vez que ALGUN proveedor confirmo este libro."""
+    fechas = []
+    for p in prov:
+        f = p.get("cambio_stock")
+        if not f:
+            continue
+        try:
+            fechas.append(datetime.fromisoformat(str(f)[:19]))
+        except Exception:
+            pass
+    if not fechas:
+        return None
+    return (datetime.now() - max(fechas)).days
+
+
 def _diagnosticar(prov, ficha, odoo, tienda, publicacion) -> list[dict]:
     """
     La parte util: explicar por que un libro no se puede comprar. Va de la
@@ -282,8 +304,22 @@ def _diagnosticar(prov, ficha, odoo, tienda, publicacion) -> list[dict]:
     stock_odoo = sum(a["cantidad"] or 0 for a in odoo.get("almacenes", [])
                      if (a["cantidad"] or 0) > 0)
     if stock_prov > 0 and stock_odoo <= 0 and odoo.get("admite_stock"):
-        di("error", f"El proveedor tiene {stock_prov} pero en Odoo esta a 0.",
-           "Usa Conciliar stock en la tarjeta de Proveedores")
+        # Antes esto decia siempre "concilia", es decir, empuja nuestro numero
+        # a Odoo. Es justo lo contrario de lo que hay que hacer cuando el dato
+        # nuestro es viejo: el proveedor dejo de listar el libro, Odoo esta a
+        # cero con razon, y conciliar crearia stock fantasma. Paso con el
+        # 9788419195531, que Distriforma no lista desde el 25 de mayo y la
+        # ficha invitaba a resucitarlo.
+        dias = _dias_desde(prov)
+        if dias is not None and dias >= DIAS_DATO_VIEJO:
+            di("error",
+               f"Decimos que el proveedor tiene {stock_prov}, pero ese dato es "
+               f"de hace {dias} dias y Odoo esta a 0.",
+               "NO concilies: lo normal es que el proveedor dejara de listarlo "
+               "y Odoo tenga razon. Confirmalo con el proveedor")
+        else:
+            di("error", f"El proveedor tiene {stock_prov} pero en Odoo esta a 0.",
+               "Usa Conciliar stock en la tarjeta de Proveedores")
 
     if tienda.get("existe") is False:
         if publicacion:
