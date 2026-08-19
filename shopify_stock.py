@@ -412,14 +412,18 @@ def _location_gid() -> str:
 
 
 def _escribir(loc: str, lote: list[tuple], job: dict) -> int:
-    # Sin ignoreCompareQuantity: ese campo NO existe en InventorySetQuantities-
-    # Input (comprobado contra el esquema el 19/08) y la mutacion entera habria
-    # fallado. La comprobacion de concurrencia se salta simplemente omitiendo
-    # changeFromQuantity, que es lo correcto aqui: la verdad la dicta Odoo y no
-    # hay nadie mas escribiendo stock en la tienda.
+    # ignoreCompareQuantity es OBLIGATORIO. NO lo quites: la introspeccion del
+    # esquema devuelve una version que no lo lista, pero la API que sirve la
+    # tienda lo exige y sin el responde "El argumento compareQuantity debe
+    # proporcionarse para cada cantidad o ignorarse mediante
+    # ignoreCompareQuantity". Se comprobo en vivo el 19/08 quitandolo: fallo el
+    # lote entero. Lo que hace es saltarse la comprobacion de concurrencia, que
+    # es lo que queremos: la verdad la dicta Odoo y no hay nadie mas
+    # escribiendo stock en la tienda.
     entrada = {
         "name": CAMPO,
         "reason": "correction",
+        "ignoreCompareQuantity": True,
         "referenceDocumentUri": "gid://kalamobook/SyncJob/stock",
         "quantities": [{"inventoryItemId": item, "locationId": loc,
                         "quantity": qty} for _, item, qty, _ in lote],
