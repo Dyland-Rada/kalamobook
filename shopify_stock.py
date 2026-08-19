@@ -61,6 +61,8 @@ TOPE_CORRIDA = int(os.environ.get("SHOPIFY_STOCK_TOPE", "60000"))
 # viene de fuera, como aqui, lo que se dicta es el fisico.
 CAMPO = os.environ.get("SHOPIFY_STOCK_CAMPO", "on_hand")
 PAGINA_QUANT = 40000
+# Segundos entre lotes de escritura, para no chocar con el limite de coste.
+PAUSA_LOTE = float(os.environ.get("SHOPIFY_STOCK_PAUSA", "0.6"))
 
 _job: dict | None = None
 
@@ -521,6 +523,10 @@ async def sincronizar(dry_run: bool = True, completo: bool = False,
                     job["escritos"] += n
             except Exception as e:
                 job["errors"].append(f"lote@{i}: {type(e).__name__}: {str(e)[:140]}")
+            # Respiro entre lotes. Shopify cobra por coste, no por peticiones,
+            # y una escritura de 250 cantidades sale cara: sin pausa, novecientas
+            # llamadas seguidas acaban limitadas aunque haya reintento.
+            time.sleep(PAUSA_LOTE)
             if job["escritos"] % 5000 < LOTE:
                 print(f"[ShopifyStock] {job['escritos']:,}/{len(cambios):,} "
                       f"({time.monotonic() - t0:.0f}s)", flush=True)

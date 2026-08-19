@@ -97,15 +97,33 @@ def rest(ruta: str, datos: dict | None = None):
     return _peticion(url, json.dumps(datos).encode() if datos else None)
 
 
-def graphql(consulta: str, variables: dict | None = None) -> dict:
+def graphql(consulta: str, variables: dict | None = None,
+            reintentos: int = 6) -> dict:
+    """
+    GraphQL con reintento ante THROTTLED.
+
+    Ojo con esto: cuando Shopify corta por limite de coste NO responde 429,
+    responde 200 con un error dentro. _peticion no lo ve -para el la peticion
+    fue bien- asi que sin este bucle una corrida larga muere a mitad. Se noto
+    preparando el empuje de 225.000 productos, que son ~900 llamadas seguidas.
+    """
     url = f"https://{TIENDA}/admin/api/{VERSION}/graphql.json"
     cuerpo = {"query": consulta}
     if variables:
         cuerpo["variables"] = variables
-    r = _peticion(url, json.dumps(cuerpo).encode())
-    if r.get("errors"):
-        raise ShopifyError(f"GraphQL: {json.dumps(r['errors'])[:300]}")
-    return r["data"]
+    espera = 2.0
+    for intento in range(reintentos):
+        r = _peticion(url, json.dumps(cuerpo).encode())
+        errores = r.get("errors")
+        if not errores:
+            return r["data"]
+        texto = json.dumps(errores)
+        if "THROTTLED" in texto or "Throttled" in texto:
+            time.sleep(espera)
+            espera = min(espera * 2, 60)
+            continue
+        raise ShopifyError(f"GraphQL: {texto[:300]}")
+    raise ShopifyError(f"Shopify sigue limitando tras {reintentos} intentos")
 
 
 # ─── Lecturas ────────────────────────────────────────────────────────

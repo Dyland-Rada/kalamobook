@@ -2916,13 +2916,19 @@
                 <div class="section-label" style="color:#2ecc71; margin-top:18px;">
                     2. Sincronizar
                 </div>
+                <p style="color:#8b93a7; font-size:.78rem;">
+                    La <strong>completa</strong> repasa los 746.000 y es la única que detecta los
+                    libros que se quedaron sin existencias: cuando eso pasa, en Odoo su registro
+                    de stock <strong>desaparece</strong>, así que la rápida no los ve y la tienda
+                    los seguiría vendiendo. La rápida sirve para el goteo del día.
+                </p>
                 <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
-                    <button class="btn btn-primary" style="background:linear-gradient(135deg,#6366f1,#4338ca);" onclick="stkSync(true,false)">
-                        <ion-icon name="eyedrop-outline"></ion-icon> Ensayo (no toca nada)</button>
-                    <button class="btn btn-success" onclick="stkSync(false,false)">
-                        <ion-icon name="cloud-upload-outline"></ion-icon> Sincronizar cambios</button>
-                    <button class="btn btn-primary" style="background:linear-gradient(135deg,#475569,#334155);" onclick="stkSync(true,true)">
-                        Ensayo del catálogo completo</button>
+                    <button class="btn btn-primary" style="background:linear-gradient(135deg,#6366f1,#4338ca);" onclick="stkSync(true,true)">
+                        <ion-icon name="eyedrop-outline"></ion-icon> Ensayo completo</button>
+                    <button class="btn btn-success" onclick="stkSync(false,true)">
+                        <ion-icon name="cloud-upload-outline"></ion-icon> Sincronizar todo</button>
+                    <button class="btn btn-primary" style="background:linear-gradient(135deg,#475569,#334155);" onclick="stkSync(false,false)">
+                        Solo los cambios de hoy</button>
                 </div>
                 <div id="stk-res" style="margin-top:12px;"></div>
                 <div id="stk-info" style="margin-top:10px; font-size:.78rem; color:#666;"></div>
@@ -6614,6 +6620,8 @@
 
         async function stkSync(seco, completo) {
             if (!seco && !confirm('Se va a escribir stock en la tienda de verdad.\n\n' +
+                                  (completo ? 'Repasa el catálogo entero. Puede tardar 15-20 minutos.\n\n'
+                                            : 'Solo lo que cambió desde la última vez. NO detecta los que se quedaron a cero.\n\n') +
                                   'Haz primero el ensayo y comprueba los números.\n¿Seguir?')) return;
             const bx = document.getElementById('stk-badge');
             bx.textContent = seco ? 'ENSAYANDO…' : 'LANZANDO…';
@@ -7044,9 +7052,9 @@
                 ],
                 pasos: [
                     ['Traer identificadores', 'Una operacion masiva que trae de Shopify el identificador de inventario de cada variante. Hace falta una vez antes de nada, y repetirlo cuando se publiquen libros nuevos. No toca la tienda.', 'seguro'],
-                    ['Ensayo', 'Dice cuantos libros cambiaria, cuantos suben, cuantos bajan y una muestra. No escribe nada. Empezar SIEMPRE por aqui.', 'seguro'],
-                    ['Sincronizar cambios', 'Escribe de verdad en la tienda. Solo los que difieren.', 'ojo'],
-                    ['Ensayo del catalogo completo', 'Ignora el marcapaginas y repasa los 746.000. Sirve para saber cuanto se ha desviado la tienda en total.', 'seguro'],
+                    ['Ensayo completo', 'Repasa los 746.000 y dice cuantos cambiarian, cuantos suben, cuantos bajan y una muestra. No escribe nada. Empezar SIEMPRE por aqui.', 'seguro'],
+                    ['Sincronizar todo', 'Escribe de verdad en la tienda repasando el catalogo entero. Es la corrida buena: 15-20 minutos, y la unica que detecta los libros que se quedaron sin existencias.', 'ojo'],
+                    ['Solo los cambios de hoy', 'Mas rapida, para el goteo del dia. NO detecta los que se quedaron a cero, porque en Odoo su registro desaparece y no hay nada que leer. No sustituye a la completa.', 'ojo'],
                 ],
                 problemas: [
                     ['Dice FALTAN IDENTIFICADORES',
