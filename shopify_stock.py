@@ -24,9 +24,14 @@ Decisiones que conviene conocer:
     disponibilidad de un proveedor, no inventario propio.
   - El sync es incremental: pregunta a Odoo solo por los quants tocados
     desde la ultima corrida. La primera vez lee todo.
-  - Un libro que esta en Shopify y no en Odoo NO se toca. Que falte en Odoo
-    puede ser un fallo nuestro, y poner a cero por si acaso es la clase de
-    decision que deja una tienda vacia.
+  - OJO con lo anterior: en Odoo, cuando un libro se queda sin existencias
+    su quant DESAPARECE, no se queda a cero. Un libro asi no sale en
+    ninguna lectura de quants, asi que el modo incremental por si solo
+    nunca lo bajaria y la tienda seguiria vendiendolo. Por eso la corrida
+    `completo` recorre todo lo mapeado y da por cero lo que no aparece, y
+    por eso conviene lanzarla a diario aunque el incremental vaya cada
+    hora. Leer Odoo entero son tres minutos.
+  - Un libro que esta en Shopify y no lo tenemos mapeado NO se toca.
 
 Escribir stock en la tienda es una operacion de cara al publico: dry_run
 viene activado por defecto y hay tope de seguridad por corrida.
@@ -48,8 +53,13 @@ LOTE = int(os.environ.get("SHOPIFY_STOCK_LOTE", "250"))
 # suele significar que la lectura de Odoo vino mal, no que cambiara medio
 # catalogo de golpe.
 TOPE_CORRIDA = int(os.environ.get("SHOPIFY_STOCK_TOPE", "60000"))
-# "available" es lo que ve el comprador. "on_hand" es el fisico.
-CAMPO = os.environ.get("SHOPIFY_STOCK_CAMPO", "available")
+# Shopify guarda dos cifras: on_hand es lo que hay, y available es lo
+# vendible, que es on_hand menos lo comprometido por pedidos sin servir.
+# Se escribe on_hand y se deja que Shopify calcule available. Escribir
+# available directamente pisa esa resta: con pedidos pendientes -habia 6 el
+# 19/08- el inventario se descuadra en cuanto se sirve uno. Cuando la verdad
+# viene de fuera, como aqui, lo que se dicta es el fisico.
+CAMPO = os.environ.get("SHOPIFY_STOCK_CAMPO", "on_hand")
 PAGINA_QUANT = 40000
 
 _job: dict | None = None
@@ -311,23 +321,51 @@ async def _stock_odoo(odoo: OdooClient, desde: str | None,
     return totales, max_ts
 
 
-def _handles_de(totales: dict[int, float]) -> tuple[list[tuple], int, int]:
+def _handles_de(totales: dict[int, float],
+                incluir_ausentes: bool = False) -> tuple[list[tuple], int, int]:
     """
     Devuelve (cambios, ya_coinciden, sin_identificador), donde cambios es
     [(handle, inventory_item_gid, qty_odoo, qty_shopify)].
 
     Los tres se cuentan por separado a proposito. Restar "los que cambian"
-    del total mezcla dos cosas muy distintas: un libro que ya esta bien y un
+    del total mezcla dos cosas distintas: un libro que ya esta bien y un
     libro al que no podemos escribir porque no tenemos su identificador. El
     primero no hay que hacer nada con el; el segundo es trabajo pendiente.
+
+    incluir_ausentes recorre TODO lo que tenemos mapeado en vez de solo lo
+    que Odoo devolvio, y da por cero lo que no aparece. Hace falta y no es
+    un detalle: cuando en Odoo un libro se queda sin existencias su quant
+    desaparece, no se queda en cero. Un libro asi no sale en ninguna lectura
+    de quants, asi que sin esto la tienda se quedaria vendiendolo para
+    siempre. Es justo el fallo caro -se compra algo que nadie puede servir-
+    y lo destapo "El Principito" el 19/08: cero en Odoo desde las pausas del
+    dia 10 y a la venta en la tienda.
     """
-    if not totales:
+    if not totales and not incluir_ausentes:
         return [], 0, 0
     conn = db.get_connection()
     cur = conn.cursor()
     try:
-        ids = list(totales)
         cambios, iguales, encontrados = [], 0, 0
+        if incluir_ausentes:
+            db.execute_query(cur, f"""
+                SELECT m.odoo_id, m.barcode, s.inventory_item_gid, s.qty_shopify
+                FROM {TABLA} s
+                JOIN odoo_books_mirror m ON m.barcode = s.handle
+                WHERE s.inventory_item_gid IS NOT NULL
+                  AND m.odoo_id IS NOT NULL
+            """)
+            filas = cur.fetchall()
+            for odoo_id, handle, item, qty_shop in filas:
+                encontrados += 1
+                nuevo = int(round(totales.get(int(odoo_id), 0.0)))
+                if qty_shop is not None and nuevo == qty_shop:
+                    iguales += 1
+                else:
+                    cambios.append((handle, item, nuevo, qty_shop))
+            return cambios, iguales, 0
+
+        ids = list(totales)
         for i in range(0, len(ids), 5000):
             trozo = ids[i:i + 5000]
             db.execute_query(cur, f"""
@@ -374,10 +412,15 @@ def _location_gid() -> str:
 
 
 def _escribir(loc: str, lote: list[tuple], job: dict) -> int:
+    # Sin ignoreCompareQuantity: ese campo NO existe en InventorySetQuantities-
+    # Input (comprobado contra el esquema el 19/08) y la mutacion entera habria
+    # fallado. La comprobacion de concurrencia se salta simplemente omitiendo
+    # changeFromQuantity, que es lo correcto aqui: la verdad la dicta Odoo y no
+    # hay nadie mas escribiendo stock en la tienda.
     entrada = {
         "name": CAMPO,
         "reason": "correction",
-        "ignoreCompareQuantity": True,
+        "referenceDocumentUri": "gid://kalamobook/SyncJob/stock",
         "quantities": [{"inventoryItemId": item, "locationId": loc,
                         "quantity": qty} for _, item, qty, _ in lote],
     }
@@ -435,7 +478,7 @@ async def sincronizar(dry_run: bool = True, completo: bool = False,
         job["libros_tocados"] = len(totales)
 
         job["stage"] = "comparando con la tienda"
-        cambios, iguales, sin_id = _handles_de(totales)
+        cambios, iguales, sin_id = _handles_de(totales, incluir_ausentes=completo)
         job["a_cambiar"] = len(cambios)
         job["ya_coinciden"] = iguales
         job["sin_identificador"] = sin_id
