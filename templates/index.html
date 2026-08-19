@@ -2931,7 +2931,24 @@
                         Solo los cambios de hoy</button>
                 </div>
                 <div id="stk-res" style="margin-top:12px;"></div>
-                <div id="stk-info" style="margin-top:10px; font-size:.78rem; color:#666;"></div>
+
+                <div class="section-label" style="color:#2ecc71; margin-top:20px;">
+                    3. Dejarlo automático
+                </div>
+                <p style="color:#8b93a7; font-size:.78rem;">
+                    <strong>Rápida cada hora</strong> para el goteo del día y
+                    <strong>completa a las 4:00</strong>, que es la única que detecta los libros
+                    que se quedaron sin existencias. Para que arranque solo tras un reinicio hace
+                    falta <code>SHOPIFY_STOCK_CRON_ENABLED=1</code>.
+                </p>
+                <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+                    <button class="btn btn-success" onclick="stkCron(true)">▶ Activar</button>
+                    <button class="btn btn-danger" onclick="stkCron(false)">
+                        <ion-icon name="stop-circle-outline"></ion-icon> Detener</button>
+                    <span id="stk-cron" style="color:#8b93a7; font-size:.85rem;"></span>
+                </div>
+
+                <div id="stk-info" style="margin-top:14px; font-size:.78rem; color:#666;"></div>
             </div>
         </div>
 
@@ -6600,9 +6617,16 @@
             }
             document.getElementById('stk-res').innerHTML = html;
 
+            const cr = d.cron || {};
+            document.getElementById('stk-cron').textContent = cr.task_running
+                ? `activa · cada ${Math.round((cr.interval_s || 3600) / 60)} min · completa a las ${cr.hora_completa}:00 · ${cr.runs_total || 0} corridas`
+                : 'parada';
+            document.getElementById('stk-cron').style.color = cr.task_running ? '#4ade80' : '#8b93a7';
+
             document.getElementById('stk-info').innerHTML =
                 `Identificadores leídos: ${inv.ultima_lectura ? biFecha(inv.ultima_lectura) : 'nunca'} ·
-                 Sincronizado hasta: ${mp.hasta ? String(mp.hasta).slice(0, 16) : 'nunca'}`;
+                 Sincronizado hasta: ${mp.hasta ? String(mp.hasta).slice(0, 16) : 'nunca'}` +
+                (cr.last_summary ? ` · Última corrida (${cr.last_mode}): ${cr.last_summary}` : '');
 
             if (st !== 'running' && stkTimer) { clearInterval(stkTimer); stkTimer = null; }
         }
@@ -6615,6 +6639,15 @@
         async function stkExportar() {
             await fetch('/api/v1/shopify/stock/exportar-inventario', { method: 'POST' });
             if (!stkTimer) stkTimer = setInterval(stkEstado, 5000);
+            stkEstado();
+        }
+
+        async function stkCron(activar) {
+            const r = await fetch(`/api/v1/shopify/stock/cron/${activar ? 'start' : 'stop'}`,
+                                  { method: 'POST' });
+            const d = await r.json();
+            const el = document.getElementById('stk-cron');
+            if (d.status === 'error') { el.textContent = d.message; el.style.color = '#f87171'; }
             stkEstado();
         }
 

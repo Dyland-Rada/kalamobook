@@ -212,6 +212,19 @@ async def startup():
         except Exception as e:
             print(f"[Startup] SINLI sync cron FALLO: {type(e).__name__}: {e}")
 
+    # Auto-arrancar la sincronizacion de stock a Shopify
+    if os.environ.get("SHOPIFY_STOCK_CRON_ENABLED", "").lower() in ("1", "true", "yes"):
+        try:
+            import shopify_stock
+            if shopify_stock.start_cron():
+                print(f"[Startup] Shopify stock cron AUTO-ARRANCADO "
+                      f"(cada {shopify_stock.CRON_INTERVAL_S}s, completa a las "
+                      f"{shopify_stock.HORA_COMPLETA}:00)")
+            else:
+                print("[Startup] Shopify stock cron NO arrancado (ya activo)")
+        except Exception as e:
+            print(f"[Startup] Shopify stock cron FALLO: {type(e).__name__}: {e}")
+
     # Auto-arrancar el vigilante de salud
     if os.environ.get("VIGILANTE_ENABLED", "").lower() in ("1", "true", "yes"):
         try:
@@ -3557,7 +3570,8 @@ async def shopify_stock_estado():
     """Avance o resultado de la ultima operacion de stock."""
     import shopify_stock
     import db as _db
-    out = {"job": shopify_stock.get_status()}
+    out = {"job": shopify_stock.get_status(),
+           "cron": shopify_stock.get_cron_status()}
     try:
         conn = _db.get_connection()
         cur = conn.cursor()
@@ -3583,6 +3597,34 @@ async def shopify_stock_estado():
     except Exception as e:
         out["error"] = str(e)[:200]
     return JSONResponse(content=out)
+
+
+@app.post("/api/v1/shopify/stock/cron/start", tags=["Shopify"])
+async def shopify_stock_cron_start():
+    """
+    Deja el stock sincronizandose solo: rapida cada hora y completa una vez
+    al dia de madrugada. La completa hace falta porque es la unica que
+    detecta los libros que se quedaron sin existencias.
+
+    Para que arranque solo tras un reinicio: SHOPIFY_STOCK_CRON_ENABLED=1.
+    """
+    import shopify_stock
+    if shopify_stock.start_cron():
+        return JSONResponse(content={
+            "status": "started",
+            "interval_s": shopify_stock.CRON_INTERVAL_S,
+            "hora_completa": shopify_stock.HORA_COMPLETA})
+    return JSONResponse(status_code=400, content={
+        "status": "error", "message": "Ya estaba corriendo o sin event loop."})
+
+
+@app.post("/api/v1/shopify/stock/cron/stop", tags=["Shopify"])
+async def shopify_stock_cron_stop():
+    import shopify_stock
+    if shopify_stock.stop_cron():
+        return JSONResponse(content={"status": "stopping"})
+    return JSONResponse(status_code=400, content={
+        "status": "error", "message": "No estaba corriendo."})
 
 
 @app.post("/api/v1/shopify/stock/parar", tags=["Shopify"])

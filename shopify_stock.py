@@ -591,3 +591,94 @@ if __name__ == "__main__":
             print(f"      {m['handle']}  tienda={m['shopify']} -> odoo={m['odoo']}")
         for e in r["errors"][:5]:
             print(f"   ERROR: {e}")
+
+
+# ── Cron ────────────────────────────────────────────────────────────────
+# Dos ritmos, y no son intercambiables:
+#
+#   cada hora   incremental, para el goteo del dia
+#   una vez al  completa, porque es la UNICA que detecta los libros que se
+#   dia         quedaron sin existencias: en Odoo su registro desaparece y
+#               la incremental no tiene nada que leer. Sin esto, la tienda
+#               acabaria vendiendo libros que ya no sirve nadie.
+#
+# La completa va de madrugada: son 15-20 minutos y a esa hora ya han
+# entrado los ficheros de la noche.
+
+CRON_INTERVAL_S = int(os.environ.get("SHOPIFY_STOCK_CRON_INTERVAL_S", "3600"))
+HORA_COMPLETA = int(os.environ.get("SHOPIFY_STOCK_HORA_COMPLETA", "4"))
+
+_cron_task = None
+_cron_state: dict = {
+    "enabled": False, "interval_s": CRON_INTERVAL_S,
+    "hora_completa": HORA_COMPLETA, "last_run_at": None, "last_mode": None,
+    "last_summary": None, "next_run_at": None, "runs_total": 0,
+    "completas": 0, "errors": [],
+}
+
+
+def get_cron_status() -> dict:
+    out = dict(_cron_state)
+    out["errors"] = out.get("errors", [])[-10:]
+    out["task_running"] = bool(_cron_task and not _cron_task.done())
+    return out
+
+
+async def _cron_loop():
+    import asyncio as _a
+    from datetime import timedelta
+    print(f"[ShopifyStockCron] Arrancado, cada {CRON_INTERVAL_S}s, "
+          f"completa a las {HORA_COMPLETA}:00")
+    ultima_completa = None
+    while _cron_state["enabled"]:
+        try:
+            hoy = datetime.now().date()
+            hora = datetime.now().hour
+            # La completa, una vez al dia. Se apunta el dia en que se hizo
+            # para que un reinicio a esa misma hora no la repita.
+            completo = (hora == HORA_COMPLETA and ultima_completa != hoy)
+            r = await sincronizar(dry_run=False, completo=completo)
+            if completo and r.get("status") == "completed":
+                ultima_completa = hoy
+                _cron_state["completas"] += 1
+            _cron_state["last_run_at"] = datetime.now().isoformat()
+            _cron_state["last_mode"] = "completa" if completo else "rapida"
+            _cron_state["last_summary"] = (
+                f"{r.get('a_cambiar', 0):,} distintos, "
+                f"{r.get('escritos', 0):,} escritos")
+            _cron_state["runs_total"] += 1
+            print(f"[ShopifyStockCron] #{_cron_state['runs_total']} "
+                  f"({_cron_state['last_mode']}): {_cron_state['last_summary']}")
+        except Exception as e:
+            _cron_state["errors"].append(f"{type(e).__name__}: {e!r}"[:200])
+            print(f"[ShopifyStockCron] fallo: {e!r}")
+        _cron_state["next_run_at"] = (
+            datetime.now() + timedelta(seconds=CRON_INTERVAL_S)).isoformat()
+        for _ in range(CRON_INTERVAL_S):
+            if not _cron_state["enabled"]:
+                break
+            await _a.sleep(1)
+    print("[ShopifyStockCron] Detenido")
+    _cron_state["next_run_at"] = None
+
+
+def start_cron() -> bool:
+    global _cron_task
+    import asyncio as _a
+    if _cron_task and not _cron_task.done():
+        return False
+    _cron_state["enabled"] = True
+    _cron_state["errors"] = []
+    try:
+        _cron_task = _a.create_task(_cron_loop())
+        return True
+    except RuntimeError:
+        _cron_state["enabled"] = False
+        return False
+
+
+def stop_cron() -> bool:
+    if not _cron_state["enabled"]:
+        return False
+    _cron_state["enabled"] = False
+    return True
