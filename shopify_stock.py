@@ -401,16 +401,65 @@ mutation ($input: InventorySetQuantitiesInput!) {
 """
 
 
+_loc_cache: str | None = None
+
+
 def _location_gid() -> str:
-    """La ubicacion de la tienda. Se pregunta, no se da por sabida."""
+    """
+    La ubicacion de la tienda.
+
+    Se pedia con `locations { id name }` y fallaba entero: `name` exige el
+    permiso read_locations, que esta app no tiene, y Shopify rechaza toda la
+    consulta por un campo. Solo hace falta el id.
+
+    Tres vias por orden, porque los permisos de la app pueden cambiar y esto
+    no puede tumbar la sincronizacion:
+      1. SHOPIFY_LOCATION_GID, si esta puesta
+      2. locations pidiendo unicamente el id
+      3. deducirla del inventario de un libro cualquiera, que solo necesita
+         el permiso de inventario, el mismo con el que despues escribimos
+    """
+    global _loc_cache
+    if _loc_cache:
+        return _loc_cache
     fijo = os.environ.get("SHOPIFY_LOCATION_GID")
     if fijo:
+        _loc_cache = fijo
         return fijo
-    d = sa.graphql("{ locations(first: 10) { edges { node { id name } } } }")
-    nodos = [e["node"] for e in d["locations"]["edges"]]
-    if not nodos:
-        raise sa.ShopifyError("la tienda no tiene ninguna ubicacion")
-    return nodos[0]["id"]
+
+    try:
+        d = sa.graphql("{ locations(first: 5) { edges { node { id } } } }")
+        nodos = [e["node"] for e in d["locations"]["edges"]]
+        if nodos:
+            _loc_cache = nodos[0]["id"]
+            return _loc_cache
+    except Exception as e:
+        print(f"[ShopifyStock] no se pudo listar ubicaciones ({str(e)[:90]}); "
+              f"se deduce del inventario")
+
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        db.execute_query(cur, f"""
+            SELECT inventory_item_gid FROM {TABLA}
+            WHERE inventory_item_gid IS NOT NULL LIMIT 1
+        """)
+        r = cur.fetchone()
+    finally:
+        conn.close()
+    if r:
+        d = sa.graphql(
+            "query($id: ID!) { inventoryItem(id: $id) { inventoryLevels(first: 5)"
+            " { edges { node { location { id } } } } } }", {"id": r[0]})
+        bordes = ((d.get("inventoryItem") or {}).get("inventoryLevels")
+                  or {}).get("edges") or []
+        if bordes:
+            _loc_cache = bordes[0]["node"]["location"]["id"]
+            return _loc_cache
+
+    raise sa.ShopifyError(
+        "no se pudo averiguar la ubicacion de la tienda. Ponla a mano en "
+        "SHOPIFY_LOCATION_GID (se ve en Shopify: Configuracion > Ubicaciones)")
 
 
 def _escribir(loc: str, lote: list[tuple], job: dict) -> int:
