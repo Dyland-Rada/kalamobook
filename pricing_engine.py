@@ -51,6 +51,49 @@ def web_price(pvp) -> float | None:
     return round(p + supplement(p), 2)
 
 
+# ── Capa 3: descuento de marketplace ────────────────────────────────────
+# Se aplica SOBRE el precio ya suplementado por la Capa 1, y despues va el
+# centimo. Orden completo: PVP proveedor -> Capa 1 -> Capa 3 -> -0,01.
+#
+# La Capa 2 (descuento de cesta web) NO va aqui: es solo de Shopify y de
+# momento no la tenemos escrita en ningun sitio.
+#
+# OJO con el tramo de 33 a 34: la tabla del cliente salta de "0-33" a
+# "34-40" y deja fuera 33,01-33,99, donde caen 2.844 libros del catalogo.
+# Aqui se les da 0% -lo conservador, no bajar el precio- pero es una
+# decision nuestra, no suya: hay que confirmarla.
+TRAMOS_MARKETPLACE = [
+    (33.99, 0.0),
+    (40.00, 1.5),
+    (50.00, 2.0),
+    (80.00, 4.0),
+    (float("inf"), 5.0),
+]
+CENTIMO = 0.01
+
+
+def descuento_marketplace(precio: float) -> float:
+    """Porcentaje de descuento que le toca a ese precio."""
+    for tope, pct in TRAMOS_MARKETPLACE:
+        if precio <= tope:
+            return pct
+    return 0.0
+
+
+def precio_marketplace(precio_web) -> float | None:
+    """
+    Precio final de marketplace: Capa 3 sobre el precio web, menos el
+    centimo. None si no hay precio del que partir.
+    """
+    if precio_web is None:
+        return None
+    p = float(precio_web)
+    if p <= 0:
+        return None
+    pct = descuento_marketplace(p)
+    return round(round(p * (1 - pct / 100), 2) - CENTIMO, 2)
+
+
 async def reactivar_variantes(odoo, template_ids: list[int]) -> int:
     """
     Desarchiva las variantes de las plantillas que acabamos de reactivar.

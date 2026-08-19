@@ -6,6 +6,9 @@ if sys.platform == 'win32':
 from fastapi import FastAPI, Request, Form, Query, BackgroundTasks, Depends, HTTPException, Header, UploadFile, File, status
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
+# Las filas del catalogo publicable llevan fechas y Decimal, que JSONResponse
+# no sabe serializar por su cuenta.
+from fastapi.encoders import jsonable_encoder
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
 import secrets
@@ -3634,6 +3637,111 @@ async def shopify_stock_parar():
         return JSONResponse(content={"status": "stopping"})
     return JSONResponse(status_code=400, content={
         "status": "error", "message": "No estaba corriendo."})
+
+
+# ─── Catalogo publicable: el contrato para quien vende ───────────────
+
+@app.get("/api/v1/catalogo-publicable", tags=["Catalogo publicable"])
+async def catalogo_publicable_leer(
+    desde: str | None = Query(None, description="solo lo cambiado despues de esta fecha (ISO)"),
+    con_stock: bool = Query(True, description="solo lo que se puede vender"),
+    limite: int = Query(1000, ge=1, le=50000),
+    offset: int = Query(0, ge=0),
+):
+    """
+    Lo que se puede vender AHORA, una fila por ISBN y ya filtrado.
+
+    Esta es la tabla que deben leer los feeds -marketplace incluido- en vez
+    de libros_proveedor, que es una tabla de trabajo sin filtrar: alli el
+    stock de un proveedor pausado, mudo o con el dato rancio sigue como si
+    nada. El 19/08 eran 309.517 libros de 674.642.
+
+    Con `desde` se piden solo los cambios: sirve para refrescar sin bajar
+    el catalogo entero. Las filas retiradas salen con stock 0, no
+    desaparecen, para que el feed sepa que hay que darlas de baja.
+    """
+    import catalogo_publicable as cp
+    import db as _db
+    conn = _db.get_connection()
+    cur = conn.cursor()
+    try:
+        cond, params = [], []
+        if con_stock:
+            cond.append("stock > 0")
+        if desde:
+            cond.append("actualizado_en > %s")
+            params.append(desde)
+        where = ("WHERE " + " AND ".join(cond)) if cond else ""
+        cur.execute(f"SELECT count(*) FROM {cp.TABLA} {where}", params)
+        total = cur.fetchone()[0]
+        cur.execute(f"""
+            SELECT isbn, titulo, stock, precio_marketplace, precio_web,
+                   precio_odoo, proveedor, precio_coste, confirmado_en,
+                   actualizado_en
+            FROM {cp.TABLA} {where}
+            ORDER BY actualizado_en DESC, isbn
+            LIMIT %s OFFSET %s
+        """, params + [limite, offset])
+        cols = ["isbn", "titulo", "stock", "precio_marketplace", "precio_web",
+                "precio_odoo", "proveedor", "precio_coste", "confirmado_en",
+                "actualizado_en"]
+        libros = [dict(zip(cols, r)) for r in cur.fetchall()]
+    finally:
+        conn.close()
+    return JSONResponse(content=jsonable_encoder({
+        "total": total, "devueltos": len(libros),
+        "limite": limite, "offset": offset, "libros": libros,
+    }))
+
+
+@app.post("/api/v1/catalogo-publicable/refrescar", tags=["Catalogo publicable"])
+async def catalogo_publicable_refrescar(
+    dry_run: bool = Query(False, description="solo contar, sin escribir"),
+):
+    """Reconstruye el catalogo publicable desde Odoo. Tarda unos minutos."""
+    import threading
+    import sys
+    import catalogo_publicable as cp
+
+    if cp.get_status().get("status") == "running":
+        return JSONResponse(status_code=409, content={
+            "status": "error", "message": "Ya hay un refresco corriendo."})
+
+    if dry_run:
+        return JSONResponse(content=await cp.refrescar(dry_run=True))
+
+    def _run_in_thread():
+        if sys.platform == 'win32':
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        nl = asyncio.new_event_loop()
+        asyncio.set_event_loop(nl)
+        try:
+            nl.run_until_complete(cp.refrescar(dry_run=False))
+        finally:
+            nl.close()
+
+    threading.Thread(target=_run_in_thread, daemon=True).start()
+    return JSONResponse(content={"status": "started"})
+
+
+@app.get("/api/v1/catalogo-publicable/estado", tags=["Catalogo publicable"])
+async def catalogo_publicable_estado():
+    import catalogo_publicable as cp
+    import db as _db
+    out = {"job": cp.get_status()}
+    try:
+        conn = _db.get_connection()
+        cur = conn.cursor()
+        cur.execute(f"""SELECT count(*), count(*) FILTER (WHERE stock > 0),
+                               COALESCE(sum(stock), 0), max(actualizado_en)
+                        FROM {cp.TABLA}""")
+        n, con, uds, ult = cur.fetchone()
+        conn.close()
+        out["tabla"] = {"filas": n, "vendibles": con, "unidades": int(uds or 0),
+                        "actualizado": ult.isoformat() if ult else None}
+    except Exception as e:
+        out["error"] = str(e)[:200]
+    return JSONResponse(content=out)
 
 
 # ─── Auditoria de datos: el stock que decimos tener vs el que hay ────

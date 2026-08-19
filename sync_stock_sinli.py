@@ -1177,6 +1177,58 @@ async def _odoo_isbns_con_stock(odoo: OdooClient,
     return out
 
 
+def _apagar_en_bd_cegald(proveedor_email: str, presentes: set[str],
+                         dry_run: bool) -> dict:
+    """
+    Pone a 0 en libros_proveedor lo que el proveedor ya no lista.
+
+    Es la regla acordada con SINLI: si un libro venia con stock y en el
+    siguiente CEGALD no aparece, se da por agotado. Estaba aplicada solo
+    contra Odoo, asi que Odoo quedaba bien y nuestra tabla seguia diciendo
+    que habia stock. Eso importa mas de lo que parecia: el feed de
+    marketplace lee libros_proveedor, no Odoo, y por eso se vendio en Fnac
+    el 9788419195531 que Distriforma no listaba desde el 25 de mayo.
+
+    Mismo arreglo que se hizo para AZETA el 10/08 en azeta_push_odoo.
+    """
+    out = {"candidatos": 0, "apagados": 0, "unidades": 0}
+    if not presentes:
+        return out
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        db.execute_query(cur, """
+            SELECT isbn, stock_disponible FROM libros_proveedor
+            WHERE proveedor_email = ? AND stock_disponible > 0
+        """, (proveedor_email,))
+        ausentes = [(i, int(q or 0)) for i, q in cur.fetchall()
+                    if i not in presentes]
+        out["candidatos"] = len(ausentes)
+        out["unidades"] = sum(q for _, q in ausentes)
+        if dry_run or not ausentes:
+            return out
+
+        isbns = [i for i, _ in ausentes]
+        LOTE = 5000
+        for i in range(0, len(isbns), LOTE):
+            db.execute_query(cur, """
+                UPDATE libros_proveedor
+                SET stock_disponible = 0, actualizado_en = NOW()
+                WHERE proveedor_email = ? AND stock_disponible > 0
+                  AND isbn = ANY(?)
+            """, (proveedor_email, isbns[i:i + LOTE]))
+            out["apagados"] += cur.rowcount or 0
+            conn.commit()
+        return out
+    except Exception as e:
+        try: conn.rollback()
+        except Exception: pass
+        out["error"] = f"{type(e).__name__}: {str(e)[:200]}"
+        return out
+    finally:
+        conn.close()
+
+
 async def run_cegald_replacement(proveedor_email: str,
                                   dry_run: bool = True) -> dict:
     """
@@ -1201,6 +1253,9 @@ async def run_cegald_replacement(proveedor_email: str,
         "salvaguarda_activada": False,
         "salvaguarda_motivo": None,
         "isbn_a_apagar_sample": [],
+        "bd_candidatos": 0,
+        "bd_apagados": 0,
+        "bd_unidades": 0,
         "errors": [],
         "elapsed_s": 0,
     }
@@ -1309,6 +1364,22 @@ async def run_cegald_replacement(proveedor_email: str,
                         err = f"apagar chunk@{i}: {type(e).__name__}: {str(e)[:150]}"
                         job["errors"].append(err)
                         print(f"[CEGALD] {err}")
+
+        # Y lo mismo en nuestra tabla, con las mismas salvaguardas. Va fuera
+        # del bloque de Odoo porque no depende de los quants: alcanza tambien
+        # a los que se apagaron en Odoo hace semanas y aqui nunca se
+        # limpiaron. Sin esto, quien lee libros_proveedor -el feed de
+        # marketplace- sigue vendiendo lo que el proveedor ya no tiene.
+        if not job["salvaguarda_activada"]:
+            job["stage"] = "apagando en la BD"
+            bd = _apagar_en_bd_cegald(proveedor_email, presentes, dry_run)
+            job["bd_candidatos"] = bd["candidatos"]
+            job["bd_apagados"] = bd["apagados"]
+            job["bd_unidades"] = bd["unidades"]
+            if bd.get("error"):
+                job["errors"].append(f"bd: {bd['error']}")
+            print(f"[CEGALD] BD: {bd['candidatos']:,} con stock que ya no "
+                  f"lista ({bd['unidades']:,} uds), {bd['apagados']:,} apagados")
 
         if job["status"] == "running":
             job["status"] = "completed"
