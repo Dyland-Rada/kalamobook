@@ -16,9 +16,15 @@ pausas ni capas de precio.
 De donde sale cada cosa:
 
   stock              de Odoo, que es donde estan aplicadas todas las reglas
-  precio_marketplace Capa 1 (ya en Odoo) + Capa 3 + centimo
-  precio_web         pendiente: falta definir la Capa 2 de Shopify
+  precio_odoo        el PVP con la Capa 1 ya aplicada: el punto de partida
+  precio_marketplace Capa 1 + Capa 3 + centimo, calculado aqui
+  precio_web         se queda vacio a proposito, ver abajo
   confirmado_en      cuando lo confirmo por ultima vez algun proveedor
+
+Lo que importa de esta tabla es el STOCK. Los precios van como referencia:
+quien monta el feed de marketplace aplica su propia regla -la misma, pero
+en su lado- partiendo de precio_odoo. Por eso precio_web se deja vacio y
+no se persigue la Capa 2 de Shopify: nadie la esta esperando aqui.
 
 Las filas que se quedan sin stock NO se borran: se dejan a 0. Quien consume
 necesita enterarse de que un libro dejo de estar disponible, y si la fila
@@ -123,7 +129,8 @@ def _filas(totales: dict[int, float]) -> list[tuple]:
             db.execute_query(cur, """
                 SELECT m.odoo_id, m.barcode, m.name, m.list_price,
                        lp.proveedor_email, lp.precio_con_iva,
-                       lp.stock_actualizado_en
+                       GREATEST(lp.stock_actualizado_en,
+                                ce.visto)          AS confirmado
                 FROM odoo_books_mirror m
                 LEFT JOIN LATERAL (
                     SELECT proveedor_email, precio_con_iva, stock_actualizado_en
@@ -132,6 +139,19 @@ def _filas(totales: dict[int, float]) -> list[tuple]:
                     ORDER BY precio_con_iva NULLS LAST
                     LIMIT 1
                 ) lp ON true
+                -- La fecha buena es esta. stock_actualizado_en, en la via
+                -- SINLI, solo se mueve cuando CAMBIA la cantidad: un libro
+                -- que Distriforma confirma a diario con 1 unidad se quedaba
+                -- con la fecha del ultimo cambio y parecia rancio. Medido:
+                -- 214.901 lineas salian con "mas de 7 dias" cuando en
+                -- realidad los diez proveedores habian mandado fichero hoy.
+                -- cegald_isbns_v2 si dice cuando vino en un fichero.
+                LEFT JOIN LATERAL (
+                    SELECT max(registrado_en) AS visto
+                    FROM cegald_isbns_v2
+                    WHERE isbn = m.barcode
+                      AND proveedor_email = lp.proveedor_email
+                ) ce ON true
                 WHERE m.odoo_id = ANY(?)
                   AND m.barcode IS NOT NULL
             """, (trozo,))
