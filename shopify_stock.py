@@ -526,6 +526,16 @@ async def sincronizar(dry_run: bool = True, completo: bool = False,
     t0 = time.monotonic()
     try:
         desde = None if completo else _marcador()
+        # Sin marcapaginas no hay nada de lo que ser incremental: se lee Odoo
+        # entero igual. Si ademas se deja completo=False, el tope de seguridad
+        # aborta la corrida, el marcapaginas no avanza, y la siguiente vuelve
+        # a empezar de cero: bucle. Paso los dias 19 y 20, con cuatro corridas
+        # seguidas informando "218.487 distintos, 0 escritos" sin que nadie
+        # viera el motivo. Si no hay marcador, la corrida ES completa.
+        if desde is None and not completo:
+            completo = True
+            job["completo_forzado"] = True
+            print("[ShopifyStock] sin marcapaginas: se trata como completa")
         job["desde"] = desde
         job["stage"] = "leyendo Odoo"
         async with OdooClient() as odoo:
@@ -549,6 +559,7 @@ async def sincronizar(dry_run: bool = True, completo: bool = False,
                 f"{len(cambios):,} cambios supera el tope de {TOPE_CORRIDA:,}. "
                 f"No se escribe nada: revisar antes que la lectura de Odoo "
                 f"sea correcta, o lanzar con completo=true a proposito.")
+            print(f"[ShopifyStock] ABORTADO por el tope: {job['errors'][-1]}")
             return job
 
         if dry_run:
@@ -609,7 +620,7 @@ def _audit(evento: str, resumen: str, job: dict):
             detalle={k: job.get(k) for k in
                      ("desde", "libros_tocados", "a_cambiar", "escritos",
                       "ya_coinciden", "sin_identificador", "subidas",
-                      "bajadas", "a_cero",
+                      "bajadas", "a_cero", "errors", "completo_forzado",
                       "leidos", "guardados", "dry_run", "elapsed_s")},
             nivel="error" if job.get("status") == "error" else "info")
     except Exception:
