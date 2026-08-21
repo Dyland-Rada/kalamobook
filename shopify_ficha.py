@@ -448,6 +448,27 @@ def body_html(d: dict, ia: dict) -> str:
     return "\n".join(partes)
 
 
+def _editorial(valor) -> str:
+    """
+    Nombre de la editorial para el campo Vendor de Shopify.
+
+    Shopify corta en 255 caracteres y rechaza el producto entero si se pasa.
+    Pero el problema de fondo es otro: cuando el catalogo del distribuidor
+    trae mal ese campo, lo que llega no es una editorial sino prosa. El
+    9788415894711 traia 285 caracteres que empezaban por "PALABRAS DE
+    FAMILIA (1995) Y HASTA EL FIN DE LOS CUENTOS (1998)...": es la solapa
+    del libro, no el sello.
+
+    Ninguna editorial real pasa de 120 caracteres, asi que por encima de eso
+    se descarta en vez de recortarse: mejor sin editorial que con un parrafo
+    partido a machete en la ficha publica. Hay 7 libros asi en el espejo.
+    """
+    v = (valor or "").strip()
+    if not v or len(v) > 120:
+        return ""
+    return v.upper()[:255]
+
+
 def fila_matrixify(d: dict, ia: dict) -> dict:
     """Las 23 columnas listas para el XLSX o para la API."""
     precio = precio_web(d)
@@ -460,7 +481,7 @@ def fila_matrixify(d: dict, ia: dict) -> dict:
         "Command": "MERGE",
         "Handle": d["barcode"],
         "Title": titulo,
-        "Vendor": (d.get("editorial") or "").strip().upper(),
+        "Vendor": _editorial(d.get("editorial")),
         "Type": "Libro",
         "Tags": montar_tags(ia.get("cats") or [], d),
         "Published": "TRUE",
