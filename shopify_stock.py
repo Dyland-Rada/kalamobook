@@ -462,29 +462,68 @@ def _location_gid() -> str:
         "SHOPIFY_LOCATION_GID (se ve en Shopify: Configuracion > Ubicaciones)")
 
 
-def _escribir(loc: str, lote: list[tuple], job: dict) -> int:
-    # ignoreCompareQuantity es OBLIGATORIO. NO lo quites: la introspeccion del
-    # esquema devuelve una version que no lo lista, pero la API que sirve la
-    # tienda lo exige y sin el responde "El argumento compareQuantity debe
-    # proporcionarse para cada cantidad o ignorarse mediante
-    # ignoreCompareQuantity". Se comprobo en vivo el 19/08 quitandolo: fallo el
-    # lote entero. Lo que hace es saltarse la comprobacion de concurrencia, que
-    # es lo que queremos: la verdad la dicta Odoo y no hay nadie mas
-    # escribiendo stock en la tienda.
-    entrada = {
+# Si la API acepta ignoreCompareQuantity. None = aun no lo sabemos.
+#
+# Este campo ha dado dos errores CONTRARIOS y por eso se decide en caliente:
+#
+#   sin el   "El argumento compareQuantity debe proporcionarse para cada
+#            cantidad o ignorarse mediante ignoreCompareQuantity"
+#   con el   "was provided invalid value for ignoreCompareQuantity
+#            (Field is not defined on InventorySetQuantitiesInput)"
+#
+# No es contradictorio: son versiones distintas de la API. En la que usa el
+# conector existe y es obligatorio; en la 2026-07, que es la del servidor,
+# no existe y la comprobacion se salta omitiendo compareQuantity en cada
+# cantidad. Fijarlo a mano rompe en cuanto alguien toca SHOPIFY_API_VERSION,
+# asi que se prueba una vez y se recuerda para el resto de la corrida.
+_usa_ignore: bool | None = None
+
+
+def _entrada(loc: str, lote: list[tuple], con_ignore: bool) -> dict:
+    e = {
         "name": CAMPO,
         "reason": "correction",
-        "ignoreCompareQuantity": True,
         "referenceDocumentUri": "gid://kalamobook/SyncJob/stock",
         "quantities": [{"inventoryItemId": item, "locationId": loc,
                         "quantity": qty} for _, item, qty, _ in lote],
     }
-    d = sa.graphql(_MUT_SET, {"input": entrada})
-    errores = (d.get("inventorySetQuantities") or {}).get("userErrors") or []
-    if errores:
-        job["errors"].append(f"lote: {errores[:3]}")
-        return 0
-    return len(lote)
+    if con_ignore:
+        e["ignoreCompareQuantity"] = True
+    return e
+
+
+def _escribir(loc: str, lote: list[tuple], job: dict) -> int:
+    global _usa_ignore
+    intentos = [_usa_ignore] if _usa_ignore is not None else [False, True]
+    ultimo = None
+    for con_ignore in intentos:
+        try:
+            d = sa.graphql(_MUT_SET, {"input": _entrada(loc, lote, con_ignore)})
+        except Exception as e:
+            texto = str(e)
+            # Los dos sintomas del desajuste de version: se reintenta con la
+            # otra forma en vez de dar el lote por perdido.
+            if "ignoreCompareQuantity" in texto or "compareQuantity" in texto:
+                ultimo = texto
+                continue
+            raise
+        errores = (d.get("inventorySetQuantities") or {}).get("userErrors") or []
+        if errores:
+            texto = str(errores)
+            if "ompareQuantity" in texto and _usa_ignore is None:
+                ultimo = texto
+                continue
+            job["errors"].append(f"lote: {errores[:3]}")
+            return 0
+        if _usa_ignore is None:
+            _usa_ignore = con_ignore
+            job["ignore_compare_quantity"] = con_ignore
+            print(f"[ShopifyStock] la API {'exige' if con_ignore else 'no admite'} "
+                  f"ignoreCompareQuantity; se usa asi el resto de la corrida")
+        return len(lote)
+    job["errors"].append(f"lote: no se pudo escribir de ninguna de las dos "
+                         f"formas: {str(ultimo)[:160]}")
+    return 0
 
 
 def _marcar_escritos(lote: list[tuple]):
