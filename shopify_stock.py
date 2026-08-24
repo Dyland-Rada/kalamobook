@@ -277,13 +277,24 @@ async def _stock_odoo(odoo: OdooClient, desde: str | None,
     tocados: set[int] = set()
     max_ts = desde
     offset = 0
+    job["paginas_leidas"] = 0
+    job["quants_leidos"] = 0
     while True:
         if job["status"] != "running":
+            # Alguien paro la corrida, o el estado se toco por fuera. Hay que
+            # distinguirlo de "Odoo no devolvio nada": las dos cosas acaban en
+            # cero y llevan a diagnosticos opuestos.
+            job["lectura_interrumpida"] = True
             break
         pagina = await odoo.search_read(
             "stock.quant", dominio,
             ["product_tmpl_id", "write_date"],
-            offset=offset, limit=PAGINA_QUANT, order="id")
+            offset=offset, limit=PAGINA_QUANT, order="id") or []
+        job["paginas_leidas"] += 1
+        job["quants_leidos"] += len(pagina)
+        if offset == 0:
+            print(f"[ShopifyStock] primera pagina: {len(pagina):,} quants "
+                  f"(dominio {dominio})", flush=True)
         for q in pagina:
             t = q.get("product_tmpl_id")
             t = t[0] if isinstance(t, list) else t
@@ -579,6 +590,21 @@ async def sincronizar(dry_run: bool = True, completo: bool = False,
         async with OdooClient() as odoo:
             totales, max_ts = await _stock_odoo(odoo, desde, job)
         job["libros_tocados"] = len(totales)
+        # Una corrida completa que no lee NADA de Odoo no es una corrida sin
+        # cambios: es una corrida rota. Odoo tiene ~645.000 lineas de stock,
+        # asi que cero solo puede ser un fallo de lectura. Se marca como error
+        # en vez de informar tan tranquilo "0 escritos", que es lo que dejo
+        # pasar dieciseis corridas fallidas el dia 21 sin que nadie lo viera.
+        if completo and not totales:
+            job["status"] = "error"
+            job["errors"].append(
+                f"la lectura de Odoo devolvio 0 quants en "
+                f"{job.get('paginas_leidas', 0)} pagina(s)"
+                + (" tras interrumpirse la lectura"
+                   if job.get("lectura_interrumpida") else
+                   ". Odoo deberia tener cientos de miles: revisar conexion, "
+                   "permisos del usuario o limites de la API"))
+            return job
 
         job["stage"] = "comparando con la tienda"
         cambios, iguales, sin_id = _handles_de(totales, incluir_ausentes=completo)

@@ -126,6 +126,15 @@ class OdooClient:
     async def search_read(self, model: str, domain: list,
                           fields: list[str], offset: int = 0,
                           limit: int = 0, order: str = "") -> list[dict]:
+        """
+        Siempre devuelve lista, nunca None.
+
+        Odoo puede responder sin `result` -o con result nulo- y _rpc devolvia
+        None tal cual. Quien llama hace `for x in pagina` o `len(pagina)` y
+        revienta con un TypeError que no dice nada del origen; o peor, si el
+        que llama lo trata como vacio, da una lectura de cero por buena. Ese
+        cero silencioso costo dias en el sync de stock a Shopify.
+        """
         kwargs = {"fields": fields}
         if offset:
             kwargs["offset"] = offset
@@ -133,7 +142,8 @@ class OdooClient:
             kwargs["limit"] = limit
         if order:
             kwargs["order"] = order
-        return await self.execute_kw(model, "search_read", [domain], kwargs)
+        r = await self.execute_kw(model, "search_read", [domain], kwargs)
+        return r if isinstance(r, list) else []
 
     async def write(self, model: str, ids: list[int], values: dict) -> bool:
         return await self.execute_kw(model, "write", [ids, values])
