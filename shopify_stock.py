@@ -22,15 +22,14 @@ Decisiones que conviene conocer:
   - La cantidad que se publica es el TOTAL de Odoo sumando los catorce
     almacenes, porque es lo que se puede servir. Cada almacen es la
     disponibilidad de un proveedor, no inventario propio.
-  - El sync es incremental: pregunta a Odoo solo por los quants tocados
-    desde la ultima corrida. La primera vez lee todo.
-  - OJO con lo anterior: en Odoo, cuando un libro se queda sin existencias
-    su quant DESAPARECE, no se queda a cero. Un libro asi no sale en
-    ninguna lectura de quants, asi que el modo incremental por si solo
-    nunca lo bajaria y la tienda seguiria vendiendolo. Por eso la corrida
-    `completo` recorre todo lo mapeado y da por cero lo que no aparece, y
-    por eso conviene lanzarla a diario aunque el incremental vaya cada
-    hora. Leer Odoo entero son tres minutos.
+  - Cada corrida repasa el catalogo ENTERO. Existe un modo incremental que
+    solo pregunta por lo que se movio, pero no se usa por defecto y conviene
+    saber por que: en Odoo, cuando un libro se queda sin existencias su
+    registro de stock DESAPARECE en vez de quedarse a cero. Un libro asi no
+    sale en ninguna lectura de lo que ha cambiado, asi que el incremental
+    nunca lo bajaria y la tienda lo seguiria vendiendo. Solo la completa
+    recorre todo lo mapeado y da por cero lo que no aparece.
+    Leer Odoo entero son 3,5 minutos de los 60 que hay entre corridas.
   - Un libro que esta en Shopify y no lo tenemos mapeado NO se toca.
 
 Escribir stock en la tienda es una operacion de cara al publico: dry_run
@@ -706,6 +705,19 @@ if __name__ == "__main__":
 
 CRON_INTERVAL_S = int(os.environ.get("SHOPIFY_STOCK_CRON_INTERVAL_S", "3600"))
 HORA_COMPLETA = int(os.environ.get("SHOPIFY_STOCK_HORA_COMPLETA", "4"))
+# Todas las corridas completas, no solo la de las 4:00.
+#
+# La rapida no puede ver los libros que se quedan SIN existencias, porque en
+# Odoo su registro de stock desaparece y no hay nada que leer. Con una sola
+# completa al dia, un libro que se agota a las 5 de la manana sigue a la
+# venta 23 horas. Eso es exactamente el stock fantasma que costo la venta de
+# Fnac, solo que con menos ventana.
+#
+# Leer Odoo entero son unos 3,5 minutos de los 60 que hay entre corridas, y
+# una vez saldada la deuda las diferencias por hora son de cientos, no de
+# miles. El coste es asumible y cierra el agujero del todo.
+SIEMPRE_COMPLETO = os.environ.get(
+    "SHOPIFY_STOCK_SIEMPRE_COMPLETO", "1").lower() in ("1", "true", "yes")
 
 _cron_task = None
 _cron_state: dict = {
@@ -735,7 +747,10 @@ async def _cron_loop():
             hora = datetime.now().hour
             # La completa, una vez al dia. Se apunta el dia en que se hizo
             # para que un reinicio a esa misma hora no la repita.
-            completo = (hora == HORA_COMPLETA and ultima_completa != hoy)
+            # Todas las corridas son completas salvo que se diga lo
+            # contrario. Ver SIEMPRE_COMPLETO.
+            completo = SIEMPRE_COMPLETO or (hora == HORA_COMPLETA
+                                            and ultima_completa != hoy)
             r = await sincronizar(dry_run=False, completo=completo)
             if completo and r.get("status") == "completed":
                 ultima_completa = hoy
