@@ -296,3 +296,79 @@ if __name__ == "__main__":
               f"{(m['titulo'] or '')[:30]}")
     for e in r["errors"][:5]:
         print(f"   ERROR: {e}")
+
+
+# ── Cron ────────────────────────────────────────────────────────────────
+# La tabla es un contrato con quien vende: si no se refresca, publica stock
+# viejo. Y se nota rapido, porque el catalogo se mueve todo el dia.
+#
+# Se quedo sin cron al montarla y estuvo tres dias parada -del 21 al 24-
+# publicando 512.480 libros con la foto del viernes. Justo el tipo de dato
+# rancio que esta tabla existe para evitar.
+#
+# Cada hora: leer Odoo entero son 3,5 minutos, y asi va al mismo ritmo que
+# la sincronizacion a Shopify. Los dos consumidores ven lo mismo.
+
+CRON_INTERVAL_S = int(os.environ.get("CATALOGO_CRON_INTERVAL_S", "3600"))
+
+_cron_task = None
+_cron_state: dict = {
+    "enabled": False, "interval_s": CRON_INTERVAL_S, "last_run_at": None,
+    "last_summary": None, "next_run_at": None, "runs_total": 0, "errors": [],
+}
+
+
+def get_cron_status() -> dict:
+    out = dict(_cron_state)
+    out["errors"] = out.get("errors", [])[-10:]
+    out["task_running"] = bool(_cron_task and not _cron_task.done())
+    return out
+
+
+async def _cron_loop():
+    import asyncio as _a
+    from datetime import timedelta
+    print(f"[CatalogoCron] Arrancado, cada {CRON_INTERVAL_S}s")
+    while _cron_state["enabled"]:
+        try:
+            r = await refrescar(dry_run=False)
+            _cron_state["last_run_at"] = datetime.now().isoformat()
+            _cron_state["last_summary"] = (
+                f"{r.get('filas', 0):,} vendibles, "
+                f"{r.get('retiradas', 0):,} retirados")
+            _cron_state["runs_total"] += 1
+            print(f"[CatalogoCron] #{_cron_state['runs_total']}: "
+                  f"{_cron_state['last_summary']}")
+        except Exception as e:
+            _cron_state["errors"].append(f"{type(e).__name__}: {e!r}"[:200])
+            print(f"[CatalogoCron] fallo: {e!r}")
+        _cron_state["next_run_at"] = (
+            datetime.now() + timedelta(seconds=CRON_INTERVAL_S)).isoformat()
+        for _ in range(CRON_INTERVAL_S):
+            if not _cron_state["enabled"]:
+                break
+            await _a.sleep(1)
+    print("[CatalogoCron] Detenido")
+    _cron_state["next_run_at"] = None
+
+
+def start_cron() -> bool:
+    global _cron_task
+    import asyncio as _a
+    if _cron_task and not _cron_task.done():
+        return False
+    _cron_state["enabled"] = True
+    _cron_state["errors"] = []
+    try:
+        _cron_task = _a.create_task(_cron_loop())
+        return True
+    except RuntimeError:
+        _cron_state["enabled"] = False
+        return False
+
+
+def stop_cron() -> bool:
+    if not _cron_state["enabled"]:
+        return False
+    _cron_state["enabled"] = False
+    return True

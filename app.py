@@ -215,6 +215,20 @@ async def startup():
         except Exception as e:
             print(f"[Startup] SINLI sync cron FALLO: {type(e).__name__}: {e}")
 
+    # Auto-arrancar el refresco del catalogo publicable (lo lee el feed de
+    # marketplace). Sin esto publica la foto del ultimo refresco manual: se
+    # quedo tres dias parado del 21 al 24 de agosto.
+    if os.environ.get("CATALOGO_CRON_ENABLED", "").lower() in ("1", "true", "yes"):
+        try:
+            import catalogo_publicable
+            if catalogo_publicable.start_cron():
+                print(f"[Startup] Catalogo publicable cron AUTO-ARRANCADO "
+                      f"(cada {catalogo_publicable.CRON_INTERVAL_S}s)")
+            else:
+                print("[Startup] Catalogo publicable cron NO arrancado (ya activo)")
+        except Exception as e:
+            print(f"[Startup] Catalogo publicable cron FALLO: {type(e).__name__}: {e}")
+
     # Auto-arrancar la sincronizacion de stock a Shopify
     if os.environ.get("SHOPIFY_STOCK_CRON_ENABLED", "").lower() in ("1", "true", "yes"):
         try:
@@ -3724,11 +3738,35 @@ async def catalogo_publicable_refrescar(
     return JSONResponse(content={"status": "started"})
 
 
+@app.post("/api/v1/catalogo-publicable/cron/start", tags=["Catalogo publicable"])
+async def catalogo_publicable_cron_start():
+    """
+    Deja el catalogo refrescandose solo cada hora. Sin esto, el feed de
+    marketplace publica la foto del ultimo refresco manual.
+    Para que arranque tras un reinicio: CATALOGO_CRON_ENABLED=1.
+    """
+    import catalogo_publicable as cp
+    if cp.start_cron():
+        return JSONResponse(content={"status": "started",
+                                     "interval_s": cp.CRON_INTERVAL_S})
+    return JSONResponse(status_code=400, content={
+        "status": "error", "message": "Ya estaba corriendo o sin event loop."})
+
+
+@app.post("/api/v1/catalogo-publicable/cron/stop", tags=["Catalogo publicable"])
+async def catalogo_publicable_cron_stop():
+    import catalogo_publicable as cp
+    if cp.stop_cron():
+        return JSONResponse(content={"status": "stopping"})
+    return JSONResponse(status_code=400, content={
+        "status": "error", "message": "No estaba corriendo."})
+
+
 @app.get("/api/v1/catalogo-publicable/estado", tags=["Catalogo publicable"])
 async def catalogo_publicable_estado():
     import catalogo_publicable as cp
     import db as _db
-    out = {"job": cp.get_status()}
+    out = {"job": cp.get_status(), "cron": cp.get_cron_status()}
     try:
         conn = _db.get_connection()
         cur = conn.cursor()
