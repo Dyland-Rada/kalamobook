@@ -472,67 +472,81 @@ def _location_gid() -> str:
         "SHOPIFY_LOCATION_GID (se ve en Shopify: Configuracion > Ubicaciones)")
 
 
-# Si la API acepta ignoreCompareQuantity. None = aun no lo sabemos.
+# Como pide esta version de la API que se salte la comprobacion de
+# concurrencia. None = aun no lo sabemos, se averigua en el primer lote.
 #
-# Este campo ha dado dos errores CONTRARIOS y por eso se decide en caliente:
+# Este punto ha dado TRES errores distintos, cada uno pidiendo lo contrario
+# del anterior, porque cada version de la API lo resuelve a su manera:
 #
-#   sin el   "El argumento compareQuantity debe proporcionarse para cada
-#            cantidad o ignorarse mediante ignoreCompareQuantity"
-#   con el   "was provided invalid value for ignoreCompareQuantity
-#            (Field is not defined on InventorySetQuantitiesInput)"
+#   plain          "InventoryQuantityInput must include the following
+#                  argument: changeFromQuantity"
+#   ignore         "ignoreCompareQuantity: Field is not defined on
+#                  InventorySetQuantitiesInput"
+#   sin ignore     "El argumento compareQuantity debe proporcionarse para
+#                  cada cantidad o ignorarse mediante ignoreCompareQuantity"
 #
-# No es contradictorio: son versiones distintas de la API. En la que usa el
-# conector existe y es obligatorio; en la 2026-07, que es la del servidor,
-# no existe y la comprobacion se salta omitiendo compareQuantity en cada
-# cantidad. Fijarlo a mano rompe en cuanto alguien toca SHOPIFY_API_VERSION,
-# asi que se prueba una vez y se recuerda para el resto de la corrida.
-_usa_ignore: bool | None = None
+# Fijarlo a mano fallo dos veces: acerte para la version del conector y
+# rompi la del servidor, y luego al reves. Asi que ya no se decide, se
+# prueba: el primer lote recorre las formas hasta que una entra y esa se usa
+# el resto de la corrida.
+_MODOS = ("changefrom_null", "ignore", "changefrom_real", "plain")
+_modo: str | None = None
 
 
-def _entrada(loc: str, lote: list[tuple], con_ignore: bool) -> dict:
+def _entrada(loc: str, lote: list[tuple], modo: str) -> dict:
+    qs = []
+    for _, item, qty, qty_tienda in lote:
+        q = {"inventoryItemId": item, "locationId": loc, "quantity": qty}
+        if modo == "changefrom_null":
+            # El esquema dice que con null se salta la comprobacion.
+            q["changeFromQuantity"] = None
+        elif modo == "changefrom_real":
+            # Con el valor que creemos que tiene la tienda. Si nuestra copia
+            # esta desfasada, Shopify rechaza ESE articulo, no el lote.
+            q["changeFromQuantity"] = int(qty_tienda or 0)
+        qs.append(q)
     e = {
         "name": CAMPO,
         "reason": "correction",
         "referenceDocumentUri": "gid://kalamobook/SyncJob/stock",
-        "quantities": [{"inventoryItemId": item, "locationId": loc,
-                        "quantity": qty} for _, item, qty, _ in lote],
+        "quantities": qs,
     }
-    if con_ignore:
+    if modo == "ignore":
         e["ignoreCompareQuantity"] = True
     return e
 
 
 def _escribir(loc: str, lote: list[tuple], job: dict) -> int:
-    global _usa_ignore
-    intentos = [_usa_ignore] if _usa_ignore is not None else [False, True]
+    global _modo
+    intentos = [_modo] if _modo else list(_MODOS)
     ultimo = None
-    for con_ignore in intentos:
+    for modo in intentos:
         try:
-            d = sa.graphql(_MUT_SET, {"input": _entrada(loc, lote, con_ignore)})
+            d = sa.graphql(_MUT_SET, {"input": _entrada(loc, lote, modo)})
         except Exception as e:
             texto = str(e)
-            # Los dos sintomas del desajuste de version: se reintenta con la
-            # otra forma en vez de dar el lote por perdido.
-            if "ignoreCompareQuantity" in texto or "compareQuantity" in texto:
-                ultimo = texto
+            if "ompareQuantity" in texto or "changeFromQuantity" in texto:
+                ultimo = f"{modo}: {texto[:120]}"
                 continue
             raise
         errores = (d.get("inventorySetQuantities") or {}).get("userErrors") or []
         if errores:
             texto = str(errores)
-            if "ompareQuantity" in texto and _usa_ignore is None:
-                ultimo = texto
+            if _modo is None and ("ompareQuantity" in texto
+                                  or "changeFromQuantity" in texto):
+                ultimo = f"{modo}: {texto[:120]}"
                 continue
             job["errors"].append(f"lote: {errores[:3]}")
             return 0
-        if _usa_ignore is None:
-            _usa_ignore = con_ignore
-            job["ignore_compare_quantity"] = con_ignore
-            print(f"[ShopifyStock] la API {'exige' if con_ignore else 'no admite'} "
-                  f"ignoreCompareQuantity; se usa asi el resto de la corrida")
+        if _modo is None:
+            _modo = modo
+            job["modo_escritura"] = modo
+            print(f"[ShopifyStock] la API acepta el modo '{modo}'; "
+                  f"se usa el resto de la corrida", flush=True)
         return len(lote)
-    job["errors"].append(f"lote: no se pudo escribir de ninguna de las dos "
-                         f"formas: {str(ultimo)[:160]}")
+    job["errors"].append(
+        f"ninguna de las {len(_MODOS)} formas de escribir funciono. "
+        f"Ultimo intento: {ultimo}")
     return 0
 
 
@@ -685,6 +699,7 @@ def _audit(evento: str, resumen: str, job: dict):
                      ("desde", "libros_tocados", "a_cambiar", "escritos",
                       "ya_coinciden", "sin_identificador", "subidas",
                       "bajadas", "a_cero", "errors", "completo_forzado",
+                      "modo_escritura", "paginas_leidas", "quants_leidos",
                       "leidos", "guardados", "dry_run", "elapsed_s")},
             nivel="error" if job.get("status") == "error" else "info")
     except Exception:
