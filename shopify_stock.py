@@ -401,6 +401,14 @@ def _handles_de(totales: dict[int, float],
 
 # ── 3. Escribir en Shopify ──────────────────────────────────────────────
 
+# Dos formas de la misma mutacion. Algunas versiones de la API exigen la
+# directiva @idempotent -"The @idempotent directive is required for this
+# mutation but was not provided"- y otras no la conocen. Como con el resto,
+# no se elige a mano: se prueban.
+#
+# La clave sale del contenido del lote, no de un aleatorio, para que un
+# reintento del MISMO lote se considere la misma operacion y no se aplique
+# dos veces. Es justo para lo que sirve la directiva.
 _MUT_SET = """
 mutation ($input: InventorySetQuantitiesInput!) {
   inventorySetQuantities(input: $input) {
@@ -409,6 +417,22 @@ mutation ($input: InventorySetQuantitiesInput!) {
   }
 }
 """
+
+_MUT_SET_IDEM = """
+mutation ($input: InventorySetQuantitiesInput!, $key: String!)
+@idempotent(key: $key) {
+  inventorySetQuantities(input: $input) {
+    inventoryAdjustmentGroup { createdAt reason }
+    userErrors { field message }
+  }
+}
+"""
+
+
+def _clave_lote(lote: list[tuple]) -> str:
+    import hashlib
+    crudo = "|".join(f"{item}:{qty}" for _, item, qty, _ in lote)
+    return "kalamo-" + hashlib.sha256(crudo.encode()).hexdigest()[:32]
 
 
 _loc_cache: str | None = None
@@ -489,8 +513,27 @@ def _location_gid() -> str:
 # rompi la del servidor, y luego al reves. Asi que ya no se decide, se
 # prueba: el primer lote recorre las formas hasta que una entra y esa se usa
 # el resto de la corrida.
-_MODOS = ("changefrom_null", "ignore", "changefrom_real", "plain")
-_modo: str | None = None
+# Cada version de la API pide una combinacion distinta y ninguna avisa de
+# cual hasta que la rechaza. Han salido CUATRO errores encadenados, cada uno
+# tapando al siguiente:
+#
+#   1. "must include the following argument: changeFromQuantity"
+#   2. "ignoreCompareQuantity: Field is not defined"
+#   3. "compareQuantity debe proporcionarse o ignorarse"
+#   4. "The @idempotent directive is required for this mutation"
+#
+# Por eso ya no se elige: se prueban en orden hasta que una entra, y esa se
+# usa el resto de la corrida. El orden empieza por lo que la tienda pedia en
+# el ultimo error conocido.
+_MODOS = [
+    ("idem", "changefrom_null"),
+    ("plano", "changefrom_null"),
+    ("idem", "ignore"),
+    ("plano", "ignore"),
+    ("idem", "changefrom_real"),
+    ("plano", "plain"),
+]
+_modo: tuple[str, str] | None = None
 
 
 def _entrada(loc: str, lote: list[tuple], modo: str) -> dict:
@@ -516,37 +559,43 @@ def _entrada(loc: str, lote: list[tuple], modo: str) -> dict:
     return e
 
 
+_PISTAS = ("ompareQuantity", "changeFromQuantity", "idempotent", "@idempotent")
+
+
 def _escribir(loc: str, lote: list[tuple], job: dict) -> int:
     global _modo
     intentos = [_modo] if _modo else list(_MODOS)
     ultimo = None
-    for modo in intentos:
+    for mut, modo in intentos:
+        variables = {"input": _entrada(loc, lote, modo)}
+        consulta = _MUT_SET
+        if mut == "idem":
+            consulta = _MUT_SET_IDEM
+            variables["key"] = _clave_lote(lote)
         try:
-            d = sa.graphql(_MUT_SET, {"input": _entrada(loc, lote, modo)})
+            d = sa.graphql(consulta, variables)
         except Exception as e:
             texto = str(e)
-            if "ompareQuantity" in texto or "changeFromQuantity" in texto:
-                ultimo = f"{modo}: {texto[:120]}"
+            if any(p in texto for p in _PISTAS):
+                ultimo = f"{mut}/{modo}: {texto[:110]}"
                 continue
             raise
         errores = (d.get("inventorySetQuantities") or {}).get("userErrors") or []
         if errores:
             texto = str(errores)
-            if _modo is None and ("ompareQuantity" in texto
-                                  or "changeFromQuantity" in texto):
-                ultimo = f"{modo}: {texto[:120]}"
+            if _modo is None and any(p in texto for p in _PISTAS):
+                ultimo = f"{mut}/{modo}: {texto[:110]}"
                 continue
             job["errors"].append(f"lote: {errores[:3]}")
             return 0
         if _modo is None:
-            _modo = modo
-            job["modo_escritura"] = modo
-            print(f"[ShopifyStock] la API acepta el modo '{modo}'; "
-                  f"se usa el resto de la corrida", flush=True)
+            _modo = (mut, modo)
+            job["modo_escritura"] = f"{mut}/{modo}"
+            print(f"[ShopifyStock] la API acepta '{mut}/{modo}'; se usa el "
+                  f"resto de la corrida", flush=True)
         return len(lote)
     job["errors"].append(
-        f"ninguna de las {len(_MODOS)} formas de escribir funciono. "
-        f"Ultimo intento: {ultimo}")
+        f"ninguna de las {len(_MODOS)} combinaciones funciono. Ultima: {ultimo}")
     return 0
 
 

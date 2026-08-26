@@ -2940,8 +2940,8 @@
                     detectar los libros que se quedaron sin existencias: cuando eso pasa, en Odoo
                     su registro de stock <strong>desaparece</strong>, así que mirar solo lo que ha
                     cambiado no los ve nunca. Leer Odoo son 3,5 minutos de cada 60.
-                    Para que arranque solo tras un reinicio hace falta
-                    <code>SHOPIFY_STOCK_CRON_ENABLED=1</code>.
+                    <strong>Arranca solo</strong> con cada reinicio; para apagarlo,
+                    <code>SHOPIFY_STOCK_CRON_ENABLED=0</code>.
                 </p>
                 <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
                     <button class="btn btn-success" onclick="stkCron(true)">▶ Activar</button>
