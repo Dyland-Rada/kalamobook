@@ -241,6 +241,20 @@ async def startup():
         except Exception as e:
             print(f"[Startup] Catalogo publicable cron FALLO: {type(e).__name__}: {e}")
 
+    # Publicacion diaria de libros nuevos en Shopify. Tambien encendido por
+    # defecto: del 7 al 21 de agosto no se publico nada porque dependia de
+    # que alguien se acordara de entrar al panel.
+    if _cron_encendido("SHOPIFY_PUB_CRON_ENABLED"):
+        try:
+            import shopify_pub
+            if shopify_pub.start_cron():
+                print(f"[Startup] Shopify publicacion cron AUTO-ARRANCADO "
+                      f"(a las {shopify_pub.HORA_PUBLICAR}:00)")
+            else:
+                print("[Startup] Shopify publicacion cron NO arrancado (ya activo)")
+        except Exception as e:
+            print(f"[Startup] Shopify publicacion cron FALLO: {type(e).__name__}: {e}")
+
     # Sincronizacion de stock a Shopify.
     if _cron_encendido("SHOPIFY_STOCK_CRON_ENABLED"):
         try:
@@ -3595,6 +3609,35 @@ async def shopify_stock_sincronizar(
     threading.Thread(target=_run_in_thread, daemon=True).start()
     return JSONResponse(content={"status": "started", "completo": completo,
                                  "limite": limite})
+
+
+@app.post("/api/v1/shopify/publicacion/cron/start", tags=["Shopify"])
+async def shopify_pub_cron_start():
+    """
+    Deja la publicacion corriendo sola: cada dia genera fichas y sube hasta
+    el tope de Shopify. Para apagarla, SHOPIFY_PUB_CRON_ENABLED=0.
+    """
+    import shopify_pub
+    if shopify_pub.start_cron():
+        return JSONResponse(content={"status": "started",
+                                     "hora": shopify_pub.HORA_PUBLICAR})
+    return JSONResponse(status_code=400, content={
+        "status": "error", "message": "Ya estaba corriendo o sin event loop."})
+
+
+@app.post("/api/v1/shopify/publicacion/cron/stop", tags=["Shopify"])
+async def shopify_pub_cron_stop():
+    import shopify_pub
+    if shopify_pub.stop_cron():
+        return JSONResponse(content={"status": "stopping"})
+    return JSONResponse(status_code=400, content={
+        "status": "error", "message": "No estaba corriendo."})
+
+
+@app.get("/api/v1/shopify/publicacion/cron/estado", tags=["Shopify"])
+async def shopify_pub_cron_estado():
+    import shopify_pub
+    return JSONResponse(content=shopify_pub.get_cron_status())
 
 
 @app.get("/api/v1/shopify/stock/estado", tags=["Shopify"])

@@ -781,3 +781,134 @@ if __name__ == "__main__":
     elif accion == "taxonomia":
         t = taxonomia()
         print(f"{len(t['madres'])} madres, {len(t['cats'])} categorias")
+
+
+# ── Cron de publicacion ─────────────────────────────────────────────────
+# Generar y publicar era lo unico que seguia dependiendo de que alguien se
+# acordara, y se notaba: del 7 al 21 de agosto no se publico nada, y el 21
+# salieron 897 libros solo porque habia dos personas mirando. Quedan 24.613
+# candidatos, que a 900 al dia son casi un mes de tarea sin dueno.
+#
+# El tope de 900 no es nuestro: Shopify solo admite 1.000 productos nuevos
+# al dia por encima de 50.000 variantes, y se deja margen.
+#
+# Una vez al dia basta, porque el tope es diario. Se hace de madrugada: la
+# generacion con IA tarda un cuarto de hora larga y la subida otro tanto.
+
+CRON_INTERVAL_S = int(os.environ.get("SHOPIFY_PUB_CRON_INTERVAL_S", str(24 * 3600)))
+HORA_PUBLICAR = int(os.environ.get("SHOPIFY_PUB_HORA", "3"))
+
+_cron_task = None
+_cron_state: dict = {
+    "enabled": False, "interval_s": CRON_INTERVAL_S,
+    "hora": HORA_PUBLICAR, "last_run_at": None, "last_summary": None,
+    "next_run_at": None, "runs_total": 0, "generadas_total": 0,
+    "publicadas_total": 0, "errors": [],
+}
+
+
+def get_cron_status() -> dict:
+    out = dict(_cron_state)
+    out["errors"] = out.get("errors", [])[-10:]
+    out["task_running"] = bool(_cron_task and not _cron_task.done())
+    return out
+
+
+async def _ciclo_publicacion() -> dict:
+    """
+    Una vuelta completa: generar fichas hasta el tope y subir lo que haya.
+
+    Se genera ANTES de publicar y en la misma vuelta, porque una ficha
+    generada y no subida no sirve de nada: quedaron 25 asi desde el 7 de
+    agosto hasta que alguien lo miro dos semanas despues.
+    """
+    import asyncio as _a
+    res = {"generadas": 0, "publicadas": 0, "fallidas": 0, "errors": []}
+
+    pendientes = 0
+    try:
+        conn = db.get_connection()
+        cur = conn.cursor()
+        db.execute_query(cur, f"SELECT COUNT(*) FROM {TABLA} WHERE estado='generado'")
+        pendientes = int(cur.fetchone()[0])
+        conn.close()
+    except Exception as e:
+        res["errors"].append(f"contar pendientes: {str(e)[:120]}")
+
+    # Solo se generan las que faltan para llegar al tope: si quedaron fichas
+    # sin subir de ayer, se suben esas primero en vez de fabricar de mas.
+    faltan = max(0, sa.TOPE_DIARIO - pendientes)
+    if faltan:
+        try:
+            g = await _a.to_thread(generar_fichas, faltan)
+            res["generadas"] = g.get("generadas", 0)
+            res["errors"] += (g.get("errors") or [])[:3]
+        except Exception as e:
+            res["errors"].append(f"generar: {type(e).__name__}: {str(e)[:120]}")
+
+    try:
+        p = await _a.to_thread(publicar, sa.TOPE_DIARIO, False)
+        res["publicadas"] = p.get("publicados", 0)
+        res["fallidas"] = p.get("fallidos", 0)
+        res["errors"] += (p.get("errors") or [])[:3]
+    except Exception as e:
+        res["errors"].append(f"publicar: {type(e).__name__}: {str(e)[:120]}")
+    return res
+
+
+async def _cron_loop():
+    import asyncio as _a
+    from datetime import timedelta
+    print(f"[ShopifyPubCron] Arrancado, a las {HORA_PUBLICAR}:00")
+    ultimo_dia = None
+    while _cron_state["enabled"]:
+        try:
+            hoy = datetime.now().date()
+            if datetime.now().hour == HORA_PUBLICAR and ultimo_dia != hoy:
+                r = await _ciclo_publicacion()
+                ultimo_dia = hoy
+                _cron_state["runs_total"] += 1
+                _cron_state["generadas_total"] += r["generadas"]
+                _cron_state["publicadas_total"] += r["publicadas"]
+                _cron_state["last_run_at"] = datetime.now().isoformat()
+                _cron_state["last_summary"] = (
+                    f"{r['generadas']:,} fichas generadas, "
+                    f"{r['publicadas']:,} publicadas, {r['fallidas']:,} fallidas")
+                _cron_state["errors"] += r["errors"]
+                print(f"[ShopifyPubCron] {_cron_state['last_summary']}")
+                _audit("cron_publicacion",
+                       f"Ciclo diario de publicacion: {_cron_state['last_summary']}",
+                       {k: r[k] for k in ("generadas", "publicadas", "fallidas")},
+                       error=bool(r["fallidas"] and not r["publicadas"]))
+        except Exception as e:
+            _cron_state["errors"].append(f"{type(e).__name__}: {e!r}"[:200])
+            print(f"[ShopifyPubCron] fallo: {e!r}")
+        # Se comprueba cada diez minutos si toca, en vez de dormir un dia
+        # entero: asi un reinicio no salta la ventana de publicacion.
+        for _ in range(600):
+            if not _cron_state["enabled"]:
+                break
+            await _a.sleep(1)
+    print("[ShopifyPubCron] Detenido")
+
+
+def start_cron() -> bool:
+    global _cron_task
+    import asyncio as _a
+    if _cron_task and not _cron_task.done():
+        return False
+    _cron_state["enabled"] = True
+    _cron_state["errors"] = []
+    try:
+        _cron_task = _a.create_task(_cron_loop())
+        return True
+    except RuntimeError:
+        _cron_state["enabled"] = False
+        return False
+
+
+def stop_cron() -> bool:
+    if not _cron_state["enabled"]:
+        return False
+    _cron_state["enabled"] = False
+    return True

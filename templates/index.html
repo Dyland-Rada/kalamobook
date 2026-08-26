@@ -2875,6 +2875,23 @@
                 </div>
                 <div id="sh-ficheros" style="margin-top:12px; font-size:.82rem;"></div>
 
+                <div class="section-label" style="color:#2ecc71; margin-top:20px;">
+                    4. Dejarlo automático
+                </div>
+                <p style="color:#8b93a7; font-size:.78rem;">
+                    Cada día de madrugada genera fichas y sube hasta el tope de Shopify
+                    (<strong>900 al día</strong>). <strong>Arranca solo</strong> con cada reinicio;
+                    para apagarlo, <code>SHOPIFY_PUB_CRON_ENABLED=0</code>.
+                    Del 7 al 21 de agosto no se publicó nada porque dependía de que
+                    alguien entrase a pulsarlo.
+                </p>
+                <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+                    <button class="btn btn-success" onclick="shPubCron(true)">▶ Activar</button>
+                    <button class="btn btn-danger" onclick="shPubCron(false)">
+                        <ion-icon name="stop-circle-outline"></ion-icon> Detener</button>
+                    <span id="sh-pubcron" style="color:#8b93a7; font-size:.85rem;"></span>
+                </div>
+
                 <div id="sh-descartes" style="margin-top:18px; font-size:.78rem; color:#666;"></div>
             </div>
 
@@ -2994,7 +3011,7 @@
             if (tab === 'odoo') { odooPoll(); odooStartPolling(); isbnIndexPoll(); loadMirrorAndDistInitial(); startResumenAutoRefresh(); }
             if (tab === 'catalog') { catalogSearch(1); loadSuppliersDatalist(); }
             if (tab === 'manual') manualSub(manualTipo);
-            if (tab === 'shopify') { shLoad(true); stkEstado(); } else shPollStop();
+            if (tab === 'shopify') { shLoad(true); stkEstado(); shPubCronEstado(); } else shPollStop();
             if (tab === 'salud') { saludCargar(); auditSondear(); faltSondear(); }
             if (tab === 'audit') { auditLoadAll(); auditStartAutoRefresh(); asLoad(); }
             else { auditStopAutoRefresh(); }
@@ -6574,6 +6591,25 @@
             document.getElementById('salud-cron').textContent = d.status === 'error'
                 ? d.message : (activar ? 'activada' : 'detenida');
             saludCargar();
+        }
+
+        async function shPubCronEstado() {
+            try {
+                const c = await (await fetch('/api/v1/shopify/publicacion/cron/estado')).json();
+                const el = document.getElementById('sh-pubcron');
+                if (!el) return;
+                el.textContent = c.task_running
+                    ? `activa · a las ${c.hora}:00 · ${c.runs_total || 0} ciclos · ${(c.publicadas_total || 0).toLocaleString('es')} publicados`
+                    : 'parada';
+                el.style.color = c.task_running ? '#4ade80' : '#8b93a7';
+                if (c.last_summary) el.textContent += ` · última: ${c.last_summary}`;
+            } catch (e) {}
+        }
+
+        async function shPubCron(activar) {
+            await fetch(`/api/v1/shopify/publicacion/cron/${activar ? 'start' : 'stop'}`,
+                        { method: 'POST' });
+            shPubCronEstado();
         }
 
         // ═══ STOCK DE ODOO A SHOPIFY ═══
