@@ -87,6 +87,15 @@ def _revisar_crones(arreglar: bool) -> list[dict]:
          "get_cron_status", "start_cron"),
         ("cron_nuevos", "Cron de libros nuevos", "auto_scrape",
          "get_cron_status", "start_cron"),
+        # Estos dos faltaban, y se noto: el 24/08 el servidor se reinicio y
+        # volvieron todos menos el de Shopify, que se quedo parado sin que
+        # nadie se enterara. El stock de la tienda llevaba dias sin
+        # actualizarse por eso. Si el vigilante no los vigila, no hay quien
+        # los levante salvo que alguien mire el panel.
+        ("cron_shopify_stock", "Cron de stock a Shopify", "shopify_stock",
+         "get_cron_status", "start_cron"),
+        ("cron_catalogo", "Cron del catalogo publicable", "catalogo_publicable",
+         "get_cron_status", "start_cron"),
     ]
     for clave, titulo, modulo, fn_estado, fn_arrancar in definicion:
         try:

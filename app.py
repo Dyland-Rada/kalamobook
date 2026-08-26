@@ -215,10 +215,22 @@ async def startup():
         except Exception as e:
             print(f"[Startup] SINLI sync cron FALLO: {type(e).__name__}: {e}")
 
-    # Auto-arrancar el refresco del catalogo publicable (lo lee el feed de
-    # marketplace). Sin esto publica la foto del ultimo refresco manual: se
-    # quedo tres dias parado del 21 al 24 de agosto.
-    if os.environ.get("CATALOGO_CRON_ENABLED", "").lower() in ("1", "true", "yes"):
+    # Estos dos van ENCENDIDOS salvo que se pidan apagar, al reves que los
+    # demas. Son los que mantienen al dia lo que ve el cliente -la tienda y el
+    # feed de marketplace- y tenerlos apagados por defecto ya costo caro: el
+    # 24/08 el servidor se reinicio y el de Shopify no volvio porque su
+    # variable no llegaba bien escrita, y nadie se entero hasta que se busco a
+    # mano. Una funcion central del sistema no puede depender de que alguien
+    # teclee una variable sin erratas.
+    #
+    # Para apagarlos: CATALOGO_CRON_ENABLED=0 / SHOPIFY_STOCK_CRON_ENABLED=0.
+    def _cron_encendido(nombre: str) -> bool:
+        return os.environ.get(nombre, "1").lower() not in ("0", "false", "no")
+
+    # Refresco del catalogo publicable (lo lee el feed de marketplace). Sin
+    # esto publica la foto del ultimo refresco manual: se quedo tres dias
+    # parado del 21 al 24 de agosto.
+    if _cron_encendido("CATALOGO_CRON_ENABLED"):
         try:
             import catalogo_publicable
             if catalogo_publicable.start_cron():
@@ -229,8 +241,8 @@ async def startup():
         except Exception as e:
             print(f"[Startup] Catalogo publicable cron FALLO: {type(e).__name__}: {e}")
 
-    # Auto-arrancar la sincronizacion de stock a Shopify
-    if os.environ.get("SHOPIFY_STOCK_CRON_ENABLED", "").lower() in ("1", "true", "yes"):
+    # Sincronizacion de stock a Shopify.
+    if _cron_encendido("SHOPIFY_STOCK_CRON_ENABLED"):
         try:
             import shopify_stock
             if shopify_stock.start_cron():
@@ -243,7 +255,10 @@ async def startup():
             print(f"[Startup] Shopify stock cron FALLO: {type(e).__name__}: {e}")
 
     # Auto-arrancar el vigilante de salud
-    if os.environ.get("VIGILANTE_ENABLED", "").lower() in ("1", "true", "yes"):
+    # El vigilante tambien encendido por defecto: es quien levanta los crones
+    # que se caen, asi que dejarlo apagado deja al resto sin red. Lleva desde
+    # el 6 de agosto sin arrancar solo por su variable.
+    if _cron_encendido("VIGILANTE_ENABLED"):
         try:
             import vigilante
             if vigilante.start_cron():
