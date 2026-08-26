@@ -561,12 +561,18 @@ def _entrada(loc: str, lote: list[tuple], modo: str) -> dict:
 
 _PISTAS = ("ompareQuantity", "changeFromQuantity", "idempotent", "@idempotent")
 
+# Lo que respondio cada combinacion en el primer lote. Sin esto solo quedaba
+# el error de la ULTIMA, que siempre era la peor: "ninguna de las 6
+# funciono. Ultima: plano/plain: falta changeFromQuantity" no dice nada de
+# por que fallo la primera, que es la que deberia entrar.
+_diagnostico: dict[str, str] = {}
+
 
 def _escribir(loc: str, lote: list[tuple], job: dict) -> int:
     global _modo
     intentos = [_modo] if _modo else list(_MODOS)
-    ultimo = None
     for mut, modo in intentos:
+        etiqueta = f"{mut}/{modo}"
         variables = {"input": _entrada(loc, lote, modo)}
         consulta = _MUT_SET
         if mut == "idem":
@@ -576,26 +582,37 @@ def _escribir(loc: str, lote: list[tuple], job: dict) -> int:
             d = sa.graphql(consulta, variables)
         except Exception as e:
             texto = str(e)
-            if any(p in texto for p in _PISTAS):
-                ultimo = f"{mut}/{modo}: {texto[:110]}"
+            if any(p in texto for p in _PISTAS) or "Field" in texto:
+                _diagnostico[etiqueta] = texto[:200]
                 continue
             raise
         errores = (d.get("inventorySetQuantities") or {}).get("userErrors") or []
         if errores:
             texto = str(errores)
-            if _modo is None and any(p in texto for p in _PISTAS):
-                ultimo = f"{mut}/{modo}: {texto[:110]}"
+            if _modo is None and (any(p in texto for p in _PISTAS)
+                                  or "Field" in texto):
+                _diagnostico[etiqueta] = texto[:200]
                 continue
             job["errors"].append(f"lote: {errores[:3]}")
             return 0
         if _modo is None:
             _modo = (mut, modo)
-            job["modo_escritura"] = f"{mut}/{modo}"
-            print(f"[ShopifyStock] la API acepta '{mut}/{modo}'; se usa el "
+            job["modo_escritura"] = etiqueta
+            print(f"[ShopifyStock] la API acepta '{etiqueta}'; se usa el "
                   f"resto de la corrida", flush=True)
         return len(lote)
-    job["errors"].append(
-        f"ninguna de las {len(_MODOS)} combinaciones funciono. Ultima: {ultimo}")
+
+    # Ninguna sirvio. Si aun no habiamos fijado modo, es el PRIMER lote y no
+    # tiene sentido seguir: se abortaria 894 veces lo mismo. Antes se
+    # recorrian todos los lotes probando las seis, mas de 5.000 llamadas
+    # inutiles y horas de reloj para acabar igual.
+    if _modo is None:
+        job["diagnostico_escritura"] = dict(_diagnostico)
+        job["errors"].append(
+            "ninguna de las combinaciones de escritura funciona; se aborta sin "
+            "recorrer el resto de lotes. Respuesta de cada una: "
+            + " || ".join(f"{k} -> {v[:110]}" for k, v in _diagnostico.items()))
+        job["status"] = "error"
     return 0
 
 
@@ -749,6 +766,7 @@ def _audit(evento: str, resumen: str, job: dict):
                       "ya_coinciden", "sin_identificador", "subidas",
                       "bajadas", "a_cero", "errors", "completo_forzado",
                       "modo_escritura", "paginas_leidas", "quants_leidos",
+                      "diagnostico_escritura",
                       "leidos", "guardados", "dry_run", "elapsed_s")},
             nivel="error" if job.get("status") == "error" else "info")
     except Exception:
