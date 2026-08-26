@@ -418,10 +418,13 @@ mutation ($input: InventorySetQuantitiesInput!) {
 }
 """
 
+# La directiva va en el CAMPO, no en la operacion. Puesta arriba responde
+# "'@idempotent' can't be applied to mutations (allowed: fields)", y puesta
+# en ningun sitio responde "The @idempotent directive is required for this
+# mutation". Entre las dos quejas estaba la respuesta.
 _MUT_SET_IDEM = """
-mutation ($input: InventorySetQuantitiesInput!, $key: String!)
-@idempotent(key: $key) {
-  inventorySetQuantities(input: $input) {
+mutation ($input: InventorySetQuantitiesInput!, $key: String!) {
+  inventorySetQuantities(input: $input) @idempotent(key: $key) {
     inventoryAdjustmentGroup { createdAt reason }
     userErrors { field message }
   }
@@ -526,7 +529,10 @@ def _location_gid() -> str:
 # usa el resto de la corrida. El orden empieza por lo que la tienda pedia en
 # el ultimo error conocido.
 _MODOS = [
+    # Esta es la que pide la tienda: changeFromQuantity a null y la directiva
+    # en el campo. Se confirmo el 26/08 cruzando las quejas de las seis.
     ("idem", "changefrom_null"),
+    ("idem", "changefrom_real"),
     ("plano", "changefrom_null"),
     ("idem", "ignore"),
     ("plano", "ignore"),
