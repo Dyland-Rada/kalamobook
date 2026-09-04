@@ -352,6 +352,12 @@ def _handles_de(totales: dict[int, float],
     siempre. Es justo el fallo caro -se compra algo que nadie puede servir-
     y lo destapo "El Principito" el 19/08: cero en Odoo desde las pausas del
     dia 10 y a la venta en la tienda.
+
+    El max(0, ...) no es cosmetico: Odoo admite quants negativos (se sirvio
+    mas de lo que habia) y Shopify rechaza el lote entero con "The quantity
+    can't be negative", asi que un solo libro en negativo tumbaba las otras
+    249 escrituras del lote. Un negativo significa que no hay nada que
+    vender: cero.
     """
     if not totales and not incluir_ausentes:
         return [], 0, 0
@@ -370,7 +376,7 @@ def _handles_de(totales: dict[int, float],
             filas = cur.fetchall()
             for odoo_id, handle, item, qty_shop in filas:
                 encontrados += 1
-                nuevo = int(round(totales.get(int(odoo_id), 0.0)))
+                nuevo = max(0, int(round(totales.get(int(odoo_id), 0.0))))
                 if qty_shop is not None and nuevo == qty_shop:
                     iguales += 1
                 else:
@@ -389,7 +395,7 @@ def _handles_de(totales: dict[int, float],
             """, (trozo,))
             for odoo_id, handle, item, qty_shop in cur.fetchall():
                 encontrados += 1
-                nuevo = int(round(totales.get(int(odoo_id), 0.0)))
+                nuevo = max(0, int(round(totales.get(int(odoo_id), 0.0))))
                 if qty_shop is not None and nuevo == qty_shop:
                     iguales += 1
                 else:
