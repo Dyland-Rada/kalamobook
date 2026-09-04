@@ -1,0 +1,485 @@
+{%- comment -%}
+  Burbuja de chat de Kalamo Books -> agente n8n "Agente kalamo - Chat Web".
+  Se instala como sections/kalamo-chat.liquid y se registra en
+  sections/overlay-group.json, que theme.liquid ya renderiza en todas las paginas.
+
+  COLORES: se leen de las variables CSS que define assets/kalamo-brand.css
+  (--accent-color vino, --primary-button-background, --footer-accent-color dorado,
+  --secondary-background crema, --heading-font-family Jost...). Es decir, la burbuja
+  sigue la capa de marca, no los ajustes del editor. Si algun dia se migran los
+  valores de :root a Ajustes del theme, esto sigue funcionando igual.
+  Los dos ajustes de color de abajo solo sirven para forzar otro color.
+{%- endcomment -%}
+
+{%- if section.settings.activo and section.settings.endpoint != blank -%}
+  <div
+    id="kb-chat"
+    data-endpoint="{{ section.settings.endpoint }}"
+    data-bienvenida="{{ section.settings.bienvenida | escape }}"
+    data-soporte="{{ section.settings.email_soporte }}"
+  >
+    <button type="button" id="kb-chat-toggle" aria-label="{{ section.settings.aria_abrir | escape }}" aria-expanded="false">
+      <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true" focusable="false">
+        <path fill="currentColor" d="M12 3c-4.97 0-9 3.36-9 7.5 0 2.3 1.24 4.35 3.2 5.73-.13 1.2-.6 2.3-1.36 3.2-.2.24-.02.6.29.55 1.9-.3 3.5-1.06 4.66-2.06.7.12 1.44.18 2.21.18 4.97 0 9-3.36 9-7.6C21 6.36 16.97 3 12 3z"/>
+      </svg>
+    </button>
+
+    <section id="kb-chat-panel" role="dialog" aria-modal="false" aria-label="{{ section.settings.titulo | escape }}" hidden>
+      <header id="kb-chat-head">
+        <div>
+          <strong>{{ section.settings.titulo }}</strong>
+          <small>{{ section.settings.subtitulo }}</small>
+        </div>
+        <button type="button" id="kb-chat-close" aria-label="{{ section.settings.aria_cerrar | escape }}">&times;</button>
+      </header>
+
+      <div id="kb-chat-log" role="log" aria-live="polite" aria-relevant="additions"></div>
+
+      <form id="kb-chat-form" autocomplete="off">
+        <label class="kb-sr" for="kb-chat-input">{{ section.settings.placeholder }}</label>
+        <textarea id="kb-chat-input" rows="1" maxlength="1000" placeholder="{{ section.settings.placeholder | escape }}" required></textarea>
+        <button type="submit" id="kb-chat-send" aria-label="{{ section.settings.aria_enviar | escape }}">
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false">
+            <path fill="currentColor" d="M3.4 20.4l17.45-7.48a1 1 0 000-1.84L3.4 3.6a1 1 0 00-1.39 1.1l1.6 5.9L14 12l-10.39.4-1.6 5.9a1 1 0 001.39 1.1z"/>
+          </svg>
+        </button>
+      </form>
+      <p id="kb-chat-foot">{{ section.settings.pie }}</p>
+    </section>
+  </div>
+
+  <style>
+    #kb-chat {
+      --kb-vino: var(--accent-color, #a42e22);
+      --kb-boton: var(--primary-button-background, #8f271d);
+      --kb-oscuro: var(--link-color-hover, #3c100b);
+      --kb-oro: var(--footer-accent-color, #dfa01e);
+      --kb-panel: var(--background, #ffffff);
+      --kb-crema: var(--secondary-background, #f5f2ee);
+      --kb-borde: var(--border-color, #e7e2da);
+      --kb-borde-campo: var(--form-border-color, #d8d2c8);
+      --kb-texto: var(--text-color, #1f1f1f);
+      --kb-titulo-font: var(--heading-font-family, inherit);
+    }
+    {%- if section.settings.color_principal != blank %}
+    #kb-chat { --kb-vino: {{ section.settings.color_principal }}; --kb-boton: {{ section.settings.color_principal }}; }
+    {%- endif %}
+    {%- if section.settings.color_acento != blank %}
+    #kb-chat { --kb-oro: {{ section.settings.color_acento }}; }
+    {%- endif %}
+
+    #kb-chat .kb-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+    #kb-chat-toggle {
+      position: fixed; right: 20px; bottom: 20px; z-index: 2147483000;
+      width: 58px; height: 58px; border: 0; border-radius: 50%;
+      background: var(--kb-vino); color: #fff; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 6px 20px rgba(60,16,11,.28);
+      transition: background .15s ease-out, transform .15s ease-out, box-shadow .15s ease-out;
+    }
+    #kb-chat-toggle:hover {
+      background: var(--kb-oscuro);
+      transform: translateY(-2px);
+      box-shadow: 0 10px 26px rgba(60,16,11,.32);
+    }
+    #kb-chat-toggle:active { transform: translateY(0); }
+    #kb-chat-toggle:focus-visible {
+      outline: 2px solid var(--kb-oro); outline-offset: 2px;
+      box-shadow: 0 0 0 4px rgba(223,160,30,.22);
+    }
+
+    #kb-chat-panel {
+      position: fixed; right: 20px; bottom: 90px; z-index: 2147483000;
+      width: 360px; max-width: calc(100vw - 32px);
+      height: 520px; max-height: calc(100vh - 130px);
+      display: flex; flex-direction: column; overflow: hidden;
+      background: var(--kb-panel); color: var(--kb-texto);
+      border: 1px solid var(--kb-borde); border-radius: 14px;
+      box-shadow: 0 18px 50px rgba(60,16,11,.20);
+      font-family: inherit; font-size: 15px; line-height: 1.55;
+    }
+    #kb-chat-head {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 8px; padding: 13px 15px;
+      background: var(--kb-vino); color: #fff;
+      border-bottom: 3px solid var(--kb-oro);
+    }
+    #kb-chat-head strong {
+      display: block; font-size: 15px;
+      font-family: var(--kb-titulo-font); font-weight: 700; letter-spacing: .01em;
+    }
+    #kb-chat-head small { display: block; font-size: 12px; opacity: .82; }
+    #kb-chat-close {
+      background: transparent; border: 0; color: #fff; font-size: 26px;
+      line-height: 1; cursor: pointer; padding: 0 4px;
+      transition: color .15s ease-out;
+    }
+    #kb-chat-close:hover { color: var(--kb-oro); }
+    #kb-chat-close:focus-visible { outline: 2px solid var(--kb-oro); outline-offset: 2px; }
+
+    #kb-chat-log { flex: 1 1 auto; overflow-y: auto; padding: 15px; background: var(--kb-crema); }
+    #kb-chat-log::-webkit-scrollbar { width: 8px; }
+    #kb-chat-log::-webkit-scrollbar-thumb { background: rgba(164,46,34,.35); border-radius: 8px; }
+    #kb-chat-log::-webkit-scrollbar-track { background: transparent; }
+    #kb-chat-log .kb-msg {
+      max-width: 85%; margin-bottom: 10px; padding: 10px 13px;
+      border-radius: 10px; white-space: pre-wrap; word-wrap: break-word;
+    }
+    #kb-chat-log .kb-bot {
+      background: var(--kb-panel); border: 1px solid var(--kb-borde);
+      border-bottom-left-radius: 3px;
+    }
+    #kb-chat-log .kb-user {
+      background: var(--kb-boton); color: #fff; margin-left: auto;
+      border-bottom-right-radius: 3px;
+    }
+    #kb-chat-log .kb-err { background: #fdecea; border: 1px solid #f0c9c4; color: var(--kb-oscuro); }
+    #kb-chat-log .kb-typing span {
+      display: inline-block; width: 6px; height: 6px; margin-right: 3px;
+      border-radius: 50%; background: var(--kb-oro); animation: kb-bounce 1.2s infinite;
+    }
+    #kb-chat-log .kb-typing span:nth-child(2) { animation-delay: .2s; }
+    #kb-chat-log .kb-typing span:nth-child(3) { animation-delay: .4s; }
+    @keyframes kb-bounce { 0%,60%,100% { transform: translateY(0); opacity: .45; } 30% { transform: translateY(-4px); opacity: 1; } }
+    @media (prefers-reduced-motion: reduce) {
+      #kb-chat-log .kb-typing span { animation: none; }
+      #kb-chat-toggle { transition: none; }
+    }
+
+    #kb-chat-form {
+      display: flex; align-items: flex-end; gap: 8px; padding: 10px;
+      border-top: 1px solid var(--kb-borde); background: var(--kb-panel);
+    }
+    #kb-chat-input {
+      flex: 1 1 auto; resize: none; max-height: 110px; padding: 9px 11px;
+      border: 1px solid var(--kb-borde-campo); border-radius: 6px;
+      font: inherit; color: var(--kb-texto); background: var(--kb-crema);
+    }
+    #kb-chat-input::placeholder { color: var(--kb-texto); opacity: .55; }
+    #kb-chat-input:focus {
+      border-color: var(--kb-vino);
+      outline: 2px solid var(--kb-oro); outline-offset: 1px;
+    }
+    #kb-chat-send {
+      flex: 0 0 auto; width: 40px; height: 40px; border: 0; border-radius: 8px;
+      background: var(--kb-vino); color: #fff; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: background .15s ease-out, transform .15s ease-out;
+    }
+    #kb-chat-send:hover { background: var(--kb-oscuro); transform: translateY(-1px); }
+    #kb-chat-send:active { transform: translateY(0); }
+    #kb-chat-send:focus-visible { outline: 2px solid var(--kb-oro); outline-offset: 2px; }
+    #kb-chat-send[disabled] { opacity: .45; cursor: default; transform: none; }
+    #kb-chat-foot {
+      margin: 0; padding: 0 13px 11px; font-size: 11px;
+      color: var(--kb-texto); opacity: .6; background: var(--kb-panel);
+    }
+
+    @media (max-width: 480px) {
+      #kb-chat-panel { right: 8px; left: 8px; bottom: 84px; width: auto; height: calc(100vh - 110px); }
+    }
+  </style>
+
+  <script>
+    (function () {
+      var raiz = document.getElementById('kb-chat');
+      if (!raiz || raiz.dataset.kbListo === '1') return;
+      raiz.dataset.kbListo = '1';
+
+      var ENDPOINT = raiz.dataset.endpoint;
+      var SOPORTE = raiz.dataset.soporte || '';
+      var BIENVENIDA = raiz.dataset.bienvenida || '';
+      var CLAVE_SID = 'kalamo_chat_sid';
+      var CLAVE_LOG = 'kalamo_chat_log';
+      var CLAVE_ABIERTO = 'kalamo_chat_abierto';
+      var MAX_GUARDADOS = 30;
+
+      var boton = document.getElementById('kb-chat-toggle');
+      var panel = document.getElementById('kb-chat-panel');
+      var cerrar = document.getElementById('kb-chat-close');
+      var registro = document.getElementById('kb-chat-log');
+      var form = document.getElementById('kb-chat-form');
+      var campo = document.getElementById('kb-chat-input');
+      var enviar = document.getElementById('kb-chat-send');
+      var esperando = false;
+
+      function leer(clave, porDefecto) {
+        try {
+          var v = localStorage.getItem(clave);
+          return v === null ? porDefecto : v;
+        } catch (e) {
+          return porDefecto;
+        }
+      }
+
+      function escribir(clave, valor) {
+        try {
+          localStorage.setItem(clave, valor);
+        } catch (e) {}
+      }
+
+      function sesion() {
+        var sid = leer(CLAVE_SID, '');
+        if (!sid) {
+          var azar;
+          try {
+            azar = crypto.randomUUID();
+          } catch (e) {
+            azar = Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+          }
+          sid = 'web-' + azar;
+          escribir(CLAVE_SID, sid);
+        }
+        return sid;
+      }
+
+      function historial() {
+        try {
+          var lista = JSON.parse(leer(CLAVE_LOG, '[]'));
+          return Array.isArray(lista) ? lista : [];
+        } catch (e) {
+          return [];
+        }
+      }
+
+      function guardar(quien, texto) {
+        var lista = historial();
+        lista.push({ q: quien, t: texto });
+        if (lista.length > MAX_GUARDADOS) lista = lista.slice(lista.length - MAX_GUARDADOS);
+        escribir(CLAVE_LOG, JSON.stringify(lista));
+      }
+
+      function pintar(quien, texto) {
+        var clase = quien === 'user' ? 'kb-user' : (quien === 'err' ? 'kb-err' : 'kb-bot');
+        var div = document.createElement('div');
+        div.className = 'kb-msg ' + clase;
+        div.textContent = texto;
+        registro.appendChild(div);
+        registro.scrollTop = registro.scrollHeight;
+        return div;
+      }
+
+      function escribiendo() {
+        var div = document.createElement('div');
+        div.className = 'kb-msg kb-bot kb-typing';
+        div.appendChild(document.createElement('span'));
+        div.appendChild(document.createElement('span'));
+        div.appendChild(document.createElement('span'));
+        registro.appendChild(div);
+        registro.scrollTop = registro.scrollHeight;
+        return div;
+      }
+
+      function restaurar() {
+        var lista = historial();
+        if (!lista.length) {
+          if (BIENVENIDA) {
+            pintar('bot', BIENVENIDA);
+            guardar('bot', BIENVENIDA);
+          }
+          return;
+        }
+        for (var i = 0; i < lista.length; i++) pintar(lista[i].q, lista[i].t);
+      }
+
+      function abrir(foco) {
+        panel.hidden = false;
+        boton.setAttribute('aria-expanded', 'true');
+        escribir(CLAVE_ABIERTO, '1');
+        if (!registro.childElementCount) restaurar();
+        registro.scrollTop = registro.scrollHeight;
+        if (foco !== false) campo.focus();
+      }
+
+      function ocultar() {
+        panel.hidden = true;
+        boton.setAttribute('aria-expanded', 'false');
+        escribir(CLAVE_ABIERTO, '0');
+        boton.focus();
+      }
+
+      boton.addEventListener('click', function () {
+        if (panel.hidden) abrir();
+        else ocultar();
+      });
+
+      cerrar.addEventListener('click', ocultar);
+
+      document.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Escape' && !panel.hidden) ocultar();
+      });
+
+      campo.addEventListener('input', function () {
+        campo.style.height = 'auto';
+        campo.style.height = Math.min(campo.scrollHeight, 110) + 'px';
+      });
+
+      campo.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Enter' && !ev.shiftKey) {
+          ev.preventDefault();
+          if (form.requestSubmit) form.requestSubmit();
+          else form.dispatchEvent(new Event('submit', { cancelable: true }));
+        }
+      });
+
+      form.addEventListener('submit', function (ev) {
+        ev.preventDefault();
+        if (esperando) return;
+
+        var texto = campo.value.trim();
+        if (!texto) return;
+
+        campo.value = '';
+        campo.style.height = 'auto';
+        pintar('user', texto);
+        guardar('user', texto);
+
+        esperando = true;
+        enviar.disabled = true;
+        var puntos = escribiendo();
+
+        var aborto = new AbortController();
+        var reloj = setTimeout(function () {
+          aborto.abort();
+        }, 60000);
+
+        function cerrarTurno() {
+          clearTimeout(reloj);
+          esperando = false;
+          enviar.disabled = false;
+        }
+
+        fetch(ENDPOINT, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            session_id: sesion(),
+            message: texto,
+            user_name: 'Invitado',
+            page: location.pathname
+          }),
+          signal: aborto.signal
+        })
+          .then(function (r) {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.json();
+          })
+          .then(function (d) {
+            var respuesta = (d && d.respuesta) ? String(d.respuesta) : ('No he podido procesar tu mensaje. Escribenos a ' + SOPORTE);
+            puntos.remove();
+            pintar('bot', respuesta);
+            guardar('bot', respuesta);
+            cerrarTurno();
+          })
+          .catch(function () {
+            puntos.remove();
+            pintar('err', 'No he podido conectar con el asistente. Vuelve a intentarlo en un momento o escribenos a ' + SOPORTE);
+            cerrarTurno();
+          });
+      });
+
+      if (leer(CLAVE_ABIERTO, '0') === '1') abrir(false);
+    })();
+  </script>
+{%- endif -%}
+
+{% schema %}
+{
+  "name": "Chat asistente",
+  "settings": [
+    {
+      "type": "checkbox",
+      "id": "activo",
+      "label": "Mostrar la burbuja de chat",
+      "default": true
+    },
+    {
+      "type": "text",
+      "id": "endpoint",
+      "label": "URL del webhook de n8n",
+      "default": "https://kalamobooks-n8n-fad1ef-213-165-85-117.sslip.io/webhook/kalamo-web-chat"
+    },
+    {
+      "type": "header",
+      "content": "Colores"
+    },
+    {
+      "type": "paragraph",
+      "content": "Por defecto la burbuja usa la paleta de kalamo-brand.css: vino de marca, dorado de acento, crema de fondo y tipografia Jost. Deja estos dos campos en blanco salvo que quieras forzar otro color."
+    },
+    {
+      "type": "color",
+      "id": "color_principal",
+      "label": "Forzar color principal (burbuja y cabecera)"
+    },
+    {
+      "type": "color",
+      "id": "color_acento",
+      "label": "Forzar color de acento (filete y detalles)"
+    },
+    {
+      "type": "header",
+      "content": "Textos"
+    },
+    {
+      "type": "text",
+      "id": "titulo",
+      "label": "Titulo de la ventana",
+      "default": "Kalamo Books"
+    },
+    {
+      "type": "text",
+      "id": "subtitulo",
+      "label": "Subtitulo",
+      "default": "Asistente virtual"
+    },
+    {
+      "type": "textarea",
+      "id": "bienvenida",
+      "label": "Mensaje de bienvenida",
+      "default": "Hola. Soy el asistente de Kalamo Books. Puedo ayudarte con envios, pagos, devoluciones, tu cuenta y el Club Kalamo. Para buscar un libro concreto usa el buscador de la web."
+    },
+    {
+      "type": "text",
+      "id": "placeholder",
+      "label": "Texto del campo de escritura",
+      "default": "Escribe tu pregunta..."
+    },
+    {
+      "type": "text",
+      "id": "email_soporte",
+      "label": "Email de soporte",
+      "default": "kalamo@kalamobooks.com"
+    },
+    {
+      "type": "text",
+      "id": "pie",
+      "label": "Aviso al pie",
+      "default": "Respuestas automaticas. Para gestiones concretas escribe a kalamo@kalamobooks.com"
+    },
+    {
+      "type": "header",
+      "content": "Accesibilidad"
+    },
+    {
+      "type": "text",
+      "id": "aria_abrir",
+      "label": "Etiqueta accesible: abrir",
+      "default": "Abrir el chat de ayuda"
+    },
+    {
+      "type": "text",
+      "id": "aria_cerrar",
+      "label": "Etiqueta accesible: cerrar",
+      "default": "Cerrar el chat"
+    },
+    {
+      "type": "text",
+      "id": "aria_enviar",
+      "label": "Etiqueta accesible: enviar",
+      "default": "Enviar mensaje"
+    }
+  ]
+}
+{% endschema %}
