@@ -165,7 +165,17 @@ async def api_request_logger(request: Request, call_next):
 
 @app.on_event("startup")
 async def startup():
-    init_db()
+    # init_db() hace DDL sobre books. Si falla -tabla ocupada, lock_timeout,
+    # catalogo tocado- NO puede tumbar el arranque: uvicorn sale con codigo 3
+    # y Swarm entra en bucle de reinicios con el panel devolviendo 502.
+    # Las tablas y columnas ya existen; esto es una red por si acaso.
+    # El 07/09/2026 costo 45 min de panel caido, primero colgado esperando el
+    # lock y luego reiniciandose en bucle cuando le puse el timeout.
+    try:
+        init_db()
+    except Exception as e:
+        print(f"[Startup] init_db FALLO (se sigue arrancando): "
+              f"{type(e).__name__}: {e}")
     # Diagnostico de proxy pool — visible al instante en cualquier log viewer.
     from scraper import PROXY_POOL, PROXY_URL, parse_proxy
     print("=" * 60)
