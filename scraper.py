@@ -171,9 +171,32 @@ async def _setup_page(page):
 
 
 def init_db():
-    """Initialize the SQLite database with extended fields."""
+    """
+    Initialize the SQLite database with extended fields.
+
+    El lock_timeout no es opcional. Esto corre en el startup de FastAPI,
+    ANTES de que uvicorn abra el puerto, y hace ALTER TABLE sobre books,
+    que pide AccessExclusiveLock. El 07/09/2026 un SELECT de una hora sobre
+    cdl_isbn_index tenia cogida la tabla: los ALTER se pusieron a la cola,
+    el arranque se quedo colgado y el panel estuvo 45 minutos devolviendo
+    502 con el contenedor "running". Y no solo eso: un AccessExclusiveLock
+    en cola bloquea a todo el que llegue detras, asi que el arranque del
+    panel atascaba media base.
+
+    Con el timeout, si la tabla esta ocupada se rinde en 5 segundos, sigue
+    arrancando y lo deja escrito en el log. Las columnas ya existen todas:
+    este DDL es solo una red por si acaso, y no vale un panel caido.
+    """
     conn = db.get_connection()
     cursor = conn.cursor()
+    if db.IS_POSTGRES:
+        try:
+            cursor.execute("SET lock_timeout = '5s'")
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            print(f"[init_db] no se pudo fijar lock_timeout: "
+                  f"{type(e).__name__}: {e}")
     id_column = "id SERIAL PRIMARY KEY" if db.IS_POSTGRES else "id INTEGER PRIMARY KEY AUTOINCREMENT"
     datetime_column = "timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP" if db.IS_POSTGRES else "timestamp DATETIME DEFAULT CURRENT_TIMESTAMP"
     cursor.execute(f'''
