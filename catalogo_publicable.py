@@ -88,14 +88,24 @@ def ensure_schema():
 
 
 async def _totales_odoo(odoo: OdooClient, job: dict) -> dict[int, float]:
-    """{template_id: unidades} sumando los almacenes internos."""
+    """
+    {template_id: unidades} sumando los almacenes internos.
+
+    El filtro por product_id.active no es un detalle: Odoo conserva los
+    quants de un producto archivado, y esta tabla promete "lo que se puede
+    vender AHORA". Un archivado no se puede vender -la venta se bloquea- y
+    sin este filtro entraban 2.877 el 07/09/2026. La regla API-15 archiva
+    todo lo que baja de 2,90 EUR o llega sin precio, asi que no es un caso
+    raro: es un goteo continuo.
+    """
     totales: dict[int, float] = {}
     offset = 0
     while True:
         if job["status"] != "running":
             break
         pagina = await odoo.search_read(
-            "stock.quant", [["location_id.usage", "=", "internal"]],
+            "stock.quant", [["location_id.usage", "=", "internal"],
+                            ["product_id.active", "=", True]],
             ["product_tmpl_id", "quantity"],
             offset=offset, limit=PAGINA_QUANT, order="id")
         for q in pagina:
