@@ -823,6 +823,12 @@ async def _ciclo_publicacion() -> dict:
     agosto hasta que alguien lo miro dos semanas despues.
     """
     import asyncio as _a
+    # shopify_api se importa dentro de cada funcion en este modulo (arranque
+    # perezoso: sin credenciales de Shopify el import falla y tumbaria el
+    # panel entero). Aqui faltaba, y el cron llevaba desde el 21/08 muriendo
+    # con NameError en cada ciclo sin publicar una sola ficha.
+    import shopify_api as sa
+
     res = {"generadas": 0, "publicadas": 0, "fallidas": 0, "errors": []}
 
     pendientes = 0
