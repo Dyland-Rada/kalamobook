@@ -55,7 +55,12 @@ SELECT
     -- La cantidad. Cada guarda pone 0, NO excluye la fila. Ver apartado 4.
     CASE
         WHEN c.precio_marketplace IS NULL           THEN 0
-        WHEN c.precio_marketplace <= 0              THEN 0
+        -- El suelo es 2,90, no 0. Medido tras la corrida de precios del
+        -- 08/09/2026: quedan precios de 0,28 EUR, que pasan un guarda de
+        -- "<= 0" y aun asi no se pueden vender. Son productos cuyo
+        -- list_price no viene de pvp_base, asi que la regla API-15 no los
+        -- archivo.
+        WHEN c.precio_marketplace < 2.90            THEN 0
         WHEN c.confirmado_en IS NULL                THEN 0
         WHEN c.confirmado_en < now() - interval '7 days' THEN 0
         WHEN EXISTS (SELECT 1 FROM odoo_productos_archivados a
@@ -190,7 +195,7 @@ pero excluirlos impide apagarlos. Cantidad 0, y que se vayan.
 | guarda | tabla | libros afectados |
 |---|---|---|
 | Sin precio | `catalogo_publicable.precio_marketplace IS NULL` | **23.851** |
-| Precio 0 o negativo | `precio_marketplace <= 0` | existe al menos 1 |
+| Precio por debajo de 2,90 | `precio_marketplace < 2.90` | 3 a cero o menos, y el mínimo positivo es 0,28 € |
 | Dato rancio (más de 7 días) | `confirmado_en` | 0 hoy |
 | Producto archivado en Odoo | `odoo_productos_archivados` (barcode) | 113.898 en total |
 | Título que es el EAN | `productos_sin_titulo` (ean) | 64.688 |
@@ -347,7 +352,7 @@ Medidos el 8 de septiembre de 2026 a las 19:50.
 | Sin precio (van a 0) | 23.851 |
 | Sin título (van a 0) | 51.694 |
 | Con dato rancio a 7 días | **0** |
-| Precio de marketplace más bajo | 0,00 € ← hay que taparlo |
+| Precio de marketplace más bajo | 0,28 € positivo, y 3 a cero ← taparlo con el suelo de 2,90 |
 | Precio de marketplace más alto | 1.141,47 € |
 | Con exactamente 1 ejemplar | 285.890 (57,2 %) |
 | Con 2 o más | 213.791 |
