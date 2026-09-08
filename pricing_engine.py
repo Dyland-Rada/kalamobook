@@ -121,14 +121,30 @@ async def reactivar_variantes(odoo, template_ids: list[int]) -> int:
     return reactivadas
 
 
-def _load_targets(limit=None):
-    """Lee mirror: (odoo_id, pvp_base, list_price)."""
+def _load_targets(limit=None, solo_suplemento: bool = False):
+    """
+    Lee mirror: (odoo_id, pvp_base, list_price).
+
+    solo_suplemento acota a los tramos donde la Capa 1 SUMA algo (2,90 a
+    7,50). Existe porque la corrida completa es peligrosa: al reescribir
+    list_price = pvp_base para todo, se lleva por delante cualquier precio
+    que hoy este por encima del PVP. Medido el 08/09/2026: de 137.730
+    productos por encima de 7,50 que cambiarian, 102.244 BAJARIAN de
+    precio, y entre ellos uno de 172,00 EUR que se quedaba en 38,46 y otro
+    de 115,00 que se quedaba en 14,42. Como list_price es tambien el precio
+    de la web, eso se publica en Shopify y en los dos marketplaces.
+
+    Con el filtro puesto no se archiva nada, ademas: web_price solo
+    devuelve None por debajo de 2,90 o sin PVP, y ambos quedan fuera.
+    """
     conn = db.get_connection(); cur = conn.cursor()
     q = """
         SELECT odoo_id, pvp_base, list_price
         FROM odoo_books_mirror
         WHERE odoo_id IS NOT NULL
     """
+    if solo_suplemento:
+        q += " AND pvp_base >= 2.90 AND pvp_base < 7.51"
     if limit:
         q += f" LIMIT {int(limit)}"
     cur.execute(q)
@@ -137,16 +153,18 @@ def _load_targets(limit=None):
     return rows
 
 
-async def run_price_update(dry_run: bool = True, limit: int | None = None) -> dict:
+async def run_price_update(dry_run: bool = True, limit: int | None = None,
+                           solo_suplemento: bool = False) -> dict:
     global price_job
     price_job = {"status": "running", "dry_run": dry_run,
+                 "solo_suplemento": solo_suplemento,
                  "started_at": datetime.now().isoformat(), "stage": "leyendo",
                  "total": 0, "precio_actualizado": 0, "apagados": 0,
-                 "sin_cambio": 0, "calls": 0, "errors": []}
+                 "sin_cambio": 0, "calls": 0, "bajarian": 0, "errors": []}
     job = price_job
     t0 = time.monotonic()
     try:
-        rows = _load_targets(limit)
+        rows = _load_targets(limit, solo_suplemento)
         job["total"] = len(rows)
 
         price_updates = defaultdict(list)   # web_price -> [odoo_id] (solo los que cambian)
@@ -159,6 +177,13 @@ async def run_price_update(dry_run: bool = True, limit: int | None = None) -> di
                 cur_lp = round(float(list_price), 2) if list_price is not None else None
                 if cur_lp != wp:
                     price_updates[wp].append(odoo_id)
+                    # Una bajada de precio es la senal de alarma de esta
+                    # corrida: significa que list_price estaba por encima
+                    # del PVP y la regla se lo lleva por delante. En seco
+                    # este contador es lo que hay que mirar antes de
+                    # aplicar nada.
+                    if cur_lp is not None and wp < cur_lp:
+                        job["bajarian"] += 1
                 else:
                     job["sin_cambio"] += 1
 

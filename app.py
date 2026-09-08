@@ -1485,11 +1485,20 @@ async def manual_save(request: Request):
 async def pricing_mass_update(
     dry_run: bool = Query(True, description="True = solo calcular, sin escribir"),
     limit: int | None = Query(None, ge=1, description="Tope (test)"),
+    solo_suplemento: bool = Query(
+        False, description="Solo los tramos 2,90-7,50 donde la Capa 1 suma. "
+                           "Recomendado: la corrida completa baja precios"),
 ):
     """
     Motor de precios (API-15, Capa 1): aplica el suplemento por PVP bajo
     sobre pvp_base y apaga (active=False) los < 2,90 y sin precio.
     Idempotente. dry_run=True por defecto. 409 si ya corre.
+
+    MIRAR "bajarian" ANTES DE APLICAR. La corrida completa reescribe
+    list_price = pvp_base para todo, asi que se lleva por delante cualquier
+    precio que hoy este por encima del PVP: el 08/09/2026 habria bajado
+    89.936 libros con stock vendible, uno de 172,00 EUR a 38,46. Para
+    corregir solo la Capa 1 que falta, usar solo_suplemento=true.
     """
     import threading
     import sys
@@ -1504,7 +1513,9 @@ async def pricing_mass_update(
             asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
         loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)
         try:
-            loop.run_until_complete(pricing_engine.run_price_update(dry_run=dry_run, limit=limit))
+            loop.run_until_complete(pricing_engine.run_price_update(
+                dry_run=dry_run, limit=limit,
+                solo_suplemento=solo_suplemento))
         finally:
             loop.close()
 
