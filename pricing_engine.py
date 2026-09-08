@@ -154,13 +154,16 @@ def _load_targets(limit=None, solo_suplemento: bool = False):
 
 
 async def run_price_update(dry_run: bool = True, limit: int | None = None,
-                           solo_suplemento: bool = False) -> dict:
+                           solo_suplemento: bool = False,
+                           solo_subidas: bool = False) -> dict:
     global price_job
     price_job = {"status": "running", "dry_run": dry_run,
                  "solo_suplemento": solo_suplemento,
+                 "solo_subidas": solo_subidas,
                  "started_at": datetime.now().isoformat(), "stage": "leyendo",
                  "total": 0, "precio_actualizado": 0, "apagados": 0,
-                 "sin_cambio": 0, "calls": 0, "bajarian": 0, "errors": []}
+                 "sin_cambio": 0, "calls": 0, "bajarian": 0,
+                 "omitidos_por_bajar": 0, "errors": []}
     job = price_job
     t0 = time.monotonic()
     try:
@@ -175,14 +178,25 @@ async def run_price_update(dry_run: bool = True, limit: int | None = None,
                 to_deactivate.append(odoo_id)
             else:
                 cur_lp = round(float(list_price), 2) if list_price is not None else None
-                if cur_lp != wp:
+                baja = cur_lp is not None and wp < cur_lp
+                # solo_subidas protege los registros donde list_price y
+                # pvp_base no guardan ninguna relacion, que son los que la
+                # regla estropea. Medido el 08/09/2026 en el tramo del
+                # suplemento: de 508 que bajarian, 116 lo hacian por mas de
+                # 10 EUR, y el pvp_base 5,72 aparecia repetido en libros de
+                # editoriales distintas con precios reales de 30, 27 y 25
+                # EUR. Ahi el 5,72 es basura, no un PVP, y la regla no tiene
+                # de donde partir. Se dejan quietos y se revisan a mano.
+                if baja and solo_subidas:
+                    job["omitidos_por_bajar"] += 1
+                elif cur_lp != wp:
                     price_updates[wp].append(odoo_id)
                     # Una bajada de precio es la senal de alarma de esta
                     # corrida: significa que list_price estaba por encima
                     # del PVP y la regla se lo lleva por delante. En seco
                     # este contador es lo que hay que mirar antes de
                     # aplicar nada.
-                    if cur_lp is not None and wp < cur_lp:
+                    if baja:
                         job["bajarian"] += 1
                 else:
                     job["sin_cambio"] += 1

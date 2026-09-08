@@ -1488,6 +1488,9 @@ async def pricing_mass_update(
     solo_suplemento: bool = Query(
         False, description="Solo los tramos 2,90-7,50 donde la Capa 1 suma. "
                            "Recomendado: la corrida completa baja precios"),
+    solo_subidas: bool = Query(
+        False, description="No tocar los que bajarian de precio: son los que "
+                           "tienen el pvp_base sin relacion con su precio"),
 ):
     """
     Motor de precios (API-15, Capa 1): aplica el suplemento por PVP bajo
@@ -1515,7 +1518,8 @@ async def pricing_mass_update(
         try:
             loop.run_until_complete(pricing_engine.run_price_update(
                 dry_run=dry_run, limit=limit,
-                solo_suplemento=solo_suplemento))
+                solo_suplemento=solo_suplemento,
+                solo_subidas=solo_subidas))
         finally:
             loop.close()
 
