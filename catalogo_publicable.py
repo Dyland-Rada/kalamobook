@@ -111,8 +111,25 @@ async def _totales_odoo(odoo: OdooClient, job: dict) -> dict[int, float]:
         for q in pagina:
             t = q.get("product_tmpl_id")
             t = t[0] if isinstance(t, list) else t
-            if t:
-                totales[t] = totales.get(t, 0.0) + (q.get("quantity") or 0.0)
+            if not t:
+                continue
+            cantidad = q.get("quantity") or 0.0
+            # Los negativos SE SUMAN, y esto es deliberado. Un quant negativo
+            # es la huella de una venta servida contra un almacen que no
+            # tenia nada: el libro se vendio y no existia. Al restar, cancela
+            # el "1" que el proveedor sigue declarando y el titulo sale del
+            # catalogo, que es exactamente lo que hay que hacer. Medido el
+            # 08/09/2026 con seis casos reales (9788496898707 y otros cinco):
+            # el proveedor declaraba 1 -uno de ellos sin moverse desde hacia
+            # 106 dias- y el -1 de WH/Stock era la venta fallida.
+            #
+            # Solo se CUENTAN, para que dejen de ser invisibles. Cada uno es
+            # un pedido cobrado y no surtido, y eso hay que verlo.
+            if cantidad < 0:
+                job["quants_negativos"] = job.get("quants_negativos", 0) + 1
+                job["uds_negativas"] = round(
+                    job.get("uds_negativas", 0.0) + cantidad, 2)
+            totales[t] = totales.get(t, 0.0) + cantidad
         if len(pagina) < PAGINA_QUANT:
             break
         offset += PAGINA_QUANT
@@ -257,7 +274,8 @@ async def refrescar(dry_run: bool = False) -> dict:
     _job = {"status": "running", "dry_run": dry_run,
             "started_at": datetime.now().isoformat(), "stage": "empezando",
             "con_stock_odoo": 0, "filas": 0, "guardadas": 0, "retiradas": 0,
-            "sin_precio": 0, "errors": [], "elapsed_s": 0}
+            "sin_precio": 0, "quants_negativos": 0, "uds_negativas": 0.0,
+            "errors": [], "elapsed_s": 0}
     job = _job
     t0 = time.monotonic()
     inicio = datetime.now()
