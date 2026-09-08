@@ -111,8 +111,23 @@ async def _totales_odoo(odoo: OdooClient, job: dict) -> dict[int, float]:
         for q in pagina:
             t = q.get("product_tmpl_id")
             t = t[0] if isinstance(t, list) else t
-            if t:
-                totales[t] = totales.get(t, 0.0) + (q.get("quantity") or 0.0)
+            if not t:
+                continue
+            cantidad = q.get("quantity") or 0.0
+            # Un quant negativo no es una cantidad fisica: es una entrega
+            # servida desde un almacen que no tenia nada. La disponibilidad
+            # de esa ubicacion es 0, no negativa, asi que se topa antes de
+            # sumar. Sumandolos en crudo, un -1 en el almacen propio
+            # cancelaba el +1 real de un proveedor y el libro desaparecia
+            # del catalogo teniendolo el proveedor. Caso medido el
+            # 08/09/2026: 9791259801418, +1 en ARC01 de Arcobaleno y -1 en
+            # WH/Stock por una entrega mal enrutada a las 15:50.
+            if cantidad < 0:
+                job["quants_negativos"] = job.get("quants_negativos", 0) + 1
+                job["uds_negativas"] = round(
+                    job.get("uds_negativas", 0.0) + cantidad, 2)
+                cantidad = 0.0
+            totales[t] = totales.get(t, 0.0) + cantidad
         if len(pagina) < PAGINA_QUANT:
             break
         offset += PAGINA_QUANT
@@ -257,7 +272,8 @@ async def refrescar(dry_run: bool = False) -> dict:
     _job = {"status": "running", "dry_run": dry_run,
             "started_at": datetime.now().isoformat(), "stage": "empezando",
             "con_stock_odoo": 0, "filas": 0, "guardadas": 0, "retiradas": 0,
-            "sin_precio": 0, "errors": [], "elapsed_s": 0}
+            "sin_precio": 0, "quants_negativos": 0, "uds_negativas": 0.0,
+            "errors": [], "elapsed_s": 0}
     job = _job
     t0 = time.monotonic()
     inicio = datetime.now()
