@@ -40,6 +40,7 @@ import pricing_engine
 from odoo_client import OdooClient
 
 TABLA = "catalogo_publicable"
+TABLA_FALLIDOS = "libro_fallido"
 PAGINA_QUANT = 40000
 
 _job: dict | None = None
@@ -82,14 +83,39 @@ def ensure_schema():
                               f"ON {TABLA} (stock) WHERE stock > 0")
         db.execute_query(cur, f"CREATE INDEX IF NOT EXISTS {TABLA}_act_idx "
                               f"ON {TABLA} (actualizado_en)")
+        # Libros que se vendieron y no estaban. Sin esto, un proveedor que
+        # declara un ejemplar fantasma lo vende una vez cada vez que alguien
+        # pasa por su ficha, para siempre: nada en el sistema recordaba que
+        # habia fallado. Se guarda el stock QUE DECLARABA al fallar, porque
+        # de ahi sale la condicion para levantarle el castigo.
+        db.execute_query(cur, f"""
+            CREATE TABLE IF NOT EXISTS {TABLA_FALLIDOS} (
+                isbn             TEXT NOT NULL,
+                proveedor_email  TEXT NOT NULL DEFAULT '',
+                stock_declarado  INTEGER,
+                odoo_id          INTEGER,
+                detectado_en     TIMESTAMP NOT NULL DEFAULT NOW(),
+                visto_por_ultima TIMESTAMP NOT NULL DEFAULT NOW(),
+                veces            INTEGER NOT NULL DEFAULT 1,
+                resuelto_en      TIMESTAMP,
+                PRIMARY KEY (isbn, proveedor_email)
+            )
+        """)
+        db.execute_query(cur, f"CREATE INDEX IF NOT EXISTS {TABLA_FALLIDOS}_abiertos_idx "
+                              f"ON {TABLA_FALLIDOS} (isbn) WHERE resuelto_en IS NULL")
         conn.commit()
     finally:
         conn.close()
 
 
-async def _totales_odoo(odoo: OdooClient, job: dict) -> dict[int, float]:
+async def _totales_odoo(odoo: OdooClient, job: dict,
+                        negativos: set[int] | None = None) -> dict[int, float]:
     """
     {template_id: unidades} sumando los almacenes internos.
+
+    Si se pasa `negativos`, se rellena con los template_id que tengan algun
+    quant en negativo: son los que se vendieron sin estar. Ver
+    _registrar_fallidos.
 
     El filtro por product_id.active no es un detalle: Odoo conserva los
     quants de un producto archivado, y esta tabla promete "lo que se puede
@@ -99,6 +125,7 @@ async def _totales_odoo(odoo: OdooClient, job: dict) -> dict[int, float]:
     raro: es un goteo continuo.
     """
     totales: dict[int, float] = {}
+    negativos = negativos if negativos is not None else set()
     offset = 0
     while True:
         if job["status"] != "running":
@@ -129,6 +156,7 @@ async def _totales_odoo(odoo: OdooClient, job: dict) -> dict[int, float]:
                 job["quants_negativos"] = job.get("quants_negativos", 0) + 1
                 job["uds_negativas"] = round(
                     job.get("uds_negativas", 0.0) + cantidad, 2)
+                negativos.add(t)
             totales[t] = totales.get(t, 0.0) + cantidad
         if len(pagina) < PAGINA_QUANT:
             break
@@ -136,6 +164,75 @@ async def _totales_odoo(odoo: OdooClient, job: dict) -> dict[int, float]:
         job["stage"] = f"leyendo Odoo ({len(totales):,})"
         print(f"[Catalogo] leidos {len(totales):,}", flush=True)
     return totales
+
+
+def _registrar_fallidos(negativos: set[int], job: dict):
+    """
+    Anota los libros que se vendieron sin estar, y libera los que ya no.
+
+    Un quant negativo es la prueba: se sirvio un pedido contra un almacen
+    que no tenia la unidad. Se guarda el ISBN junto al stock que el
+    proveedor declaraba en ese momento, que es lo que permite soltarlo
+    despues sin listas a mano.
+
+    El castigo NO se levanta porque el proveedor vuelva a mandar el libro
+    -eso lo hace a diario, es justo el problema- sino solo cuando CAMBIA el
+    numero. Medido el 08/09/2026: Distriforma declara 1 del 9788496898707
+    desde el 25 de mayo y lo reafirma tres veces al dia. Mientras siga
+    diciendo lo mismo no aporta informacion nueva.
+    """
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        # 1. Liberar: el proveedor ya dice otra cosa (o dejo de decirlo).
+        db.execute_query(cur, f"""
+            UPDATE {TABLA_FALLIDOS} f SET resuelto_en = NOW()
+            WHERE f.resuelto_en IS NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM libros_proveedor lp
+                  WHERE lp.isbn = f.isbn
+                    AND lp.proveedor_email = f.proveedor_email
+                    AND lp.stock_disponible = f.stock_declarado)
+        """)
+        job["fallidos_liberados"] = cur.rowcount or 0
+
+        # 2. Anotar los nuevos. El proveedor que se apunta es el mas barato
+        #    de los que declaran stock, que es el mismo criterio con el que
+        #    el catalogo lo ofertaba: es a quien se le atribuyo la venta.
+        if negativos:
+            ids = sorted(negativos)
+            for i in range(0, len(ids), 5000):
+                db.execute_query(cur, f"""
+                    INSERT INTO {TABLA_FALLIDOS}
+                        (isbn, proveedor_email, stock_declarado, odoo_id)
+                    SELECT m.barcode,
+                           COALESCE(lp.proveedor_email, ''),
+                           lp.stock_disponible,
+                           m.odoo_id
+                    FROM odoo_books_mirror m
+                    LEFT JOIN LATERAL (
+                        SELECT proveedor_email, stock_disponible
+                        FROM libros_proveedor lp2
+                        WHERE lp2.isbn = m.barcode AND lp2.stock_disponible > 0
+                        ORDER BY precio_con_iva NULLS LAST, proveedor_email
+                        LIMIT 1
+                    ) lp ON true
+                    WHERE m.odoo_id = ANY(?) AND m.barcode IS NOT NULL
+                    ON CONFLICT (isbn, proveedor_email) DO UPDATE SET
+                        visto_por_ultima = NOW(),
+                        veces = {TABLA_FALLIDOS}.veces + 1,
+                        stock_declarado = EXCLUDED.stock_declarado,
+                        resuelto_en = NULL
+                """, (ids[i:i + 5000],))
+        db.execute_query(cur, f"SELECT COUNT(*) FROM {TABLA_FALLIDOS} "
+                              f"WHERE resuelto_en IS NULL")
+        job["fallidos_abiertos"] = int(cur.fetchone()[0])
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        job["errors"].append(f"registrar fallidos: {type(e).__name__}: {e}"[:200])
+    finally:
+        conn.close()
 
 
 def _filas(totales: dict[int, float]) -> list[tuple]:
@@ -157,10 +254,20 @@ def _filas(totales: dict[int, float]) -> list[tuple]:
                 SELECT m.odoo_id, m.barcode, m.name, m.list_price,
                        lp.proveedor_email, lp.precio_con_iva,
                        GREATEST(lp.stock_actualizado_en,
-                                ce.visto)          AS confirmado
+                                ce.visto)          AS confirmado,
+                       -- Ya se vendio una vez sin estar, y el proveedor
+                       -- sigue declarando exactamente lo mismo que
+                       -- declaraba entonces. Hasta que cambie el numero no
+                       -- hay informacion nueva, asi que no se oferta.
+                       EXISTS (SELECT 1 FROM libro_fallido f
+                               WHERE f.isbn = m.barcode
+                                 AND f.resuelto_en IS NULL
+                                 AND f.stock_declarado IS NOT DISTINCT FROM
+                                     lp.stock_disponible) AS castigado
                 FROM odoo_books_mirror m
                 LEFT JOIN LATERAL (
-                    SELECT proveedor_email, precio_con_iva, stock_actualizado_en
+                    SELECT proveedor_email, precio_con_iva,
+                           stock_actualizado_en, stock_disponible
                     FROM libros_proveedor lp2
                     WHERE lp2.isbn = m.barcode AND lp2.stock_disponible > 0
                       -- Un proveedor sin almacen en Odoo no puede aportar
@@ -203,10 +310,12 @@ def _filas(totales: dict[int, float]) -> list[tuple]:
                 WHERE m.odoo_id = ANY(?)
                   AND m.barcode IS NOT NULL
             """, (trozo,))
-            for oid, isbn, nombre, precio, prov, coste, conf in cur.fetchall():
+            for (oid, isbn, nombre, precio, prov, coste, conf,
+                 castigado) in cur.fetchall():
                 pw = float(precio) if precio else None
                 filas.append((
-                    isbn, nombre, int(round(totales.get(int(oid), 0.0))),
+                    isbn, nombre,
+                    0 if castigado else int(round(totales.get(int(oid), 0.0))),
                     pricing_engine.precio_marketplace(pw),
                     None,          # precio_web: falta la Capa 2
                     pw, prov,
@@ -275,15 +384,23 @@ async def refrescar(dry_run: bool = False) -> dict:
             "started_at": datetime.now().isoformat(), "stage": "empezando",
             "con_stock_odoo": 0, "filas": 0, "guardadas": 0, "retiradas": 0,
             "sin_precio": 0, "quants_negativos": 0, "uds_negativas": 0.0,
+            "fallidos_abiertos": 0, "fallidos_liberados": 0,
             "errors": [], "elapsed_s": 0}
     job = _job
     t0 = time.monotonic()
     inicio = datetime.now()
     try:
         job["stage"] = "leyendo Odoo"
+        negativos: set[int] = set()
         async with OdooClient() as odoo:
-            totales = await _totales_odoo(odoo, job)
+            totales = await _totales_odoo(odoo, job, negativos)
         job["con_stock_odoo"] = sum(1 for v in totales.values() if v > 0)
+
+        # Antes de montar las filas, porque _filas lee la tabla de fallidos
+        # para decidir que no oferta. En dry_run tampoco se anota nada.
+        if not dry_run:
+            job["stage"] = "anotando los que se vendieron sin estar"
+            _registrar_fallidos(negativos, job)
 
         job["stage"] = "montando las filas"
         filas = _filas(totales)
