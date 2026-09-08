@@ -144,9 +144,30 @@ def _filas(totales: dict[int, float]) -> list[tuple]:
                 FROM odoo_books_mirror m
                 LEFT JOIN LATERAL (
                     SELECT proveedor_email, precio_con_iva, stock_actualizado_en
-                    FROM libros_proveedor
-                    WHERE isbn = m.barcode AND stock_disponible > 0
-                    ORDER BY precio_con_iva NULLS LAST
+                    FROM libros_proveedor lp2
+                    WHERE lp2.isbn = m.barcode AND lp2.stock_disponible > 0
+                      -- Un proveedor sin almacen en Odoo no puede aportar
+                      -- stock: su cantidad no se escribe en ningun sitio. Si
+                      -- se le deja ganar la puja por precio, el catalogo
+                      -- acredita la venta a quien no puede servirla. Medido
+                      -- el 08/09/2026: PENGUIN RANDOM HOUSE, sin mapping,
+                      -- salia como proveedor de 22.193 libros por dar el
+                      -- precio mas bajo. El stock lo sostenia PEN01 en 22.192
+                      -- de ellos y nadie en el que quedaba.
+                      AND EXISTS (SELECT 1 FROM proveedor_almacen_odoo pa
+                                  WHERE pa.proveedor_email = lp2.proveedor_email)
+                      -- Un pausado tiene su almacen a 0 en Odoo desde que se
+                      -- pauso, asi que tampoco puede ser la fuente.
+                      AND NOT EXISTS (SELECT 1 FROM proveedor_pausa pp
+                                      WHERE pp.proveedor_email = lp2.proveedor_email
+                                        AND pp.activo = false)
+                    -- El desempate por email no es cosmetico: con solo el
+                    -- precio, dos proveedores al mismo importe se alternaban
+                    -- entre corridas y la columna proveedor bailaba sin que
+                    -- nada hubiera cambiado. Medido el 08/09/2026: de 30.489
+                    -- filas que cambiaban de proveedor, solo 22.193 eran la
+                    -- correccion de PENGUIN RANDOM HOUSE; el resto, empates.
+                    ORDER BY precio_con_iva NULLS LAST, proveedor_email
                     LIMIT 1
                 ) lp ON true
                 -- La fecha buena es esta. stock_actualizado_en, en la via

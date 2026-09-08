@@ -19,6 +19,22 @@ _BOOK_COLS = ["title", "author", "editorial", "image_url", "description",
               "weight", "height", "width"]
 
 
+def _titulo_valido(data: dict) -> str | None:
+    """
+    El titulo, o None si no hay uno de verdad.
+
+    Un EAN no es un titulo. Este modulo guardaba `title or isbn`, asi que
+    cada vez que alguien abria una ficha sin titulo y le daba a guardar,
+    el codigo de barras volvia a escribirse como nombre en el espejo y en
+    Odoo. De ahi que el equipo limpiara los titulos y reaparecieran solos.
+    Devolver None deja el nombre que ya hubiera, en vez de estropearlo.
+    """
+    t = (data.get("title") or "").strip()
+    if not t or t.isdigit():
+        return None
+    return t
+
+
 def _where(tipo: str) -> str:
     base = "m.nuevo_creado_en IS NOT NULL"
     if tipo == "no_scrapeados":
@@ -92,12 +108,12 @@ def _save_db(data: dict):
             {", ".join(f"{c}=EXCLUDED.{c}" for c in _BOOK_COLS)},
             fuente='manual', timestamp=NOW()
     """, (isbn, *vals))
-    name = (data.get("title") or "").strip() or isbn
+    name = _titulo_valido(data)
     precio = float(data["precio"]) if str(data.get("precio") or "").strip() else None
     wp = pricing_engine.web_price(precio)  # precio web con suplemento
     db.execute_query(cur, """
         UPDATE odoo_books_mirror SET
-            name = ?, list_price = COALESCE(?, list_price),
+            name = COALESCE(?, name), list_price = COALESCE(?, list_price),
             pvp_base = COALESCE(?, pvp_base),
             cdl_image_url = ?, description = ?,
             cdl_weight = ?, cdl_height = ?, cdl_width = ?
@@ -119,10 +135,12 @@ async def save_book(data: dict) -> dict:
                     data.get("weight"), data.get("height"), data.get("width"))
     if not odoo_id:
         return {"ok": False, "error": "no encontrado en Odoo", "tag": tag}
-    name = (data.get("title") or "").strip() or data["isbn"]
+    name = _titulo_valido(data)
     async with OdooClient() as odoo:
         tag_ids = await _resolve_tags(odoo)
-        write_vals = {"name": name[:250]}
+        # Sin titulo de verdad no se toca el nombre: el que tenga Odoo, por
+        # malo que sea, es mejor que reescribirle el EAN encima.
+        write_vals = {} if name is None else {"name": name[:250]}
         if str(data.get("precio") or "").strip():
             pvp = float(data["precio"])
             wp = pricing_engine.web_price(pvp)  # aplica suplemento API-15

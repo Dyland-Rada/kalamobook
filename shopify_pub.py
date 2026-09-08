@@ -829,7 +829,13 @@ async def _ciclo_publicacion() -> dict:
     # con NameError en cada ciclo sin publicar una sola ficha.
     import shopify_api as sa
 
-    res = {"generadas": 0, "publicadas": 0, "fallidas": 0, "errors": []}
+    # gen_pedidas/gen_fallidas van aparte de "fallidas" (que son los fallos
+    # al SUBIR). Sin ellas el ciclo del 08/09 registro "0 fichas generadas,
+    # 1 publicada, 0 fallidas" y no marco error, cuando en realidad las 899
+    # generaciones habian fallado con HTTP 401 de DeepSeek. Un dia entero
+    # perdido que parecia normal en la bitacora.
+    res = {"generadas": 0, "publicadas": 0, "fallidas": 0,
+           "gen_pedidas": 0, "gen_fallidas": 0, "errors": []}
 
     pendientes = 0
     try:
@@ -848,8 +854,12 @@ async def _ciclo_publicacion() -> dict:
         try:
             g = await _a.to_thread(generar_fichas, faltan)
             res["generadas"] = g.get("generadas", 0)
+            res["gen_pedidas"] = g.get("total", 0)
+            res["gen_fallidas"] = g.get("fallidas", 0)
             res["errors"] += (g.get("errors") or [])[:3]
         except Exception as e:
+            res["gen_pedidas"] = faltan
+            res["gen_fallidas"] = faltan
             res["errors"].append(f"generar: {type(e).__name__}: {str(e)[:120]}")
 
     try:
@@ -877,15 +887,25 @@ async def _cron_loop():
                 _cron_state["generadas_total"] += r["generadas"]
                 _cron_state["publicadas_total"] += r["publicadas"]
                 _cron_state["last_run_at"] = datetime.now().isoformat()
+                # Generar en seco (se pidieron fichas y no salio ni una) es
+                # tan grave como no publicar: si no se marca, el ciclo pasa
+                # por bueno y nadie mira. Paso 17 dias asi.
+                gen_en_seco = bool(r["gen_pedidas"] and not r["generadas"])
                 _cron_state["last_summary"] = (
-                    f"{r['generadas']:,} fichas generadas, "
-                    f"{r['publicadas']:,} publicadas, {r['fallidas']:,} fallidas")
+                    f"{r['generadas']:,} fichas generadas"
+                    + (f" de {r['gen_pedidas']:,} pedidas "
+                       f"({r['gen_fallidas']:,} FALLARON)" if r["gen_fallidas"]
+                       else "")
+                    + f", {r['publicadas']:,} publicadas, "
+                      f"{r['fallidas']:,} fallidas")
                 _cron_state["errors"] += r["errors"]
                 print(f"[ShopifyPubCron] {_cron_state['last_summary']}")
                 _audit("cron_publicacion",
                        f"Ciclo diario de publicacion: {_cron_state['last_summary']}",
-                       {k: r[k] for k in ("generadas", "publicadas", "fallidas")},
-                       error=bool(r["fallidas"] and not r["publicadas"]))
+                       {k: r[k] for k in ("generadas", "publicadas", "fallidas",
+                                          "gen_pedidas", "gen_fallidas")},
+                       error=bool(gen_en_seco
+                                  or (r["fallidas"] and not r["publicadas"])))
         except Exception as e:
             _cron_state["errors"].append(f"{type(e).__name__}: {e!r}"[:200])
             print(f"[ShopifyPubCron] fallo: {e!r}")
