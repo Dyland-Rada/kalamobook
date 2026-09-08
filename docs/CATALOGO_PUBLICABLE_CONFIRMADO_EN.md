@@ -75,13 +75,56 @@ Distriforma no habría salvado la venta de Javier.
 
 ---
 
+## 4-bis. CORRECCIÓN (08/09/2026, 17:10): el Cubo Blanco es otra cosa
+
+**Lo que dice el apartado 4 sobre por qué el Cubo Blanco marca 0 es incorrecto.**
+Al mirar las ubicaciones de Odoo una por una aparece la causa real, y no es el
+"1" atascado. Es esto:
+
+| ISBN | almacén del proveedor | WH/Stock | hora del −1 |
+|---|---|---|---|
+| 9791259801418 | ARC01 +1 | **−1** | 15:50:35 |
+| 9788487715860 | LES01 +1 | **−1** | 15:55:34 |
+| **9788496898707** (Cubo Blanco) | DIS03 +1 | **−1** | **16:05:34** |
+| 9788479916268 | DIS03 +1 | **−1** | 16:10:34 |
+
+Los cuatro tienen la misma firma: la unidad del proveedor sigue en su almacén, y
+un **−1 en WH/Stock** (el almacén propio de Grupo Ansa, que no guarda libros) la
+cancela. Odoo suma 0 y el libro sale del catálogo.
+
+**Cada 5 minutos, en el segundo :34.** Eso no es alguien validando albaranes: es un
+proceso automático que sigue corriendo. Cada vuelta valida una entrega
+`WH/Stock → Customers` de un libro que está físicamente en el almacén de un
+proveedor, deja WH en −1 y **inutiliza permanentemente ese título**.
+
+No es nuestro: ningún fichero del repositorio toca `stock.picking` ni `stock.move`
+—sólo escribimos `stock.quant`—, así que no creamos, confirmamos ni validamos
+entregas. Es una acción planificada o una automatización dentro de Odoo, con toda
+probabilidad la que crea el pedido de venta al importar un pedido de marketplace:
+el pedido nace en el almacén por defecto (WH) en vez de en el del proveedor que
+tiene la unidad.
+
+Y tiene una cara peor que el dato: **cada −1 es una venta registrada como servida
+desde un almacén vacío.** Esos pedidos no se han surtido de ninguna parte.
+
+Cota superior del daño acumulado, medida en nuestro lado: **1.278 libros** a 0 en
+el catálogo con un proveedor que declara stock y sin estar archivados. A 288
+vueltas al día, eso son unos cuatro días de este proceso — es una estimación, no
+un dato.
+
+Arreglado en nuestro lado (commit `78548fb`): `_totales_odoo` topa cada quant a 0
+antes de sumar, así que un negativo ya no borra la unidad real del proveedor, y el
+job cuenta cuántos negativos ve para que dejen de ser invisibles. **Eso protege el
+catálogo, pero no arregla el enrutado ni surte los pedidos ya servidos en falso:
+eso es de Odoo.**
+
 ## 4. Lo que de verdad pasó con el Cubo Blanco
 
 ISBN 9788496898707, *Dentro del cubo blanco. La ideología del espacio expositivo*.
 
 | dato | valor |
 |---|---|
-| stock en el catálogo **ahora** | 0 *(ya se apagó solo)* |
+| stock en el catálogo **ahora** | 0 *(por el −1 de WH, ver 4-bis)* |
 | proveedor atribuido | Distriforma |
 | `confirmado_en` | 08/09 10:41 |
 | stock que declara Distriforma | **1** |
@@ -96,8 +139,10 @@ su propio inventario dice 1 y lleva equivocado 106 días.
 `confirmado_en` no miente. Registra fielmente «Distriforma dijo 1 hoy». Lo que no
 puede saber es que el inventario de Distriforma está mal.
 
-**Esto es el bug de raíz: un "1" atascado que el proveedor reafirma para siempre
-es, en nuestros datos, indistinguible de stock real confirmado a diario.**
+**El "1" atascado es un problema real y separado: un stock que el proveedor
+reafirma para siempre es, en nuestros datos, indistinguible de stock real
+confirmado a diario. Pero no es la razon por la que este libro marca 0 — eso es
+el −1 de WH/Stock del apartado 4-bis.**
 
 ## 5. Cuánto pesa
 
