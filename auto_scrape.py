@@ -91,7 +91,13 @@ def _detect_new(limit=None) -> list[dict]:
         SELECT lp.isbn,
                MAX(lp.precio_con_iva) AS precio,
                string_agg(DISTINCT p.nombre, ', ') AS proveedores,
-               COALESCE(MAX(NULLIF(b.title, '')), MAX(NULLIF(d.title, ''))) AS title,
+               -- Misma cascada que crear_faltantes: cdl_isbn_index aporta
+               -- 683.112 titulos de Casa del Libro y sinli_precios los trae
+               -- del propio proveedor. Sin ellas se seguian creando libros
+               -- con el EAN por nombre teniendo el titulo en casa.
+               COALESCE(MAX(NULLIF(b.title, '')), MAX(NULLIF(d.title, '')),
+                        MAX(NULLIF(ci.title, '')),
+                        MAX(NULLIF(sp.titulo, ''))) AS title,
                COALESCE(MAX(NULLIF(b.author, '')), MAX(NULLIF(d.author, ''))) AS author,
                COALESCE(MAX(NULLIF(b.editorial, '')), MAX(NULLIF(d.editorial, ''))) AS editorial,
                COALESCE(MAX(NULLIF(b.image_url, '')), MAX(NULLIF(d.image_url, ''))) AS image_url,
@@ -104,6 +110,12 @@ def _detect_new(limit=None) -> list[dict]:
         LEFT JOIN proveedores p ON p.id = lp.proveedor_id
         LEFT JOIN books b ON b.isbn = lp.isbn
         LEFT JOIN distributor_books d ON d.isbn = lp.isbn
+        LEFT JOIN cdl_isbn_index ci ON ci.isbn = lp.isbn
+        LEFT JOIN LATERAL (
+            SELECT titulo FROM sinli_precios s
+            WHERE s.isbn = lp.isbn AND NULLIF(s.titulo, '') IS NOT NULL
+            LIMIT 1
+        ) sp ON true
         WHERE lp.stock_disponible > 0 AND m.barcode IS NULL{filtro}
         GROUP BY lp.isbn
     """
@@ -227,7 +239,9 @@ async def _create_and_tag(odoo, tag_ids, targets, chunk=200):
         batch = targets[i:i + chunk]
         vals = []
         for t in batch:
-            name = (t.get("title") or "").strip() or t["isbn"]
+            name = (t.get("title") or "").strip()
+            if not name or name.isdigit():
+                name = t["isbn"]
             pvp = float(t["precio"]) if t.get("precio") else None
             wp = pricing_engine.web_price(pvp)  # None si < 2,90 o sin precio
             vals.append({

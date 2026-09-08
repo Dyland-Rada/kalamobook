@@ -2537,6 +2537,88 @@ async def admin_stock_debug(isbn: str = Query(..., description="ISBN/barcode a i
     return JSONResponse(content=out)
 
 
+@app.get("/api/v1/audit/quants-negativos", tags=["Auditoria"])
+async def audit_quants_negativos(limite: int = Query(200, ge=1, le=2000)):
+    """
+    Los quants en negativo de Odoo, por ubicacion.
+
+    Cada uno es una entrega servida contra un almacen que no tenia la
+    unidad, o sea un libro vendido que no existia. Hasta ahora no habia
+    forma de contarlos desde aqui y el dano era invisible: se detectaban de
+    uno en uno, mirando fichas a mano.
+    """
+    from odoo_client import OdooClient
+    async with OdooClient() as odoo:
+        filas = await odoo.search_read(
+            "stock.quant",
+            [["location_id.usage", "=", "internal"], ["quantity", "<", 0]],
+            ["product_tmpl_id", "location_id", "quantity", "write_date"],
+            limit=limite, order="write_date desc")
+    por_ubicacion: dict[str, dict] = {}
+    for f in filas:
+        loc = f.get("location_id")
+        nombre = loc[1] if isinstance(loc, list) else str(loc)
+        d = por_ubicacion.setdefault(nombre, {"quants": 0, "unidades": 0.0})
+        d["quants"] += 1
+        d["unidades"] = round(d["unidades"] + (f.get("quantity") or 0.0), 2)
+    return JSONResponse(content={
+        "total_devuelto": len(filas),
+        "tope_consultado": limite,
+        "por_ubicacion": dict(sorted(por_ubicacion.items(),
+                                     key=lambda kv: kv[1]["quants"],
+                                     reverse=True)),
+        "ultimos": [{
+            "producto": (f["product_tmpl_id"][1]
+                         if isinstance(f.get("product_tmpl_id"), list) else None),
+            "ubicacion": (f["location_id"][1]
+                          if isinstance(f.get("location_id"), list) else None),
+            "cantidad": f.get("quantity"),
+            "cuando": f.get("write_date"),
+        } for f in filas[:40]],
+    })
+
+
+@app.get("/api/v1/audit/libros-fallidos", tags=["Auditoria"])
+async def audit_libros_fallidos(limite: int = Query(100, ge=1, le=1000),
+                                solo_abiertos: bool = Query(True)):
+    """
+    Libros que se vendieron sin estar, con el stock que el proveedor
+    declaraba al fallar. Un abierto no se oferta hasta que el proveedor
+    CAMBIE ese numero: reafirmarlo no cuenta como informacion nueva.
+    """
+    import db
+    import catalogo_publicable as cp
+    cp.ensure_schema()
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        filtro = "WHERE f.resuelto_en IS NULL" if solo_abiertos else ""
+        db.execute_query(cur, f"""
+            SELECT f.isbn, f.proveedor_email, f.stock_declarado, f.veces,
+                   f.detectado_en, f.resuelto_en, m.name,
+                   lp.stock_disponible
+            FROM {cp.TABLA_FALLIDOS} f
+            LEFT JOIN odoo_books_mirror m ON m.barcode = f.isbn
+            LEFT JOIN libros_proveedor lp ON lp.isbn = f.isbn
+                 AND lp.proveedor_email = f.proveedor_email
+            {filtro}
+            ORDER BY f.veces DESC, f.detectado_en DESC
+            LIMIT {int(limite)}
+        """)
+        cols = [c[0] for c in cur.description]
+        libros = [dict(zip(cols, r)) for r in cur.fetchall()]
+        db.execute_query(cur, f"""
+            SELECT COUNT(*) FILTER (WHERE resuelto_en IS NULL),
+                   COUNT(*) FILTER (WHERE resuelto_en IS NOT NULL)
+            FROM {cp.TABLA_FALLIDOS}
+        """)
+        abiertos, resueltos = cur.fetchone()
+    finally:
+        conn.close()
+    return JSONResponse(content=jsonable_encoder(
+        {"abiertos": abiertos, "resueltos": resueltos, "libros": libros}))
+
+
 @app.get("/api/v1/admin/odoo-warehouses", tags=["Admin"])
 async def admin_odoo_warehouses():
     """

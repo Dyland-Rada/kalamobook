@@ -74,7 +74,14 @@ def faltantes(limite: int | None = None,
                MAX(lp.precio_con_iva) AS precio,
                COALESCE(MAX(lp.stock_disponible), 0) AS stock,
                string_agg(DISTINCT lp.proveedor_email, ', ') AS proveedores,
-               COALESCE(MAX(NULLIF(b.title, '')), MAX(NULLIF(d.title, ''))) AS title,
+               -- Cascada de titulo. Antes solo miraba books y
+               -- distributor_books, y lo que no estaba ahi se creaba en Odoo
+               -- con el EAN por nombre: 67.087 productos asi el 08/09/2026.
+               -- cdl_isbn_index tiene 683.112 titulos de Casa del Libro y
+               -- sinli_precios los trae del propio proveedor.
+               COALESCE(MAX(NULLIF(b.title, '')), MAX(NULLIF(d.title, '')),
+                        MAX(NULLIF(ci.title, '')),
+                        MAX(NULLIF(sp.titulo, ''))) AS title,
                COALESCE(MAX(NULLIF(b.author, '')), MAX(NULLIF(d.author, ''))) AS author,
                COALESCE(MAX(NULLIF(b.editorial, '')), MAX(NULLIF(d.editorial, ''))) AS editorial,
                COALESCE(MAX(NULLIF(b.image_url, '')), MAX(NULLIF(d.image_url, ''))) AS image_url,
@@ -86,6 +93,12 @@ def faltantes(limite: int | None = None,
         LEFT JOIN odoo_books_mirror m ON m.barcode = lp.isbn
         LEFT JOIN books b ON b.isbn = lp.isbn
         LEFT JOIN distributor_books d ON d.isbn = lp.isbn
+        LEFT JOIN cdl_isbn_index ci ON ci.isbn = lp.isbn
+        LEFT JOIN LATERAL (
+            SELECT titulo FROM sinli_precios s
+            WHERE s.isbn = lp.isbn AND NULLIF(s.titulo, '') IS NOT NULL
+            LIMIT 1
+        ) sp ON true
         WHERE m.odoo_id IS NULL AND lp.isbn IS NOT NULL
           AND lp.isbn ~ '^97[89][0-9]{{10}}$'{filtro}
         GROUP BY lp.isbn
@@ -109,7 +122,11 @@ async def _crear(odoo: OdooClient, tag_ids: dict, targets: list[dict],
         lote = targets[i:i + LOTE]
         vals = []
         for t in lote:
-            nombre = (t.get("title") or "").strip() or t["isbn"]
+            nombre = (t.get("title") or "").strip()
+            # Un titulo que son solo digitos es un EAN colado por alguna
+            # fuente, no un titulo: no vale mas que el fallback.
+            if not nombre or nombre.isdigit():
+                nombre = t["isbn"]
             precio = float(t["precio"]) if t.get("precio") else 0.0
             vals.append({
                 "name": nombre[:250], "barcode": t["isbn"],
