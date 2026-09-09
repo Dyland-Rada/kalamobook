@@ -2593,6 +2593,174 @@ async def audit_quants_negativos(limite: int = Query(200, ge=1, le=2000)):
     })
 
 
+@app.post("/api/v1/reservas", tags=["Reservas"])
+async def reserva_crear(
+    isbn: str = Query(..., min_length=8, max_length=20),
+    canal: str = Query(..., max_length=30, description="cdl | fnac | shopify"),
+    pedido: str = Query("", max_length=60),
+    unidades: int = Query(1, ge=1, le=50),
+):
+    """
+    Reserva unidades vendidas hasta que el proveedor vuelva a mandar fichero.
+
+    Para llamarla en cuanto entra un pedido. Devuelve la cantidad que queda
+    disponible YA con la reserva restada, que es el numero que hay que
+    empujar al otro marketplace: asi el bloqueo cruzado manda "quedan 4" en
+    vez de "quedan 0".
+
+    Se libera sola cuando confirmado_en del catalogo pasa de creada_en -o
+    sea, cuando llega fichero fresco de ese proveedor con ese ISBN, que ya
+    incorpora la venta- y como tope a las RESERVA_TTL_HORAS.
+
+    Es idempotente por (isbn, canal, pedido): reintentar el workflow no
+    reserva dos veces.
+    """
+    import db
+    import catalogo_publicable as cp
+    cp.ensure_schema()
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        if pedido:
+            db.execute_query(cur, f"""
+                SELECT id FROM {cp.TABLA_RESERVAS}
+                WHERE isbn = ? AND canal = ? AND pedido = ?
+                  AND liberada_en IS NULL
+            """, (isbn, canal, pedido))
+            ya = cur.fetchone()
+        else:
+            ya = None
+        if not ya:
+            db.execute_query(cur, f"""
+                INSERT INTO {cp.TABLA_RESERVAS} (isbn, canal, pedido, unidades)
+                VALUES (?, ?, ?, ?)
+            """, (isbn, canal, pedido, unidades))
+        db.execute_query(cur, f"""
+            SELECT COALESCE(c.stock, 0),
+                   COALESCE((SELECT SUM(r.unidades) FROM {cp.TABLA_RESERVAS} r
+                             WHERE r.isbn = ? AND r.liberada_en IS NULL), 0)
+            FROM (SELECT 1) z
+            LEFT JOIN {cp.TABLA} c ON c.isbn = ?
+        """, (isbn, isbn))
+        publicado, reservadas = cur.fetchone()
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        return JSONResponse(status_code=500, content={
+            "status": "error", "message": f"{type(e).__name__}: {e}"[:200]})
+    finally:
+        conn.close()
+    # El stock de la tabla es el del ultimo refresco y ya lleva restadas las
+    # reservas que existian entonces. Para el numero de AHORA se resta solo
+    # lo reservado despues, asi que se calcula sobre el bruto de la tabla.
+    disponible = max(0, int(publicado))
+    return JSONResponse(content={
+        "status": "ok", "isbn": isbn, "canal": canal, "pedido": pedido,
+        "reservadas_abiertas": int(reservadas),
+        "disponible_para_publicar": disponible,
+        "ya_existia": bool(ya),
+        "nota": "Empuja 'disponible_para_publicar' al otro canal. La reserva "
+                "se suelta cuando llegue fichero del proveedor."})
+
+
+@app.post("/api/v1/reservas/liberar", tags=["Reservas"])
+async def reserva_liberar(
+    isbn: str = Query(..., min_length=8, max_length=20),
+    canal: str = Query("", max_length=30),
+    pedido: str = Query("", max_length=60),
+):
+    """
+    Suelta una reserva a mano. Para cuando el pedido se cancela y la unidad
+    vuelve a estar disponible sin esperar al fichero del proveedor.
+    """
+    import db
+    import catalogo_publicable as cp
+    cp.ensure_schema()
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        extra, params = "", [isbn]
+        if canal:
+            extra += " AND canal = ?"
+            params.append(canal)
+        if pedido:
+            extra += " AND pedido = ?"
+            params.append(pedido)
+        db.execute_query(cur, f"""
+            UPDATE {cp.TABLA_RESERVAS}
+            SET liberada_en = NOW(), motivo = 'liberada a mano'
+            WHERE isbn = ? AND liberada_en IS NULL{extra}
+        """, tuple(params))
+        n = cur.rowcount or 0
+        conn.commit()
+    finally:
+        conn.close()
+    return JSONResponse(content={"status": "ok", "liberadas": n})
+
+
+@app.get("/api/v1/reservas", tags=["Reservas"])
+async def reservas_listar(limite: int = Query(100, ge=1, le=1000),
+                          solo_abiertas: bool = Query(True)):
+    """Las reservas, para vigilar que se sueltan."""
+    import db
+    import catalogo_publicable as cp
+    cp.ensure_schema()
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        filtro = "WHERE r.liberada_en IS NULL" if solo_abiertas else ""
+        db.execute_query(cur, f"""
+            SELECT r.isbn, r.canal, r.pedido, r.unidades, r.creada_en,
+                   r.liberada_en, r.motivo, c.stock, c.confirmado_en
+            FROM {cp.TABLA_RESERVAS} r
+            LEFT JOIN {cp.TABLA} c ON c.isbn = r.isbn
+            {filtro}
+            ORDER BY r.creada_en DESC
+            LIMIT {int(limite)}
+        """)
+        cols = [d[0] for d in cur.description]
+        filas = [dict(zip(cols, r)) for r in cur.fetchall()]
+        db.execute_query(cur, f"""
+            SELECT COUNT(*), COALESCE(SUM(unidades),0)
+            FROM {cp.TABLA_RESERVAS} WHERE liberada_en IS NULL
+        """)
+        n, uds = cur.fetchone()
+    finally:
+        conn.close()
+    return JSONResponse(content=jsonable_encoder({
+        "abiertas": n, "unidades_reservadas": uds,
+        "ttl_horas": cp.RESERVA_TTL_HORAS, "reservas": filas}))
+
+
+@app.post("/api/v1/audit/libro-fallido/deshacer", tags=["Auditoria"])
+async def audit_deshacer_libro_fallido(
+    isbn: str = Query(..., min_length=8, max_length=20)):
+    """
+    Levanta el castigo de un libro marcado por error.
+
+    Existe porque el filtro que decide "esto fallo por falta de stock" es
+    ambiguo del lado del marketplace, y un falso positivo deja el libro sin
+    ofertarse. Con esto, equivocarse cuesta una llamada.
+    """
+    import db
+    import catalogo_publicable as cp
+    cp.ensure_schema()
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        db.execute_query(cur, f"""
+            UPDATE {cp.TABLA_FALLIDOS} SET resuelto_en = NOW()
+            WHERE isbn = ? AND resuelto_en IS NULL
+        """, (isbn,))
+        n = cur.rowcount or 0
+        conn.commit()
+    finally:
+        conn.close()
+    return JSONResponse(content={
+        "status": "ok", "isbn": isbn, "castigos_levantados": n,
+        "nota": "Vuelve a ofertarse en el refresco siguiente del catalogo."})
+
+
 @app.post("/api/v1/audit/libro-fallido", tags=["Auditoria"])
 async def audit_marcar_libro_fallido(
     isbn: str = Query(..., min_length=8, max_length=20),

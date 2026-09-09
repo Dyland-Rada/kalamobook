@@ -41,7 +41,12 @@ from odoo_client import OdooClient
 
 TABLA = "catalogo_publicable"
 TABLA_FALLIDOS = "libro_fallido"
+TABLA_RESERVAS = "reserva_stock"
 PAGINA_QUANT = 40000
+
+# Tope de seguridad de una reserva. Si el proveedor se queda mudo, la
+# reserva no puede retener la unidad para siempre.
+RESERVA_TTL_HORAS = int(os.environ.get("RESERVA_TTL_HORAS", "48"))
 
 _job: dict | None = None
 
@@ -103,6 +108,31 @@ def ensure_schema():
         """)
         db.execute_query(cur, f"CREATE INDEX IF NOT EXISTS {TABLA_FALLIDOS}_abiertos_idx "
                               f"ON {TABLA_FALLIDOS} (isbn) WHERE resuelto_en IS NULL")
+        # Reservas de corta vida. Cubren la ventana entre la venta y el
+        # fichero siguiente del proveedor, que es de una hora con AZETA y de
+        # un dia con el resto. No son un movimiento de stock: en dropship la
+        # cantidad no es nuestra, es el eco del fichero del proveedor y se
+        # sobrescribe entera en cada sync (inventory_quantity, absoluta), asi
+        # que restarle uno en Odoo no dura nada. Aqui se resta al publicar.
+        db.execute_query(cur, f"""
+            CREATE TABLE IF NOT EXISTS {TABLA_RESERVAS} (
+                id           SERIAL PRIMARY KEY,
+                isbn         TEXT NOT NULL,
+                canal        TEXT NOT NULL DEFAULT '',
+                pedido       TEXT NOT NULL DEFAULT '',
+                unidades     INTEGER NOT NULL DEFAULT 1,
+                creada_en    TIMESTAMP NOT NULL DEFAULT NOW(),
+                liberada_en  TIMESTAMP,
+                motivo       TEXT
+            )
+        """)
+        db.execute_query(cur, f"CREATE INDEX IF NOT EXISTS {TABLA_RESERVAS}_abiertas_idx "
+                              f"ON {TABLA_RESERVAS} (isbn) WHERE liberada_en IS NULL")
+        # Un pedido no puede reservar dos veces el mismo libro por reintento
+        # del workflow que la crea.
+        db.execute_query(cur, f"CREATE UNIQUE INDEX IF NOT EXISTS {TABLA_RESERVAS}_pedido_idx "
+                              f"ON {TABLA_RESERVAS} (isbn, canal, pedido) "
+                              f"WHERE liberada_en IS NULL AND pedido <> ''")
         conn.commit()
     finally:
         conn.close()
@@ -235,6 +265,55 @@ def _registrar_fallidos(negativos: set[int], job: dict):
         conn.close()
 
 
+def _liberar_reservas(job: dict):
+    """
+    Suelta las reservas cuyo proveedor ya ha vuelto a hablar.
+
+    La condicion NO puede ser stock_actualizado_en: en la via SINLI ese
+    campo solo se mueve cuando CAMBIA la cantidad, asi que un proveedor que
+    reafirma el mismo numero -Distriforma con su "1" desde mayo- no lo
+    movería nunca y la reserva se quedaria retenida para siempre.
+
+    La condicion buena es confirmado_en del catalogo, que es
+    GREATEST(ultimo cambio, ultima vez que el ISBN vino en un fichero de ese
+    proveedor). Eso si dice "ha llegado fichero fresco con este libro", que
+    es justo el momento en que la cantidad del proveedor ya incorpora la
+    venta y la reserva deja de hacer falta.
+
+    Y un tope de horas por si el proveedor se queda mudo.
+    """
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        db.execute_query(cur, f"""
+            UPDATE {TABLA_RESERVAS} r
+            SET liberada_en = NOW(), motivo = 'fichero del proveedor'
+            WHERE r.liberada_en IS NULL
+              AND EXISTS (SELECT 1 FROM {TABLA} c
+                          WHERE c.isbn = r.isbn
+                            AND c.confirmado_en > r.creada_en)
+        """)
+        por_fichero = cur.rowcount or 0
+        db.execute_query(cur, f"""
+            UPDATE {TABLA_RESERVAS} r
+            SET liberada_en = NOW(), motivo = 'caducada por tiempo'
+            WHERE r.liberada_en IS NULL
+              AND r.creada_en < NOW() - INTERVAL '{int(RESERVA_TTL_HORAS)} hours'
+        """)
+        job["reservas_liberadas"] = por_fichero + (cur.rowcount or 0)
+        db.execute_query(cur, f"SELECT COALESCE(SUM(unidades),0), COUNT(*) "
+                              f"FROM {TABLA_RESERVAS} WHERE liberada_en IS NULL")
+        uds, n = cur.fetchone()
+        job["reservas_abiertas"] = int(n)
+        job["unidades_reservadas"] = int(uds)
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        job["errors"].append(f"liberar reservas: {type(e).__name__}: {e}"[:200])
+    finally:
+        conn.close()
+
+
 def _filas(totales: dict[int, float]) -> list[tuple]:
     """
     Junta el stock de Odoo con la ficha y el proveedor mas barato que lo
@@ -263,7 +342,14 @@ def _filas(totales: dict[int, float]) -> list[tuple]:
                                WHERE f.isbn = m.barcode
                                  AND f.resuelto_en IS NULL
                                  AND f.stock_declarado IS NOT DISTINCT FROM
-                                     lp.stock_disponible) AS castigado
+                                     lp.stock_disponible) AS castigado,
+                       -- Unidades comprometidas por una venta cuyo proveedor
+                       -- todavia no ha vuelto a mandar fichero. Se restan
+                       -- del stock publicable: es la ventana en la que se
+                       -- puede vender dos veces lo mismo.
+                       COALESCE((SELECT SUM(rv.unidades) FROM reserva_stock rv
+                                 WHERE rv.isbn = m.barcode
+                                   AND rv.liberada_en IS NULL), 0) AS reservadas
                 FROM odoo_books_mirror m
                 LEFT JOIN LATERAL (
                     SELECT proveedor_email, precio_con_iva,
@@ -311,11 +397,13 @@ def _filas(totales: dict[int, float]) -> list[tuple]:
                   AND m.barcode IS NOT NULL
             """, (trozo,))
             for (oid, isbn, nombre, precio, prov, coste, conf,
-                 castigado) in cur.fetchall():
+                 castigado, reservadas) in cur.fetchall():
                 pw = float(precio) if precio else None
+                bruto = int(round(totales.get(int(oid), 0.0)))
+                neto = max(0, bruto - int(reservadas or 0))
                 filas.append((
                     isbn, nombre,
-                    0 if castigado else int(round(totales.get(int(oid), 0.0))),
+                    0 if castigado else neto,
                     pricing_engine.precio_marketplace(pw),
                     None,          # precio_web: falta la Capa 2
                     pw, prov,
@@ -385,6 +473,8 @@ async def refrescar(dry_run: bool = False) -> dict:
             "con_stock_odoo": 0, "filas": 0, "guardadas": 0, "retiradas": 0,
             "sin_precio": 0, "quants_negativos": 0, "uds_negativas": 0.0,
             "fallidos_abiertos": 0, "fallidos_liberados": 0,
+            "reservas_abiertas": 0, "unidades_reservadas": 0,
+            "reservas_liberadas": 0,
             "errors": [], "elapsed_s": 0}
     job = _job
     t0 = time.monotonic()
@@ -401,6 +491,11 @@ async def refrescar(dry_run: bool = False) -> dict:
         if not dry_run:
             job["stage"] = "anotando los que se vendieron sin estar"
             _registrar_fallidos(negativos, job)
+            # Antes de montar las filas: las reservas cuyo proveedor ya ha
+            # vuelto a hablar tienen que estar sueltas para no restar dos
+            # veces la misma venta.
+            job["stage"] = "liberando reservas cumplidas"
+            _liberar_reservas(job)
 
         job["stage"] = "montando las filas"
         filas = _filas(totales)
