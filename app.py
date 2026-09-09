@@ -2593,6 +2593,76 @@ async def audit_quants_negativos(limite: int = Query(200, ge=1, le=2000)):
     })
 
 
+@app.post("/api/v1/audit/libro-fallido", tags=["Auditoria"])
+async def audit_marcar_libro_fallido(
+    isbn: str = Query(..., min_length=8, max_length=20),
+    motivo: str = Query("cancelado_marketplace", max_length=120),
+):
+    """
+    Marca un libro como vendido sin estar. Para que n8n lo llame cuando un
+    pedido se cancela o entra en incidencia por falta de stock.
+
+    Es la segunda fuente de libro_fallido, y existe para que el registro no
+    dependa del quant negativo de Odoo. Ese negativo es un efecto colateral
+    de validar el albaran contra un almacen vacio: en cuanto se deje de
+    hacer, desaparece la senal. La cancelacion del marketplace es el hecho
+    real -"esto no se pudo servir"- y no depende de como se descuente.
+
+    Se guarda el stock que el proveedor declara AHORA, que es lo que luego
+    permite soltarlo solo: el castigo se levanta cuando ese numero cambie,
+    no cuando el proveedor vuelva a mandar el libro.
+    """
+    import db
+    import catalogo_publicable as cp
+    cp.ensure_schema()
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        db.execute_query(cur, f"""
+            INSERT INTO {cp.TABLA_FALLIDOS}
+                (isbn, proveedor_email, stock_declarado, odoo_id)
+            SELECT ?, COALESCE(lp.proveedor_email, ''), lp.stock_disponible,
+                   (SELECT odoo_id FROM odoo_books_mirror WHERE barcode = ?)
+            FROM (SELECT 1) z
+            LEFT JOIN LATERAL (
+                SELECT proveedor_email, stock_disponible
+                FROM libros_proveedor lp2
+                WHERE lp2.isbn = ? AND lp2.stock_disponible > 0
+                ORDER BY precio_con_iva NULLS LAST, proveedor_email
+                LIMIT 1
+            ) lp ON true
+            ON CONFLICT (isbn, proveedor_email) DO UPDATE SET
+                visto_por_ultima = NOW(),
+                veces = {cp.TABLA_FALLIDOS}.veces + 1,
+                stock_declarado = EXCLUDED.stock_declarado,
+                resuelto_en = NULL
+        """, (isbn, isbn, isbn))
+        conn.commit()
+        db.execute_query(cur, f"""
+            SELECT proveedor_email, stock_declarado, veces
+            FROM {cp.TABLA_FALLIDOS} WHERE isbn = ? AND resuelto_en IS NULL
+        """, (isbn,))
+        filas = cur.fetchall()
+    except Exception as e:
+        conn.rollback()
+        return JSONResponse(status_code=500, content={
+            "status": "error", "message": f"{type(e).__name__}: {e}"[:200]})
+    finally:
+        conn.close()
+    try:
+        import audit_log
+        audit_log.log_event("catalogo_publicable", "libro_fallido",
+                            f"{isbn} marcado como vendido sin stock ({motivo})",
+                            detalle={"isbn": isbn, "motivo": motivo})
+    except Exception:
+        pass
+    return JSONResponse(content={
+        "status": "ok", "isbn": isbn, "motivo": motivo,
+        "registros": [{"proveedor": r[0], "stock_declarado": r[1],
+                       "veces": r[2]} for r in filas],
+        "nota": "No se ofertara hasta que el proveedor cambie ese numero."})
+
+
 @app.get("/api/v1/audit/libros-fallidos", tags=["Auditoria"])
 async def audit_libros_fallidos(limite: int = Query(100, ge=1, le=1000),
                                 solo_abiertos: bool = Query(True)):
