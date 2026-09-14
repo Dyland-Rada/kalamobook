@@ -314,6 +314,9 @@ def _liberar_reservas(job: dict):
         conn.close()
 
 
+_desmentidos = [0]
+
+
 def _filas(totales: dict[int, float]) -> list[tuple]:
     """
     Junta el stock de Odoo con la ficha y el proveedor mas barato que lo
@@ -349,7 +352,33 @@ def _filas(totales: dict[int, float]) -> list[tuple]:
                        -- puede vender dos veces lo mismo.
                        COALESCE((SELECT SUM(rv.unidades) FROM reserva_stock rv
                                  WHERE rv.isbn = m.barcode
-                                   AND rv.liberada_en IS NULL), 0) AS reservadas
+                                   AND rv.liberada_en IS NULL), 0) AS reservadas,
+                       -- VETO. Un proveedor sin almacen en Odoo no puede
+                       -- servir, y por eso no se le deja ganar la puja (ver
+                       -- arriba). Pero su "no lo tengo" SI es informacion
+                       -- real del editor, y hoy se tiraba a la basura.
+                       --
+                       -- Solo veta cuando quien sostiene el libro declara
+                       -- exactamente 1, que en doce de los quince
+                       -- proveedores no es una cantidad sino un semaforo
+                       -- de "disponible". Un cero contado pesa mas que un
+                       -- disponible sin contar; si el ganador declara 5, no
+                       -- se toca.
+                       --
+                       -- Nace del pedido L000111 (14/09/2026): PENGUIN
+                       -- RANDOM HOUSE declaraba 0 por SINLI desde el 04/09
+                       -- y el Excel de Penguin declaraba 1 desde el 08/09.
+                       -- Como el origen SINLI no tiene almacen, su 0 no
+                       -- llegaba a Odoo y el libro se vendio sin existir.
+                       -- Medido el 14/09: veta 212 libros de 499.936.
+                       (lp.stock_disponible = 1 AND EXISTS (
+                            SELECT 1 FROM libros_proveedor v
+                            WHERE v.isbn = m.barcode
+                              AND v.stock_disponible = 0
+                              AND NOT EXISTS (
+                                  SELECT 1 FROM proveedor_almacen_odoo pa2
+                                  WHERE pa2.proveedor_email = v.proveedor_email))
+                       ) AS desmentido
                 FROM odoo_books_mirror m
                 LEFT JOIN LATERAL (
                     SELECT proveedor_email, precio_con_iva,
@@ -397,13 +426,15 @@ def _filas(totales: dict[int, float]) -> list[tuple]:
                   AND m.barcode IS NOT NULL
             """, (trozo,))
             for (oid, isbn, nombre, precio, prov, coste, conf,
-                 castigado, reservadas) in cur.fetchall():
+                 castigado, reservadas, desmentido) in cur.fetchall():
                 pw = float(precio) if precio else None
                 bruto = int(round(totales.get(int(oid), 0.0)))
                 neto = max(0, bruto - int(reservadas or 0))
+                if desmentido:
+                    _desmentidos[0] += 1
                 filas.append((
                     isbn, nombre,
-                    0 if castigado else neto,
+                    0 if (castigado or desmentido) else neto,
                     pricing_engine.precio_marketplace(pw),
                     None,          # precio_web: falta la Capa 2
                     pw, prov,
@@ -474,7 +505,7 @@ async def refrescar(dry_run: bool = False) -> dict:
             "sin_precio": 0, "quants_negativos": 0, "uds_negativas": 0.0,
             "fallidos_abiertos": 0, "fallidos_liberados": 0,
             "reservas_abiertas": 0, "unidades_reservadas": 0,
-            "reservas_liberadas": 0,
+            "reservas_liberadas": 0, "desmentidos": 0,
             "errors": [], "elapsed_s": 0}
     job = _job
     t0 = time.monotonic()
@@ -498,7 +529,9 @@ async def refrescar(dry_run: bool = False) -> dict:
             _liberar_reservas(job)
 
         job["stage"] = "montando las filas"
+        _desmentidos[0] = 0
         filas = _filas(totales)
+        job["desmentidos"] = _desmentidos[0]
         job["filas"] = len(filas)
         job["sin_precio"] = sum(1 for f in filas if f[3] is None)
 
