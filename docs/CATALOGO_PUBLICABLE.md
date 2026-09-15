@@ -117,7 +117,7 @@ SELECT isbn, stock, precio_odoo
 FROM catalogo_publicable
 WHERE stock > 0
   AND proveedor IS NOT NULL
-  AND confirmado_en > now() - interval '7 days';
+  AND confirmado_en > now() - interval '4 days';
 ```
 
 Eso deja ~270.240 libros con respaldo verificable. Si priorizas volumen,

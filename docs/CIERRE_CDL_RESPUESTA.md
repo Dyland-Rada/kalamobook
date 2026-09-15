@@ -106,8 +106,9 @@ Con ese campo, el catálogo de hoy tiene **0 libros** con más de 30 días y **4
 con más de 7, no 134.469.
 
 Y sí, `confirmado_en` se congela cuando el libro desaparece del fichero. **Eso es
-correcto y deliberado**: congelarse es la señal. A los 7 días la guarda de frescura
-lo apaga, y antes de eso el apagado por ausencia ya lo ha puesto a 0.
+correcto y deliberado**: congelarse es la señal. A los 4 días la guarda de frescura
+lo apaga —corte bajado de 7 a 4 el 15/09/2026, ver `docs/FRESCURA_4_DIAS.md`— y
+antes de eso el apagado por ausencia ya lo ha puesto a 0.
 
 ---
 
