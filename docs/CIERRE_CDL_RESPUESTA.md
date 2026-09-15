@@ -25,6 +25,69 @@ ventana, y el cierre llegó el 14 a las 22:00, el mismo día que volvió la inge
 
 ---
 
+## Actualización de la noche del 15/09
+
+Entre que se escribió esta respuesta y el final del día cambiaron cinco cosas. Tres
+de ellas dan la razón al informe en detalles que aquí se daban por cerrados, y una es
+una corrección de método nuestra. Lo que sigue manda sobre el texto original.
+
+**1. La revisión de imports ya está encendida.** El apartado 3 dice que
+`CdL - Revisar imports Mirakl` (`qbdkiSlzmqz6x6ZB`) está inactivo y que hay 207
+envíos sin verificar. Lo encendió el lado de operaciones esa misma tarde: quedan
+unos 45 por revisar y el ratio de error de la muestra reciente es de **~0,85 %**,
+sano.
+
+Eso no contradice los 261.335 y 508.491 errores del 7 y el 8: aquellas eran tandas
+masivas -2,4 millones y 567.000 líneas- lanzadas durante el vaciado de catálogos.
+Las de ahora son deltas pequeños. Son dos poblaciones distintas y conviene no
+mezclarlas al sacar conclusiones.
+
+**2. El barrido no era solo cuestión de encenderlo.** Aquí se decía «no hay que
+construir nada: hay que encenderlo». Era incompleto. El endpoint síncrono
+`/api/offers/export` **devuelve solo la cabecera, cero filas**, y por eso el barrido
+del 20 de agosto quedó muerto. Hay que paginar `/api/offers`. Lo encontró el lado de
+operaciones, no nosotros.
+
+**3. Una de nuestras comprobaciones usó la fuente equivocada.** Al rebatir el
+hallazgo 2 se citó que «cero ofertas vivas en CdL carecen de proveedor con stock».
+Esa consulta iba contra `mirakl_offer_state`, que es **el espejo, justo lo que el
+informe dice que miente** -y con razón: con la tienda cerrada las 411.160 ofertas
+están inactivas y el espejo no se entera-. El argumento de fondo se sostiene porque
+descansa en `catalogo_publicable` (500.031 vendibles, 0 con más de 30 días), que no
+es el espejo. Pero esa línea concreta no valía como prueba.
+
+**4. La guarda de frescura baja de 7 a 3 días.** Ver `FRESCURA_3_DIAS.md`, con la
+medición y sus límites. Pendiente de aplicar en el SQL de los dos feeds.
+
+**5. Penguin queda resuelto: manda el SINLI.** Detalle en el apartado siguiente.
+
+### Penguin, y un límite de `cegald_isbns_v2` que conviene conocer
+
+Había **dos** Penguin, y el desajuste era peor de lo que parecía:
+
+- `penguin@kalamo.local` (Excel por correo) tenía el almacén **PEN01** y llevaba sin
+  mandar fichero desde el 8 de septiembre.
+- `sinli@penguinrandomhouse.com` manda a diario a las 18:10 y estaba al día, pero
+  **no tenía almacén en Odoo**, así que el catálogo nunca podía elegirlo: sus 23.644
+  líneas con stock daban 0 libros publicados a su nombre.
+
+De ahí que el recuento de proveedores no cuadrara: `libros_proveedor` tenía 15 y
+`proveedor_almacen_odoo` otros 15, **pero no los mismos**. La unión son 16.
+`info@udllibros.com` tiene almacén UDL01 y no manda datos: el caso simétrico, aún sin
+resolver.
+
+Ejecutado el 15/09 por la noche: PEN01 reasignado al Penguin SINLI, las 26.868 filas
+del Excel borradas -con respaldo en `penguin_excel_backup_20260915`-, sus 23.507
+quants apagados y la rama del Excel desconectada del workflow de stock manual.
+
+**El límite que apareció por el camino:** `cegald_isbns_v2` **solo guarda desde el 5
+de septiembre**. Sigue siendo el campo correcto para responder a la pregunta 2 del
+informe, pero cualquier medición de cadencia sobre él tiene diez días de recorrido,
+no meses. Propuesta en `FRESCURA_3_DIAS.md`: una tabla `proveedor_carga` de una fila
+por carga que no se pode.
+
+---
+
 ## 1. El apagado por ausencia sí existe, y funciona
 
 El informe dice: «cuando un proveedor deja de incluir un ISBN, el sistema NO pone
