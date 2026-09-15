@@ -62,7 +62,7 @@ SELECT
         -- archivo.
         WHEN c.precio_marketplace < 2.90            THEN 0
         WHEN c.confirmado_en IS NULL                THEN 0
-        WHEN c.confirmado_en < now() - interval '4 days' THEN 0
+        WHEN c.confirmado_en < now() - interval '3 days' THEN 0
         WHEN EXISTS (SELECT 1 FROM odoo_productos_archivados a
                      WHERE a.barcode = c.isbn)      THEN 0
         WHEN EXISTS (SELECT 1 FROM productos_sin_titulo t
@@ -196,7 +196,7 @@ pero excluirlos impide apagarlos. Cantidad 0, y que se vayan.
 |---|---|---|
 | Sin precio | `catalogo_publicable.precio_marketplace IS NULL` | **23.851** |
 | Precio por debajo de 2,90 | `precio_marketplace < 2.90` | 3 a cero o menos, y el mínimo positivo es 0,28 € |
-| Dato rancio (más de 4 días) | `confirmado_en` | 0 hoy |
+| Dato rancio (más de 3 días) | `confirmado_en` | 0 hoy |
 | Producto archivado en Odoo | `odoo_productos_archivados` (barcode) | 113.898 en total |
 | Título que es el EAN | `productos_sin_titulo` (ean) | 64.688 |
 | Ya se vendió sin estar | `libro_fallido` (isbn, abiertos) | nuevo, se llena solo |
