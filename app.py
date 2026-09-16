@@ -2838,6 +2838,8 @@ async def marketplace_olvidar_envio(
     dry_run: bool = Query(True, description="True = solo contar, sin borrar"),
     saltar_rechazados: bool = Query(
         True, description="No reenviar lo que CdL ya rechazo por 'does not exist'"),
+    permitir_huerfanas: bool = Query(
+        False, description="Borrar tambien las que el catalogo da a 0 (crea huerfanas)"),
 ):
     """
     Borra el estado guardado de unos SKU para que el delta vuelva a enviarlos.
@@ -2861,6 +2863,26 @@ async def marketplace_olvidar_envio(
     Acepta el EAN pelado o el SKU con prefijo (KALAMO-978...). Las tablas de
     estado guardan el EAN pelado -verificado: 0 filas con prefijo-, asi que
     el prefijo se quita aqui y no en el llamante.
+
+    CUIDADO con lo que este endpoint NO sirve para arreglar, que es como se
+    escribio la primera version. El WHERE del feed es:
+
+        (m.sku IS NULL AND f.cantidad > 0) OR (m.sku IS NOT NULL AND ...)
+
+    Si el catalogo da el libro a 0 y le borramos la fila del espejo, queda
+    m.sku IS NULL con cantidad 0: no cumple ninguna de las dos ramas y la
+    oferta pasa a ser INALCANZABLE. Es decir, borrar la fila de algo agotado
+    convierte una oferta fantasma en una oferta fantasma permanente, que es
+    justo lo contrario de lo que se busca. Medido el 16/09/2026: las 566 de
+    CdL y 6 de Fnac "resueltas" asi acabaron en el lote de 677 huerfanas.
+
+    Por eso permitir_huerfanas viene a false: las que el catalogo da a 0 se
+    saltan y se devuelven en huerfanas_evitadas. Para esas la herramienta es
+    /api/v1/marketplace/reconciliar-espejo, que SIEMBRA la fila con la
+    cantidad real en vez de borrarla, y entonces el delta si puede apagarla.
+
+    Borrar la fila solo es correcto cuando el catalogo tiene stock > 0: ahi
+    el SKU vuelve a entrar como alta nueva y se reenvia.
     """
     import db
     import re as _re
@@ -2905,6 +2927,17 @@ async def marketplace_olvidar_envio(
                 fuera = set(descartados)
                 skus = [s for s in skus if s not in fuera]
 
+        huerfanas_evitadas = []
+        if not permitir_huerfanas and skus:
+            db.execute_query(cur, """
+                SELECT c.isbn FROM catalogo_publicable c
+                WHERE c.isbn = ANY(?) AND c.stock <= 0
+            """, (skus,))
+            huerfanas_evitadas = [r[0] for r in cur.fetchall()]
+            if huerfanas_evitadas:
+                fuera = set(huerfanas_evitadas)
+                skus = [s2 for s2 in skus if s2 not in fuera]
+
         for tabla in tablas:
             if not skus:
                 resultado[tabla] = {"presentes": 0, "borrados": 0}
@@ -2948,10 +2981,15 @@ async def marketplace_olvidar_envio(
         "recibidos": len(crudos),
         "utilizables": len(skus),
         "descartados_por_rechazados": len(descartados),
+        "huerfanas_evitadas": len(huerfanas_evitadas),
         "tablas": resultado,
         "nota": ("Nada borrado, dry_run=true." if dry_run else
                  "El delta los reenviara en su proxima vuelta con el valor "
                  "que tenga el catalogo en ese momento."),
+        "aviso": (f"{len(huerfanas_evitadas)} SKU estan a 0 en catalogo: "
+                  "borrarles la fila los dejaria inalcanzables. Para apagarlos "
+                  "usa /api/v1/marketplace/reconciliar-espejo."
+                  if huerfanas_evitadas else None),
     })
 
 
