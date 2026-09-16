@@ -2955,6 +2955,151 @@ async def marketplace_olvidar_envio(
     })
 
 
+@app.post("/api/v1/marketplace/reconciliar-espejo", tags=["Marketplace"])
+async def marketplace_reconciliar_espejo(
+    marketplace: str = Query("cdl", description="cdl | fnac"),
+    dry_run: bool = Query(True, description="True = solo contar, sin escribir"),
+    solo_huerfanas: bool = Query(
+        True, description="True = solo sembrar las que no tienen fila; False = reconciliar todo"),
+    ventana_horas: int = Query(24, ge=1, le=720),
+):
+    """
+    Pone en la tabla de estado lo que el marketplace dice tener DE VERDAD,
+    tomandolo del barrido.
+
+    Por que hace falta. mirakl_offer_state / fnac_offer_state significan hoy
+    "lo que creemos haber mandado", y eso es justo lo que mintio cuando CdL
+    cerro la tienda: el espejo decia 330.000 ofertas vivas mientras estaban
+    todas inactivas. Con esto pasan a significar "lo ultimo que sabemos que
+    el marketplace tiene", que es lo que habria cazado el cierre el mismo dia.
+
+    Y cierra un agujero de diseno. El WHERE del feed es:
+
+        (m.sku IS NULL AND f.cantidad > 0)                  -- alta nueva
+        OR (m.sku IS NOT NULL AND m.last_quantity <> ...)   -- cambio
+
+    Una oferta viva en el marketplace, a 0 en catalogo y SIN fila en el
+    espejo no cumple ninguna de las dos: el alta exige cantidad > 0 y el
+    apagado exige que la fila exista. Es inalcanzable por diseno, y no solo
+    para un lote concreto: le pasa a cualquier oferta publicada por una via
+    que no escribiera en el espejo -el pipeline viejo, por ejemplo-. Al
+    sembrar la fila con la cantidad real, el delta ve catalogo 0 contra
+    espejo N y la apaga con la maquinaria de siempre.
+
+    solo_huerfanas=true es la siembra: solo crea filas que faltan, no toca
+    ninguna existente. En false reconcilia todo, y entonces vale la cautela
+    de no pisar un envio mas reciente que la observacion del barrido.
+    """
+    import db
+
+    if marketplace not in ("cdl", "fnac"):
+        return JSONResponse(status_code=400, content={
+            "status": "error", "message": "marketplace: cdl | fnac"})
+
+    barrido, estado = {
+        "cdl": ("cdl_barrido", "mirakl_offer_state"),
+        "fnac": ("fnac_barrido", "fnac_offer_state"),
+    }[marketplace]
+
+    # Una fila por EAN: la observacion mas reciente de la ventana.
+    ultima = f"""
+        SELECT DISTINCT ON (b.ean) b.ean, b.cantidad, b.precio, b.scanned_at
+        FROM {barrido} b
+        WHERE b.scanned_at > (SELECT max(scanned_at) FROM {barrido})
+                             - INTERVAL '{int(ventana_horas)} hours'
+          AND b.ean IS NOT NULL
+        ORDER BY b.ean, b.scanned_at DESC
+    """
+
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        db.execute_query(cur, f"""
+            WITH v AS ({ultima})
+            SELECT count(*) AS observadas,
+                   count(*) FILTER (WHERE NOT EXISTS (
+                       SELECT 1 FROM {estado} m WHERE m.sku = v.ean)) AS sin_fila,
+                   count(*) FILTER (WHERE v.cantidad > 0 AND NOT EXISTS (
+                       SELECT 1 FROM {estado} m WHERE m.sku = v.ean)
+                     AND NOT EXISTS (SELECT 1 FROM catalogo_publicable c
+                                     WHERE c.isbn = v.ean AND c.stock > 0)) AS huerfanas,
+                   COALESCE(sum(v.cantidad) FILTER (WHERE v.cantidad > 0 AND NOT EXISTS (
+                       SELECT 1 FROM {estado} m WHERE m.sku = v.ean)
+                     AND NOT EXISTS (SELECT 1 FROM catalogo_publicable c
+                                     WHERE c.isbn = v.ean AND c.stock > 0)), 0) AS uds_huerfanas
+            FROM v
+        """)
+        r = cur.fetchone()
+        antes = {"observadas": int(r[0] or 0), "sin_fila": int(r[1] or 0),
+                 "huerfanas": int(r[2] or 0), "uds_huerfanas": int(r[3] or 0)}
+
+        escritas = 0
+        if not dry_run:
+            if solo_huerfanas:
+                # Solo las vivas alli que el catalogo da por agotadas y que el
+                # espejo no conoce. No toca ninguna fila existente.
+                db.execute_query(cur, f"""
+                    WITH v AS ({ultima})
+                    INSERT INTO {estado} (sku, last_quantity, last_price, last_pushed_at)
+                    SELECT v.ean, v.cantidad, v.precio, v.scanned_at
+                    FROM v
+                    WHERE v.cantidad > 0
+                      AND NOT EXISTS (SELECT 1 FROM {estado} m WHERE m.sku = v.ean)
+                      AND NOT EXISTS (SELECT 1 FROM catalogo_publicable c
+                                      WHERE c.isbn = v.ean AND c.stock > 0)
+                    ON CONFLICT (sku) DO NOTHING
+                """)
+            else:
+                # Reconciliacion completa. El WHERE del DO UPDATE es la cautela:
+                # si el feed empujo DESPUES de que el barrido mirara, manda el
+                # envio, no la observacion vieja.
+                db.execute_query(cur, f"""
+                    WITH v AS ({ultima})
+                    INSERT INTO {estado} (sku, last_quantity, last_price, last_pushed_at)
+                    SELECT v.ean, v.cantidad, v.precio, v.scanned_at
+                    FROM v
+                    ON CONFLICT (sku) DO UPDATE SET
+                        last_quantity = EXCLUDED.last_quantity,
+                        last_price = EXCLUDED.last_price,
+                        last_pushed_at = EXCLUDED.last_pushed_at
+                    WHERE {estado}.last_pushed_at IS NULL
+                       OR {estado}.last_pushed_at < EXCLUDED.last_pushed_at
+                """)
+            escritas = cur.rowcount or 0
+            conn.commit()
+    except Exception as e:
+        conn.rollback()
+        return JSONResponse(status_code=500, content={
+            "status": "error", "message": f"{type(e).__name__}: {e}"[:200]})
+    finally:
+        conn.close()
+
+    if not dry_run:
+        try:
+            import audit_log
+            audit_log.log_event(
+                "marketplace", "reconciliar_espejo",
+                f"{escritas} filas de estado escritas en {marketplace}",
+                detalle={"marketplace": marketplace, "solo_huerfanas": solo_huerfanas,
+                         "ventana_horas": ventana_horas, "escritas": escritas,
+                         "antes": antes})
+        except Exception:
+            pass
+
+    return JSONResponse(content={
+        "status": "ok",
+        "dry_run": dry_run,
+        "marketplace": marketplace,
+        "modo": "siembra de huerfanas" if solo_huerfanas else "reconciliacion completa",
+        "ventana_horas": ventana_horas,
+        "antes": antes,
+        "filas_escritas": escritas,
+        "nota": ("Nada escrito, dry_run=true." if dry_run else
+                 "El delta vera catalogo 0 contra espejo N y las apagara en su "
+                 "proxima vuelta."),
+    })
+
+
 @app.get("/api/v1/audit/libros-fallidos", tags=["Auditoria"])
 async def audit_libros_fallidos(limite: int = Query(100, ge=1, le=1000),
                                 solo_abiertos: bool = Query(True)):
