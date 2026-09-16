@@ -80,6 +80,35 @@ Ejecutado el 15/09 por la noche: PEN01 reasignado al Penguin SINLI, las 26.868 f
 del Excel borradas -con respaldo en `penguin_excel_backup_20260915`-, sus 23.507
 quants apagados y la rama del Excel desconectada del workflow de stock manual.
 
+### Reasignar un almacén exige forzar el re-empuje
+
+Lo aprendido al día siguiente, y conviene no repetirlo. Tras mover PEN01 al Penguin
+SINLI, **3.334 de sus libros seguian a 0 en el catálogo** pese a que el proveedor
+declaraba stock. De ellos, **2.852 no habían cambiado de cantidad desde la
+reasignación**.
+
+No era Odoo. `reparar-catalogo` lo descartó en seco: `sin_track_inventory: 0`,
+`variantes_archivadas: 0`, `candidatos: 0`. Los productos estaban perfectos.
+
+Era el delta. **El sync sube a Odoo solo lo que cambia de cantidad**, y al cambiar de
+dueño el almacén ningún libro cambió de cantidad, así que no había nada que subir.
+PEN01 se quedó con lo poco que fue cambiando por su cuenta -20.414 publicados- y el
+resto invisible.
+
+El remedio ya existía y está documentado en el propio código
+(`proveedores_admin.reactivar`): *«esperar al próximo fichero dejaría a 0 para
+siempre todo lo que no cambie de cantidad»*.
+
+```
+POST /api/v1/proveedores/reactivar?email=<proveedor>&empujar=true
+-> 26.973 libros marcados; el sync los sube en su proxima pasada
+```
+
+**Regla:** cualquier operación que cambie de dónde sale el stock de un proveedor
+-reasignar almacén, reactivar tras una pausa, dar de alta un almacén nuevo- tiene que
+ir seguida de un re-empuje forzado. El delta no se entera solo, porque para él no ha
+cambiado ninguna cantidad.
+
 **El límite que apareció por el camino:** `cegald_isbns_v2` **solo guarda desde el 5
 de septiembre**. Sigue siendo el campo correcto para responder a la pregunta 2 del
 informe, pero cualquier medición de cadencia sobre él tiene diez días de recorrido,
