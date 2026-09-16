@@ -3,7 +3,7 @@ import asyncio
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
-from fastapi import FastAPI, Request, Form, Query, BackgroundTasks, Depends, HTTPException, Header, UploadFile, File, status
+from fastapi import FastAPI, Request, Form, Query, Body, BackgroundTasks, Depends, HTTPException, Header, UploadFile, File, status
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 # Las filas del catalogo publicable llevan fechas y Decimal, que JSONResponse
@@ -2829,6 +2829,130 @@ async def audit_marcar_libro_fallido(
         "registros": [{"proveedor": r[0], "stock_declarado": r[1],
                        "veces": r[2]} for r in filas],
         "nota": "No se ofertara hasta que el proveedor cambie ese numero."})
+
+
+@app.post("/api/v1/marketplace/olvidar-envio", tags=["Marketplace"])
+async def marketplace_olvidar_envio(
+    payload: dict = Body(...),
+    marketplace: str = Query("cdl", description="cdl | fnac | ambos"),
+    dry_run: bool = Query(True, description="True = solo contar, sin borrar"),
+    saltar_rechazados: bool = Query(
+        True, description="No reenviar lo que CdL ya rechazo por 'does not exist'"),
+):
+    """
+    Borra el estado guardado de unos SKU para que el delta vuelva a enviarlos.
+
+    El problema que resuelve: publicamos por delta contra mirakl_offer_state /
+    fnac_offer_state, que guardan LO QUE MANDAMOS, no lo que el marketplace
+    aplico. Si un envio de "cantidad 0" falla, la tabla dice 0 y el catalogo
+    dice 0: coinciden, asi que el delta no lo reintenta jamas y la oferta se
+    queda viva alli para siempre. Borrando la fila, el SKU vuelve a parecer
+    nuevo y se reenvia con el valor que tenga el catalogo AHORA.
+
+    Pensado para que el workflow de revision de imports lo llame con los SKU
+    de un import que fallo.
+
+    OJO con que se le manda. NO hay que pasarle cdl_sku_rechazado entero: son
+    111.533 SKU con stock que CdL rechaza por "The product does not exist"
+    -el 95 % print-on-demand de Podiprint y Logista- y reenviarlos crearia un
+    bucle de seis cifras en cada vuelta. Por eso saltar_rechazados viene a
+    true: filtra por defecto lo que ya se sabe que no existe alli.
+
+    Acepta el EAN pelado o el SKU con prefijo (KALAMO-978...). Las tablas de
+    estado guardan el EAN pelado -verificado: 0 filas con prefijo-, asi que
+    el prefijo se quita aqui y no en el llamante.
+    """
+    import db
+    import re as _re
+
+    if marketplace not in ("cdl", "fnac", "ambos"):
+        return JSONResponse(status_code=400, content={
+            "status": "error", "message": "marketplace: cdl | fnac | ambos"})
+
+    crudos = payload.get("skus") or []
+    if not isinstance(crudos, list):
+        return JSONResponse(status_code=400, content={
+            "status": "error", "message": "skus debe ser una lista"})
+    if len(crudos) > 5000:
+        return JSONResponse(status_code=400, content={
+            "status": "error",
+            "message": f"Maximo 5000 por llamada, llegaron {len(crudos)}"})
+
+    vistos, skus = set(), []
+    for c in crudos:
+        e = _re.sub(r"[^0-9A-Za-z]", "", str(c or "").upper().replace("KALAMO-", ""))
+        if e and e not in vistos:
+            vistos.add(e)
+            skus.append(e)
+    if not skus:
+        return JSONResponse(status_code=400, content={
+            "status": "error", "message": "Ninguna SKU utilizable"})
+
+    tablas = {"cdl": ["mirakl_offer_state"], "fnac": ["fnac_offer_state"],
+              "ambos": ["mirakl_offer_state", "fnac_offer_state"]}[marketplace]
+
+    conn = db.get_connection()
+    cur = conn.cursor()
+    resultado = {}
+    try:
+        descartados = []
+        if saltar_rechazados:
+            db.execute_query(cur, """
+                SELECT sku FROM cdl_sku_rechazado WHERE sku = ANY(?)
+            """, (skus,))
+            descartados = [r[0] for r in cur.fetchall()]
+            if descartados:
+                fuera = set(descartados)
+                skus = [s for s in skus if s not in fuera]
+
+        for tabla in tablas:
+            if not skus:
+                resultado[tabla] = {"presentes": 0, "borrados": 0}
+                continue
+            db.execute_query(cur, f"""
+                SELECT count(*) FROM {tabla} WHERE sku = ANY(?)
+            """, (skus,))
+            presentes = int(cur.fetchone()[0] or 0)
+            borrados = 0
+            if not dry_run and presentes:
+                db.execute_query(cur, f"""
+                    DELETE FROM {tabla} WHERE sku = ANY(?)
+                """, (skus,))
+                borrados = cur.rowcount or 0
+            resultado[tabla] = {"presentes": presentes, "borrados": borrados}
+        if not dry_run:
+            conn.commit()
+    except Exception as e:
+        conn.rollback()
+        return JSONResponse(status_code=500, content={
+            "status": "error", "message": f"{type(e).__name__}: {e}"[:200]})
+    finally:
+        conn.close()
+
+    if not dry_run:
+        try:
+            import audit_log
+            audit_log.log_event(
+                "marketplace", "olvidar_envio",
+                f"{sum(v['borrados'] for v in resultado.values())} filas de estado "
+                f"borradas en {marketplace}",
+                detalle={"marketplace": marketplace, "skus": len(skus),
+                         "descartados": len(descartados), "tablas": resultado})
+        except Exception:
+            pass
+
+    return JSONResponse(content={
+        "status": "ok",
+        "dry_run": dry_run,
+        "marketplace": marketplace,
+        "recibidos": len(crudos),
+        "utilizables": len(skus),
+        "descartados_por_rechazados": len(descartados),
+        "tablas": resultado,
+        "nota": ("Nada borrado, dry_run=true." if dry_run else
+                 "El delta los reenviara en su proxima vuelta con el valor "
+                 "que tenga el catalogo en ese momento."),
+    })
 
 
 @app.get("/api/v1/audit/libros-fallidos", tags=["Auditoria"])
