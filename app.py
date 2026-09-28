@@ -2993,6 +2993,162 @@ async def marketplace_olvidar_envio(
     })
 
 
+@app.post("/api/v1/odoo/mirror/refrescar-precios", tags=["Odoo"])
+async def mirror_refrescar_precios(
+    payload: dict = Body(default={}),
+    dry_run: bool = Query(True, description="True = solo contar, sin escribir"),
+    tolerancia: float = Query(0.005, ge=0, le=5,
+                              description="Diferencia en euros que se ignora"),
+):
+    """
+    Pone en odoo_books_mirror.list_price el precio que Odoo tiene AHORA.
+
+    Por que hace falta. catalogo_publicable.precio_odoo -y por tanto el precio
+    que sale a los marketplaces- se lee de odoo_books_mirror.list_price. Ese
+    campo NO se sincroniza solo: lo escribe auto_scrape al crear el libro, con
+    el PVP mas alto de los proveedores que hubiera en ese momento, y lo unico
+    que lo refrescaria desde Odoo es run_mirror_job, que es manual y ademas se
+    atasca en el many2many de public_categ_ids.
+
+    Resultado: el precio se congela el dia del alta. Medido el 28/09/2026:
+    9.012 libros publicados por debajo de Odoo, 243 a menos de la mitad y 100
+    a menos de la cuarta parte. Un ejemplo: Odoo 10,58 y la copia 3,00, que
+    era lo que costaba el dia que se creo la ficha.
+
+    Esto es el parche. El arreglo de fondo es que catalogo_publicable calcule
+    el precio del proveedor que el mismo elige -ya lo guarda en precio_coste-
+    en vez de leerlo del espejo, y entonces la deriva no puede ocurrir.
+
+    Sin odoo_ids en el cuerpo recorre TODO el espejo por lotes. Con odoo_ids
+    mira solo esos. dry_run=true por defecto: devuelve cuantos cambiarian y
+    una muestra, sin tocar nada.
+    """
+    import db
+    from odoo_client import OdooClient
+
+    ids_pedidos = payload.get("odoo_ids") if isinstance(payload, dict) else None
+    if ids_pedidos is not None:
+        if not isinstance(ids_pedidos, list) or not ids_pedidos:
+            return JSONResponse(status_code=400, content={
+                "status": "error", "message": "odoo_ids debe ser una lista no vacia"})
+        if len(ids_pedidos) > 50000:
+            return JSONResponse(status_code=400, content={
+                "status": "error",
+                "message": f"Maximo 50000 por llamada, llegaron {len(ids_pedidos)}"})
+        try:
+            ids_pedidos = [int(x) for x in ids_pedidos]
+        except Exception:
+            return JSONResponse(status_code=400, content={
+                "status": "error", "message": "odoo_ids deben ser enteros"})
+
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        if ids_pedidos:
+            db.execute_query(cur, """
+                SELECT odoo_id, list_price FROM odoo_books_mirror
+                WHERE odoo_id = ANY(?)
+            """, (ids_pedidos,))
+        else:
+            db.execute_query(cur, """
+                SELECT odoo_id, list_price FROM odoo_books_mirror
+                WHERE odoo_id IS NOT NULL
+            """)
+        actuales = {int(r[0]): (float(r[1]) if r[1] is not None else None)
+                    for r in cur.fetchall()}
+    except Exception as e:
+        conn.close()
+        return JSONResponse(status_code=500, content={
+            "status": "error", "message": f"{type(e).__name__}: {e}"[:200]})
+
+    ids = sorted(actuales.keys())
+    revisados = 0
+    distintos = 0
+    actualizados = 0
+    sin_precio_en_odoo = 0
+    no_estan_en_odoo = 0
+    muestra: list[dict] = []
+    errores: list[str] = []
+
+    try:
+        async with OdooClient() as odoo:
+            for i in range(0, len(ids), 500):
+                trozo = ids[i:i + 500]
+                try:
+                    filas = await odoo.read("product.product", trozo, ["list_price"])
+                except Exception as e:
+                    errores.append(f"lote {i}: {type(e).__name__}: {e}"[:160])
+                    continue
+
+                vistos = set()
+                cambios: list[tuple] = []
+                for f in filas or []:
+                    oid = int(f.get("id") or 0)
+                    if not oid:
+                        continue
+                    vistos.add(oid)
+                    revisados += 1
+                    nuevo = f.get("list_price")
+                    if nuevo is None:
+                        sin_precio_en_odoo += 1
+                        continue
+                    nuevo = round(float(nuevo), 2)
+                    viejo = actuales.get(oid)
+                    if viejo is not None and abs(viejo - nuevo) <= tolerancia:
+                        continue
+                    distintos += 1
+                    if len(muestra) < 15:
+                        muestra.append({"odoo_id": oid, "espejo": viejo, "odoo": nuevo})
+                    cambios.append((nuevo, oid))
+                no_estan_en_odoo += len(trozo) - len(vistos)
+
+                if cambios and not dry_run:
+                    try:
+                        from psycopg2.extras import execute_values
+                        execute_values(cur, """
+                            UPDATE odoo_books_mirror AS m
+                            SET list_price = v.precio, synced_at = NOW()
+                            FROM (VALUES %s) AS v(precio, odoo_id)
+                            WHERE m.odoo_id = v.odoo_id
+                        """, cambios, template="(%s::numeric,%s::bigint)")
+                        conn.commit()
+                        actualizados += len(cambios)
+                    except Exception as e:
+                        conn.rollback()
+                        errores.append(f"update lote {i}: {type(e).__name__}: {e}"[:160])
+    except Exception as e:
+        errores.append(f"odoo: {type(e).__name__}: {e}"[:200])
+    finally:
+        conn.close()
+
+    if not dry_run and actualizados:
+        try:
+            import audit_log
+            audit_log.log_event(
+                "odoo", "refrescar_precios_espejo",
+                f"{actualizados} precios del espejo puestos al dia desde Odoo",
+                detalle={"revisados": revisados, "distintos": distintos,
+                         "actualizados": actualizados, "muestra": muestra[:5]})
+        except Exception:
+            pass
+
+    return JSONResponse(content={
+        "status": "ok" if not errores else "ok_con_errores",
+        "dry_run": dry_run,
+        "alcance": f"{len(ids)} odoo_id" + (" (los pedidos)" if ids_pedidos else " (todo el espejo)"),
+        "revisados": revisados,
+        "distintos_de_odoo": distintos,
+        "actualizados": actualizados,
+        "sin_precio_en_odoo": sin_precio_en_odoo,
+        "no_estan_en_odoo": no_estan_en_odoo,
+        "muestra": muestra,
+        "errores": errores[:5],
+        "nota": ("Nada escrito, dry_run=true." if dry_run else
+                 "El catalogo los recoge en su proxima regeneracion (cron 1h) "
+                 "y los feeds los reenvian porque el precio cambia."),
+    })
+
+
 @app.post("/api/v1/marketplace/reconciliar-espejo", tags=["Marketplace"])
 async def marketplace_reconciliar_espejo(
     marketplace: str = Query("cdl", description="cdl | fnac"),
