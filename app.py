@@ -2999,6 +2999,7 @@ async def mirror_refrescar_precios(
     dry_run: bool = Query(True, description="True = solo contar, sin escribir"),
     tolerancia: float = Query(0.005, ge=0, le=5,
                               description="Diferencia en euros que se ignora"),
+    origen: str = Query("odoo", description="odoo | proveedor"),
 ):
     """
     Pone en odoo_books_mirror.list_price el precio que Odoo tiene AHORA.
@@ -3026,6 +3027,10 @@ async def mirror_refrescar_precios(
     import db
     from odoo_client import OdooClient
 
+    if origen not in ("odoo", "proveedor"):
+        return JSONResponse(status_code=400, content={
+            "status": "error", "message": "origen: odoo | proveedor"})
+
     ids_pedidos = payload.get("odoo_ids") if isinstance(payload, dict) else None
     if ids_pedidos is not None:
         if not isinstance(ids_pedidos, list) or not ids_pedidos:
@@ -3040,6 +3045,97 @@ async def mirror_refrescar_precios(
         except Exception:
             return JSONResponse(status_code=400, content={
                 "status": "error", "message": "odoo_ids deben ser enteros"})
+
+    # origen=proveedor: el valor bueno no esta ni en el espejo ni en Odoo, se
+    # calcula. catalogo_publicable.precio_coste ES el PVP del proveedor que la
+    # propia tabla elige -el mas barato con almacen, no pausado y con stock-,
+    # asi que web_price(precio_coste) es lo que deberia haber en list_price.
+    # Verificado a mano el 29/09/2026 sobre ocho libros de los dos tipos: los
+    # de proveedor unico, donde Odoo acertaba, y los de varios proveedores,
+    # donde acertaba el espejo. En los ocho da el valor correcto.
+    if origen == "proveedor":
+        import pricing_engine
+        conn = db.get_connection()
+        cur = conn.cursor()
+        revisados = distintos = actualizados = sin_precio = 0
+        muestra: list[dict] = []
+        errores: list[str] = []
+        try:
+            if ids_pedidos:
+                db.execute_query(cur, """
+                    SELECT m.odoo_id, m.list_price, c.precio_coste, c.proveedor
+                    FROM odoo_books_mirror m
+                    JOIN catalogo_publicable c ON c.isbn = m.barcode
+                    WHERE m.odoo_id = ANY(?)
+                """, (ids_pedidos,))
+            else:
+                db.execute_query(cur, """
+                    SELECT m.odoo_id, m.list_price, c.precio_coste, c.proveedor
+                    FROM odoo_books_mirror m
+                    JOIN catalogo_publicable c ON c.isbn = m.barcode
+                    WHERE c.stock > 0
+                """)
+            filas = cur.fetchall()
+            cambios: list[tuple] = []
+            for oid, viejo, coste, prov in filas:
+                revisados += 1
+                if coste is None or float(coste) <= 0:
+                    sin_precio += 1
+                    continue
+                nuevo = pricing_engine.web_price(float(coste))
+                if nuevo is None:
+                    sin_precio += 1
+                    continue
+                nuevo = round(float(nuevo), 2)
+                v = float(viejo) if viejo is not None else None
+                if v is not None and abs(v - nuevo) <= tolerancia:
+                    continue
+                distintos += 1
+                if len(muestra) < 15:
+                    muestra.append({"odoo_id": int(oid), "espejo": v,
+                                    "correcto": nuevo, "pvp_proveedor": float(coste),
+                                    "proveedor": prov})
+                cambios.append((nuevo, int(oid)))
+
+            if cambios and not dry_run:
+                from psycopg2.extras import execute_values
+                for i in range(0, len(cambios), 5000):
+                    execute_values(cur, """
+                        UPDATE odoo_books_mirror AS m
+                        SET list_price = v.precio, synced_at = NOW()
+                        FROM (VALUES %s) AS v(precio, odoo_id)
+                        WHERE m.odoo_id = v.odoo_id
+                    """, cambios[i:i + 5000], template="(%s::numeric,%s::bigint)")
+                    conn.commit()
+                    actualizados += len(cambios[i:i + 5000])
+        except Exception as e:
+            conn.rollback()
+            errores.append(f"{type(e).__name__}: {e}"[:200])
+        finally:
+            conn.close()
+
+        if not dry_run and actualizados:
+            try:
+                import audit_log
+                audit_log.log_event(
+                    "odoo", "refrescar_precios_espejo_desde_proveedor",
+                    f"{actualizados} precios recalculados desde el proveedor elegido",
+                    detalle={"revisados": revisados, "distintos": distintos,
+                             "actualizados": actualizados, "muestra": muestra[:5]})
+            except Exception:
+                pass
+
+        return JSONResponse(content={
+            "status": "ok" if not errores else "ok_con_errores",
+            "dry_run": dry_run, "origen": "proveedor",
+            "alcance": f"{len(ids_pedidos)} odoo_id" if ids_pedidos else "catalogo con stock",
+            "revisados": revisados, "distintos_del_espejo": distintos,
+            "actualizados": actualizados, "sin_precio_utilizable": sin_precio,
+            "muestra": muestra, "errores": errores[:5],
+            "nota": ("Nada escrito, dry_run=true." if dry_run else
+                     "El catalogo los recoge en su proxima vuelta y los feeds "
+                     "reenvian lo que cambie."),
+        })
 
     conn = db.get_connection()
     cur = conn.cursor()
