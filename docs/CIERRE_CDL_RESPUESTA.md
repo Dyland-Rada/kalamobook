@@ -56,8 +56,9 @@ están inactivas y el espejo no se entera-. El argumento de fondo se sostiene po
 descansa en `catalogo_publicable` (500.031 vendibles, 0 con más de 30 días), que no
 es el espejo. Pero esa línea concreta no valía como prueba.
 
-**4. La guarda de frescura baja de 7 a 3 días.** Ver `FRESCURA_3_DIAS.md`, con la
-medición y sus límites. Pendiente de aplicar en el SQL de los dos feeds.
+**4. La guarda de frescura cambia.** Primero bajó de 7 a 3 días el 15/09; el
+28/09 pasó a ser por proveedor: 7 días para Podiprint y Distriforma, 5 para el
+resto. Ver `FRESCURA_POR_PROVEEDOR.md`.
 
 **5. Penguin queda resuelto: manda el SINLI.** Detalle en el apartado siguiente.
 
@@ -112,7 +113,7 @@ cambiado ninguna cantidad.
 **El límite que apareció por el camino:** `cegald_isbns_v2` **solo guarda desde el 5
 de septiembre**. Sigue siendo el campo correcto para responder a la pregunta 2 del
 informe, pero cualquier medición de cadencia sobre él tiene diez días de recorrido,
-no meses. Propuesta en `FRESCURA_3_DIAS.md`: una tabla `proveedor_carga` de una fila
+no meses. Propuesta en `FRESCURA_POR_PROVEEDOR.md`: una tabla `proveedor_carga` de una fila
 por carga que no se pode.
 
 ---
@@ -198,8 +199,8 @@ Con ese campo, el catálogo de hoy tiene **0 libros** con más de 30 días y **4
 con más de 7, no 134.469.
 
 Y sí, `confirmado_en` se congela cuando el libro desaparece del fichero. **Eso es
-correcto y deliberado**: congelarse es la señal. A los 3 días la guarda de frescura
-lo apaga —corte bajado de 7 a 3 el 15/09/2026, ver `docs/FRESCURA_3_DIAS.md`— y
+correcto y deliberado**: congelarse es la señal. La guarda de frescura lo apaga a los
+5 días -7 para Podiprint y Distriforma-, ver `docs/FRESCURA_POR_PROVEEDOR.md`, y
 antes de eso el apagado por ausencia ya lo ha puesto a 0.
 
 ---
