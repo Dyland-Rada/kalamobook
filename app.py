@@ -3000,6 +3000,8 @@ async def mirror_refrescar_precios(
     tolerancia: float = Query(0.005, ge=0, le=5,
                               description="Diferencia en euros que se ignora"),
     origen: str = Query("odoo", description="odoo | proveedor"),
+    solo_subidas: bool = Query(
+        False, description="Solo aplicar donde el precio sube (origen=proveedor)"),
 ):
     """
     Pone en odoo_books_mirror.list_price el precio que Odoo tiene AHORA.
@@ -3058,6 +3060,9 @@ async def mirror_refrescar_precios(
         conn = db.get_connection()
         cur = conn.cursor()
         revisados = distintos = actualizados = sin_precio = 0
+        suben = bajan = omitidos_por_bajar = 0
+        euros_suben = euros_bajan = 0.0
+        mayor_subida = mayor_bajada = None
         muestra: list[dict] = []
         errores: list[str] = []
         try:
@@ -3091,10 +3096,29 @@ async def mirror_refrescar_precios(
                 if v is not None and abs(v - nuevo) <= tolerancia:
                     continue
                 distintos += 1
+                # El reparto importa mas que el total: subir acerca el precio al
+                # PVP real del proveedor y recupera margen; bajar lo aleja y es
+                # la direccion que hace dano. En septiembre una corrida iba a
+                # tirar 89.936 precios y se caza justo mirando esto.
+                dif = (nuevo - v) if v is not None else None
+                fila = {"odoo_id": int(oid), "espejo": v, "correcto": nuevo,
+                        "diferencia": round(dif, 2) if dif is not None else None,
+                        "pvp_proveedor": float(coste), "proveedor": prov}
+                if dif is not None and dif < 0:
+                    bajan += 1
+                    euros_bajan += -dif
+                    if mayor_bajada is None or dif < mayor_bajada["diferencia"]:
+                        mayor_bajada = fila
+                    if solo_subidas:
+                        omitidos_por_bajar += 1
+                        continue
+                elif dif is not None:
+                    suben += 1
+                    euros_suben += dif
+                    if mayor_subida is None or dif > mayor_subida["diferencia"]:
+                        mayor_subida = fila
                 if len(muestra) < 15:
-                    muestra.append({"odoo_id": int(oid), "espejo": v,
-                                    "correcto": nuevo, "pvp_proveedor": float(coste),
-                                    "proveedor": prov})
+                    muestra.append(fila)
                 cambios.append((nuevo, int(oid)))
 
             if cambios and not dry_run:
@@ -3131,6 +3155,14 @@ async def mirror_refrescar_precios(
             "alcance": f"{len(ids_pedidos)} odoo_id" if ids_pedidos else "catalogo con stock",
             "revisados": revisados, "distintos_del_espejo": distintos,
             "actualizados": actualizados, "sin_precio_utilizable": sin_precio,
+            "solo_subidas": solo_subidas,
+            "reparto": {
+                "suben": suben, "bajan": bajan,
+                "euros_que_suben": round(euros_suben, 2),
+                "euros_que_bajan": round(euros_bajan, 2),
+                "omitidos_por_bajar": omitidos_por_bajar,
+                "mayor_subida": mayor_subida, "mayor_bajada": mayor_bajada,
+            },
             "muestra": muestra, "errores": errores[:5],
             "nota": ("Nada escrito, dry_run=true." if dry_run else
                      "El catalogo los recoge en su proxima vuelta y los feeds "
