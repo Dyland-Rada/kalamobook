@@ -317,6 +317,9 @@ def _liberar_reservas(job: dict):
 _desmentidos = [0]
 
 
+_sin_precio_apagados = [0]
+
+
 def _filas(totales: dict[int, float]) -> list[tuple]:
     """
     Junta el stock de Odoo con la ficha y el proveedor mas barato que lo
@@ -432,10 +435,20 @@ def _filas(totales: dict[int, float]) -> list[tuple]:
                 neto = max(0, bruto - int(reservadas or 0))
                 if desmentido:
                     _desmentidos[0] += 1
+                # Suelo de 2,90 garantizado EN LA TABLA, no solo en el feed.
+                # La regla del cliente es "<2,90 o sin precio -> no se publica",
+                # y hasta ahora solo la aplicaban los feeds por su cuenta. Si la
+                # tabla entrega stock con un precio por debajo, cualquier consumidor
+                # nuevo -AbeBooks entro asi- lo publica sin enterarse. El 28/09 se
+                # subieron dos libros a 0,28 y 1,78 EUR por este hueco.
+                pm = pricing_engine.precio_marketplace(pw)
+                sin_precio_valido = pm is None or pm < pricing_engine.UMBRAL_MIN
+                if sin_precio_valido:
+                    _sin_precio_apagados[0] += 1
                 filas.append((
                     isbn, nombre,
-                    0 if (castigado or desmentido) else neto,
-                    pricing_engine.precio_marketplace(pw),
+                    0 if (castigado or desmentido or sin_precio_valido) else neto,
+                    pm,
                     None,          # precio_web: falta la Capa 2
                     pw, prov,
                     float(coste) if coste is not None else None,
@@ -530,8 +543,10 @@ async def refrescar(dry_run: bool = False) -> dict:
 
         job["stage"] = "montando las filas"
         _desmentidos[0] = 0
+        _sin_precio_apagados[0] = 0
         filas = _filas(totales)
         job["desmentidos"] = _desmentidos[0]
+        job["apagados_por_precio"] = _sin_precio_apagados[0]
         job["filas"] = len(filas)
         job["sin_precio"] = sum(1 for f in filas if f[3] is None)
 

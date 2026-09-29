@@ -3063,6 +3063,11 @@ async def mirror_refrescar_precios(
         suben = bajan = omitidos_por_bajar = 0
         euros_suben = euros_bajan = 0.0
         mayor_subida = mayor_bajada = None
+        # Tramos de bajada: no es lo mismo perder un 3% que la mitad. Un 3% es
+        # el mismo libro un poco mas barato en otro proveedor; un 30% suele ser
+        # un precio mal cargado. Sin esto la cifra global no deja decidir.
+        tramos = {"<5%": [0, 0.0], "5-15%": [0, 0.0],
+                  "15-30%": [0, 0.0], ">30%": [0, 0.0]}
         muestra: list[dict] = []
         errores: list[str] = []
         try:
@@ -3107,6 +3112,11 @@ async def mirror_refrescar_precios(
                 if dif is not None and dif < 0:
                     bajan += 1
                     euros_bajan += -dif
+                    pct = (-dif / v * 100.0) if v else 0.0
+                    k = ("<5%" if pct < 5 else "5-15%" if pct < 15
+                         else "15-30%" if pct < 30 else ">30%")
+                    tramos[k][0] += 1
+                    tramos[k][1] += -dif
                     if mayor_bajada is None or dif < mayor_bajada["diferencia"]:
                         mayor_bajada = fila
                     if solo_subidas:
@@ -3161,6 +3171,8 @@ async def mirror_refrescar_precios(
                 "euros_que_suben": round(euros_suben, 2),
                 "euros_que_bajan": round(euros_bajan, 2),
                 "omitidos_por_bajar": omitidos_por_bajar,
+                "bajadas_por_tramo": {k: {"libros": v[0], "euros": round(v[1], 2)}
+                                      for k, v in tramos.items()},
                 "mayor_subida": mayor_subida, "mayor_bajada": mayor_bajada,
             },
             "muestra": muestra, "errores": errores[:5],
