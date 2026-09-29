@@ -318,6 +318,12 @@ _desmentidos = [0]
 
 
 _sin_precio_apagados = [0]
+_no_elegibles = [0]
+_brecha_grande = [0]
+
+# Hasta que operaciones revise el lote, un libro cuyo proveedor real cobre mas
+# de un 30% por debajo del precio publicado no se oferta. Eran 604 el 29/09.
+BRECHA_MAX = 0.30
 
 
 def _filas(totales: dict[int, float]) -> list[tuple]:
@@ -381,7 +387,15 @@ def _filas(totales: dict[int, float]) -> list[tuple]:
                               AND NOT EXISTS (
                                   SELECT 1 FROM proveedor_almacen_odoo pa2
                                   WHERE pa2.proveedor_email = v.proveedor_email))
-                       ) AS desmentido
+                       ) AS desmentido,
+                       -- El precio sale de aqui, no del espejo. Mismas
+                       -- condiciones que la puja de abajo -con stock, con
+                       -- almacen y sin pausa-, pero el MAXIMO en vez del
+                       -- minimo: se compra al barato y se vende al PVP mas
+                       -- alto del mercado. Antes esto estaba congelado en
+                       -- odoo_books_mirror.list_price desde el dia del alta,
+                       -- que es lo que producia las recaidas.
+                       mx.pvp_max
                 FROM odoo_books_mirror m
                 LEFT JOIN LATERAL (
                     SELECT proveedor_email, precio_con_iva,
@@ -412,6 +426,16 @@ def _filas(totales: dict[int, float]) -> list[tuple]:
                     ORDER BY precio_con_iva NULLS LAST, proveedor_email
                     LIMIT 1
                 ) lp ON true
+                LEFT JOIN LATERAL (
+                    SELECT MAX(lp3.precio_con_iva) AS pvp_max
+                    FROM libros_proveedor lp3
+                    WHERE lp3.isbn = m.barcode AND lp3.stock_disponible > 0
+                      AND EXISTS (SELECT 1 FROM proveedor_almacen_odoo pa3
+                                  WHERE pa3.proveedor_email = lp3.proveedor_email)
+                      AND NOT EXISTS (SELECT 1 FROM proveedor_pausa pp3
+                                      WHERE pp3.proveedor_email = lp3.proveedor_email
+                                        AND pp3.activo = false)
+                ) mx ON true
                 -- La fecha buena es esta. stock_actualizado_en, en la via
                 -- SINLI, solo se mueve cuando CAMBIA la cantidad: un libro
                 -- que Distriforma confirma a diario con 1 unidad se quedaba
@@ -429,8 +453,15 @@ def _filas(totales: dict[int, float]) -> list[tuple]:
                   AND m.barcode IS NOT NULL
             """, (trozo,))
             for (oid, isbn, nombre, precio, prov, coste, conf,
-                 castigado, reservadas, desmentido) in cur.fetchall():
-                pw = float(precio) if precio else None
+                 castigado, reservadas, desmentido, pvp_max) in cur.fetchall():
+                # El precio se recalcula en cada vuelta desde el PVP mas alto
+                # de los proveedores que pueden servir. `precio` -el list_price
+                # del espejo- ya no manda: lo escribia auto_scrape una sola vez
+                # al crear la ficha y nunca se refrescaba, asi que el precio se
+                # quedaba clavado en el del dia del alta. Decidido con
+                # operaciones el 29/09/2026.
+                pw = pricing_engine.web_price(float(pvp_max)) if pvp_max else None
+                cst = float(coste) if coste is not None else None
                 bruto = int(round(totales.get(int(oid), 0.0)))
                 neto = max(0, bruto - int(reservadas or 0))
                 if desmentido:
@@ -445,9 +476,30 @@ def _filas(totales: dict[int, float]) -> list[tuple]:
                 sin_precio_valido = pm is None or pm < pricing_engine.UMBRAL_MIN
                 if sin_precio_valido:
                     _sin_precio_apagados[0] += 1
+
+                # ELEGIBILIDAD: manda el proveedor que SIRVE, no el que pone el
+                # precio. El umbral de 2,90 se comprobaba contra el mas caro
+                # -que casi siempre llega- mientras el que envia estaba por
+                # debajo. Medido el 29/09/2026: 69 libros publicados a 4,89-4,99
+                # cuyo proveedor real cobraba entre 1,20 y 2,90.
+                no_elegible = cst is None or cst < pricing_engine.UMBRAL_MIN
+                if no_elegible:
+                    _no_elegibles[0] += 1
+
+                # Y si el precio que publicamos se aleja mas de un 30% del PVP
+                # de quien sirve, no se oferta hasta revisarlo a mano. El peor
+                # caso medido eran 260,00 EUR frente a 19,23 del proveedor real:
+                # con precio fijo eso da problemas, y suele ser dato mal cargado.
+                brecha = None
+                if cst and pvp_max and float(pvp_max) > 0:
+                    brecha = (float(pvp_max) - cst) / float(pvp_max)
+                brecha_grande = brecha is not None and brecha > BRECHA_MAX
+                if brecha_grande:
+                    _brecha_grande[0] += 1
                 filas.append((
                     isbn, nombre,
-                    0 if (castigado or desmentido or sin_precio_valido) else neto,
+                    0 if (castigado or desmentido or sin_precio_valido
+                          or no_elegible or brecha_grande) else neto,
                     pm,
                     None,          # precio_web: falta la Capa 2
                     pw, prov,
@@ -544,9 +596,13 @@ async def refrescar(dry_run: bool = False) -> dict:
         job["stage"] = "montando las filas"
         _desmentidos[0] = 0
         _sin_precio_apagados[0] = 0
+        _no_elegibles[0] = 0
+        _brecha_grande[0] = 0
         filas = _filas(totales)
         job["desmentidos"] = _desmentidos[0]
         job["apagados_por_precio"] = _sin_precio_apagados[0]
+        job["no_elegibles_menos_290"] = _no_elegibles[0]
+        job["apagados_por_brecha"] = _brecha_grande[0]
         job["filas"] = len(filas)
         job["sin_precio"] = sum(1 for f in filas if f[3] is None)
 

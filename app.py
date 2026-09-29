@@ -2993,6 +2993,65 @@ async def marketplace_olvidar_envio(
     })
 
 
+@app.get("/api/v1/audit/brecha-precio", tags=["Auditoria"])
+async def audit_brecha_precio(
+    umbral: float = Query(0.30, ge=0.05, le=0.95),
+    limite: int = Query(2000, ge=1, le=20000),
+):
+    """
+    Libros cuyo proveedor real cobra mucho menos que el precio publicado.
+
+    El precio sale del PVP mas alto de los proveedores con stock y el envio
+    del mas barato, que es lo acordado con operaciones el 29/09/2026: se
+    compra al barato y se vende al PVP mas alto del mercado. Pero cuando la
+    distancia entre los dos se dispara, la diferencia deja de ser margen y
+    pasa a ser dato mal cargado: el peor caso medido eran 260,00 EUR de
+    precio publicado frente a 19,23 del proveedor que sirve.
+
+    Ademas, si el libro tiene precio fijo, cobrar muy por encima del PVP real
+    es un problema legal, no solo comercial. Por eso estos no se ofertan
+    hasta revisarlos: catalogo_publicable les pone stock 0.
+
+    Esta es la lista para revisarlos.
+    """
+    import db
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        db.execute_query(cur, """
+            SELECT c.isbn, c.titulo, c.proveedor, c.precio_coste,
+                   c.precio_odoo, c.precio_marketplace, c.stock
+            FROM catalogo_publicable c
+            WHERE c.precio_coste > 0 AND c.precio_odoo > 0
+              AND (c.precio_odoo - c.precio_coste) / c.precio_odoo > ?
+            ORDER BY (c.precio_odoo - c.precio_coste) / c.precio_odoo DESC
+            LIMIT ?
+        """, (umbral, limite))
+        filas = cur.fetchall()
+    except Exception as e:
+        return JSONResponse(status_code=500, content={
+            "status": "error", "message": f"{type(e).__name__}: {e}"[:200]})
+    finally:
+        conn.close()
+
+    libros = []
+    for r in filas:
+        coste = float(r[3]) if r[3] is not None else None
+        pub = float(r[4]) if r[4] is not None else None
+        libros.append({
+            "isbn": r[0], "titulo": r[1], "proveedor_que_sirve": r[2],
+            "pvp_del_que_sirve": coste, "precio_publicado": pub,
+            "brecha_pct": round((pub - coste) / pub * 100, 1) if pub else None,
+            "diferencia_eur": round(pub - coste, 2) if (pub and coste) else None,
+            "stock": r[6],
+        })
+    return JSONResponse(content={
+        "status": "ok", "umbral_pct": round(umbral * 100, 1),
+        "total": len(libros), "libros": libros,
+        "nota": "Con stock 0 hasta que se revisen. Ver BRECHA_MAX en catalogo_publicable.py.",
+    })
+
+
 @app.post("/api/v1/odoo/mirror/refrescar-precios", tags=["Odoo"])
 async def mirror_refrescar_precios(
     payload: dict = Body(default={}),
