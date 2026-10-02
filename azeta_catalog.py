@@ -1,8 +1,10 @@
 """
 Carga del catalogo completo de AZETA al mirror.
 
-AZETA expone su catalogo entero (~1M libros) en un endpoint HTTP que devuelve
-un ZIP con un CSV (encoding latin-1, separador `|`, 22 columnas).
+AZETA expone su catalogo en un endpoint HTTP que devuelve un ZIP con un CSV
+(separador `|`, 22 columnas). Medido el 02/10/2026: ZIP de 129 MB, CSV de
+410 MB, 468.482 filas con ISBN valido. El encoding viene MEZCLADO —ver
+_decodificar()— y el fichero se lee en streaming, nunca entero en memoria.
 
 Cobertura medida del CSV:
   Titulo: 100%, Ean: 100%, Editorial: 100%, Precio S/IVA: 100%
@@ -18,8 +20,8 @@ azeta_iva / azeta_codigo / azeta_fetched_at especificas.
 NO push a Odoo desde aqui (eso es la Fase 2). Solo cargo al mirror.
 """
 import asyncio
-import io
 import os
+import tempfile
 import time
 import zipfile
 from datetime import datetime
@@ -190,37 +192,63 @@ def _parse_row(parts: list[str]) -> dict | None:
     }
 
 
-async def download_catalog_zip() -> bytes:
-    """Descarga el ZIP del catalogo AZETA. Devuelve bytes."""
-    timeout = aiohttp.ClientTimeout(total=300)
+async def download_catalog_zip(destino: str) -> int:
+    """
+    Descarga el ZIP del catalogo AZETA a un fichero. Devuelve los bytes escritos.
+
+    Va a disco y no a memoria a proposito: el ZIP son 129 MB y el CSV de dentro
+    410 MB. Cargando todo en RAM el proceso llegaba a 1,3 GB y el contenedor lo
+    mataba, asi que el panel enseñaba "error" sin mensaje — ningun except salta
+    cuando al proceso lo mata el OOM killer. Desde el 08/09/2026 no completaba
+    una sola vuelta por esto.
+    """
+    timeout = aiohttp.ClientTimeout(total=1800)
     params = {"user": AZETA_USER, "password": AZETA_PASS}
+    escritos = 0
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.get(CATALOG_URL, params=params) as resp:
             if resp.status != 200:
                 raise RuntimeError(f"AZETA catalog HTTP {resp.status}")
-            return await resp.read()
+            with open(destino, "wb") as f:
+                async for trozo in resp.content.iter_chunked(1 << 20):
+                    f.write(trozo)
+                    escritos += len(trozo)
+    return escritos
 
 
-def iter_csv_from_zip(zip_bytes: bytes) -> Iterator[dict]:
+def _decodificar(campo: bytes) -> str:
+    """
+    El CSV de AZETA mezcla las dos codificaciones, y no por filas: en la misma
+    linea el Titulo puede venir en latin-1 y la Editorial en UTF-8. Medido sobre
+    el catalogo del 02/10/2026: 51.634 filas mezcladas de las primeras 200.000.
+    Por eso se decide campo a campo y no de una vez.
+
+    Forzar latin-1 a todo —lo que se hacia— dejaba "Educación" como
+    "EducaciÃ³n" en el 48% del catalogo.
+
+    UTF-8 primero porque es el unico que falla cuando no le toca; latin-1 acepta
+    cualquier byte, asi que probarlo antes se tragaria los acentos del otro.
+    """
+    try:
+        return campo.decode("utf-8")
+    except UnicodeDecodeError:
+        return campo.decode("latin-1")
+
+
+def iter_csv_from_zip(zip_path: str) -> Iterator[dict]:
     """Generator que yield un dict por fila valida del CSV."""
-    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+    with zipfile.ZipFile(zip_path) as zf:
         for name in zf.namelist():
             if not name.lower().endswith(".csv"):
                 continue
             with zf.open(name) as f:
-                # CSV es grande (664MB), iteramos por lineas decodificadas
-                # Latin-1 jamas falla decodificando (todos los bytes son validos)
-                raw = f.read()
-            text = raw.decode("latin-1")
-            lines = text.splitlines()
-            if not lines:
-                continue
-            # Skip header
-            for ln in lines[1:]:
-                parts = ln.split("|")
-                row = _parse_row(parts)
-                if row:
-                    yield row
+                next(f, None)              # cabecera
+                for ln in f:               # linea a linea segun se descomprime
+                    partes = [_decodificar(c)
+                              for c in ln.rstrip(b"\r\n").split(b"|")]
+                    row = _parse_row(partes)
+                    if row:
+                        yield row
             return  # solo procesamos el primer CSV
         # Si llegamos aqui, no habia CSV en el ZIP
         raise RuntimeError("No se encontro ningun .csv dentro del ZIP")
@@ -348,15 +376,17 @@ async def run_catalog_sync(batch_size: int = 500) -> dict:
     job = catalog_job
     t_start = time.monotonic()
 
+    zip_path = os.path.join(tempfile.gettempdir(), "azeta_catalogo.zip")
+
     try:
         # 1. Descarga ZIP
         job["stage"] = "downloading"
         print("[AZETACat] Descargando catalogo ZIP...")
         t0 = time.monotonic()
-        zip_bytes = await download_catalog_zip()
+        descargados = await download_catalog_zip(zip_path)
         job["elapsed_download_s"] = round(time.monotonic() - t0, 2)
-        job["downloaded_bytes"] = len(zip_bytes)
-        print(f"[AZETACat] Descargado: {len(zip_bytes):,} bytes en {job['elapsed_download_s']}s")
+        job["downloaded_bytes"] = descargados
+        print(f"[AZETACat] Descargado: {descargados:,} bytes en {job['elapsed_download_s']}s")
 
         # 2. Parse + batch UPSERT
         job["stage"] = "processing"
@@ -365,7 +395,7 @@ async def run_catalog_sync(batch_size: int = 500) -> dict:
         t_parse_start = time.monotonic()
         t_upsert_total = 0.0
 
-        for row in iter_csv_from_zip(zip_bytes):
+        for row in iter_csv_from_zip(zip_path):
             if job["status"] != "running":
                 print("[AZETACat] Detenido por usuario")
                 break
@@ -411,5 +441,11 @@ async def run_catalog_sync(batch_size: int = 500) -> dict:
         err = f"{type(e).__name__}: {e!r}"
         job["errors"].append(err[:300])
         print(f"[AZETACat] Fatal: {err}")
+    finally:
+        # El ZIP ocupa 129 MB: si se queda, a la quinta vuelta no hay disco.
+        try:
+            os.remove(zip_path)
+        except OSError:
+            pass
 
     return job
