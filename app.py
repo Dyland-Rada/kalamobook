@@ -2089,6 +2089,51 @@ async def proveedores_reparar_catalogo(
     return JSONResponse(content={"status": "started", "proveedor": email or "TODOS"})
 
 
+@app.post("/api/v1/proveedores/despertar-apagados", tags=["Proveedores"])
+async def proveedores_despertar_apagados(
+    email: str | None = Query(None, description="proveedor_email; vacio = todo el catalogo"),
+    dry_run: bool = Query(True, description="True = solo contar"),
+):
+    """
+    Enciende los libros que nacieron archivados y hoy ya no deberian estarlo.
+
+    Un libro que un proveedor manda SIN precio se crea apagado, y eso es
+    correcto. El problema es que nadie vuelve a mirarlo cuando el precio
+    aparece: auto_scrape solo se fija en ISBNs que no estan en el espejo.
+
+    No lo cubre `reparar-catalogo`, que busca variantes archivadas con la
+    plantilla ACTIVA. Aqui la plantilla tambien esta archivada.
+
+    Empezar siempre con dry_run=true.
+    """
+    import threading
+    import sys
+    import proveedores_admin
+
+    if proveedores_admin.get_status().get("status") == "running":
+        return JSONResponse(status_code=409, content={
+            "status": "error", "message": "Ya hay un job de proveedores corriendo."
+        })
+
+    if dry_run:
+        return JSONResponse(content=await
+            proveedores_admin.despertar_apagados(email, dry_run=True))
+
+    def _run_in_thread():
+        if sys.platform == 'win32':
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
+        try:
+            new_loop.run_until_complete(
+                proveedores_admin.despertar_apagados(email, dry_run=False))
+        finally:
+            new_loop.close()
+
+    threading.Thread(target=_run_in_thread, daemon=True).start()
+    return JSONResponse(content={"status": "started", "accion": "despertar_apagados"})
+
+
 @app.post("/api/v1/proveedores/conciliar", tags=["Proveedores"])
 async def proveedores_conciliar(
     email: str | None = Query(None, description="proveedor_email; vacio = todos"),

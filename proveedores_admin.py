@@ -860,6 +860,164 @@ def _candidatos_con_stock(proveedor_email: str) -> dict[int, str]:
         conn.close()
 
 
+def _deberian_estar_vivos(proveedor_email: str | None = None) -> dict[int, str]:
+    """
+    {odoo_id: isbn} de los libros que HOY cumplen para estar encendidos:
+    algun proveedor con existencias y un PVP que pasa el umbral de 2,90.
+
+    Sin proveedor_email mira el catalogo entero. No le importa como estan en
+    Odoo: eso se pregunta despues, que es justo la comparacion que hace falta.
+    """
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        filtro = " AND lp.proveedor_email = ?" if proveedor_email else ""
+        args = (proveedor_email,) if proveedor_email else ()
+        db.execute_query(cur, f"""
+            SELECT DISTINCT m.odoo_id, lp.isbn
+            FROM libros_proveedor lp
+            JOIN odoo_books_mirror m ON m.barcode = lp.isbn
+            WHERE lp.stock_disponible > 0
+              AND COALESCE(lp.precio_con_iva, 0) >= 2.90
+              AND m.odoo_id IS NOT NULL{filtro}
+        """, args)
+        return {int(r[0]): r[1] for r in cur.fetchall()}
+    finally:
+        conn.close()
+
+
+async def despertar_apagados(proveedor_email: str | None = None,
+                             dry_run: bool = True) -> dict:
+    """
+    Enciende los libros que nacieron archivados y hoy ya no deberian estarlo.
+
+    El agujero que tapa: `auto_scrape` crea cada libro con
+    `active = (hay precio valido)`. Un libro que llega sin precio nace
+    apagado, y eso esta bien. Lo que no esta bien es lo que pasa despues:
+    auto_scrape solo mira ISBNs que NO estan en el espejo
+    (`m.barcode IS NULL`), asi que cuando el precio aparece —otro proveedor lo
+    trae, o el mismo lo corrige— ya nadie vuelve a pasar por el. Se queda
+    archivado para siempre, invisible al buscarlo en Odoo y rechazando stock
+    con "product.product no encontrado".
+
+    `reparar_catalogo` tampoco lo coge: busca variantes archivadas con la
+    PLANTILLA ACTIVA, y aqui esta archivada tambien la plantilla. Medido el
+    05/10/2026, encontraba 0 candidatos en los cuatro proveedores grandes
+    mientras habia 46.924 libros con stock de proveedor apagados en Odoo.
+
+    Caso de referencia: 9788430628124 (Barbero, Taurus), creado el 28/08 sin
+    precio, archivado desde entonces, con 99 unidades en Penguin y 30 en AZETA
+    el dia que se encontro.
+    """
+    global _job
+    _job = {
+        "status": "running", "accion": "despertar_apagados",
+        "proveedor": proveedor_email or "TODOS", "dry_run": dry_run,
+        "started_at": datetime.now().isoformat(), "stage": "buscando",
+        "deberian_vivos": 0, "archivados_en_odoo": 0, "archivados": 0,
+        "sin_track_inventory": 0,
+        "plantillas_despertadas": 0, "variantes_despertadas": 0,
+        "track_arreglados": 0, "marcados_resync": 0,
+        "errores_escritura": 0, "errors": [], "elapsed_s": 0,
+    }
+    job = _job
+    t0 = time.monotonic()
+    try:
+        vivos = _deberian_estar_vivos(proveedor_email)
+        job["deberian_vivos"] = len(vivos)
+
+        async with OdooClient() as odoo:
+            # Se le pide a Odoo SU lista de archivados y se cruza aqui, en vez
+            # de preguntarle por nuestros ~500.000 ids en lotes de 400: eso
+            # eran mas de mil viajes. Asi son unos pocos, de 40.000 en 40.000.
+            # Nombrar `active` en el dominio desactiva el filtro implicito de
+            # Odoo, que es la unica forma de ver los archivados.
+            todos = await _buscar(
+                odoo, [["active", "=", False], ["barcode", "!=", False]])
+            job["archivados_en_odoo"] = len(todos)
+            dormidos = [r["id"] for r in todos if r["id"] in vivos]
+            job["archivados"] = len(dormidos)
+
+            sin_track = [r["id"] for r in await _buscar(
+                odoo, [["is_storable", "=", False],
+                       ["active", "in", [True, False]]], ids_scope=dormidos)]
+            job["sin_track_inventory"] = len(sin_track)
+
+            if not dry_run and dormidos:
+                job["stage"] = "despertando plantillas"
+                for chunk in _chunks(dormidos, CHUNK):
+                    if job["status"] != "running":
+                        break
+                    try:
+                        await odoo.write("product.template", chunk,
+                                         {"active": True})
+                        job["plantillas_despertadas"] += len(chunk)
+                    except Exception as e:
+                        job["errores_escritura"] += len(chunk)
+                        job["errors"].append(
+                            f"plantillas {chunk[0]}..{chunk[-1]}: "
+                            f"{type(e).__name__}: {str(e)[:120]}")
+
+                # Odoo archiva las variantes en cascada al apagar la plantilla
+                # pero NO las devuelve al encenderla (regla API-15). Sin este
+                # paso el libro se ve en Odoo y sigue sin aceptar stock.
+                job["stage"] = "despertando variantes"
+                var = [r["id"] for r in await _buscar(
+                    odoo, [["active", "=", False]], modelo="product.product",
+                    ids_scope=dormidos, campo_scope="product_tmpl_id")]
+                for chunk in _chunks(var, CHUNK):
+                    if job["status"] != "running":
+                        break
+                    try:
+                        await odoo.write("product.product", chunk,
+                                         {"active": True})
+                        job["variantes_despertadas"] += len(chunk)
+                    except Exception as e:
+                        job["errores_escritura"] += len(chunk)
+                        job["errors"].append(
+                            f"variantes {chunk[0]}..{chunk[-1]}: "
+                            f"{type(e).__name__}: {str(e)[:120]}")
+
+                if sin_track:
+                    job["stage"] = "encendiendo Track Inventory"
+                    for chunk in _chunks(sin_track, CHUNK):
+                        try:
+                            await odoo.write("product.template", chunk,
+                                             {"is_storable": True})
+                            job["track_arreglados"] += len(chunk)
+                        except Exception as e:
+                            job["errores_escritura"] += len(chunk)
+                            job["errors"].append(
+                                f"is_storable {chunk[0]}..{chunk[-1]}: "
+                                f"{type(e).__name__}: {str(e)[:120]}")
+
+                # Despertarlos no les pone stock: sus filas siguen detras del
+                # marcapaginas del sync. Sin esto quedan vivos y a cero.
+                job["stage"] = "marcando para re-empuje"
+                job["marcados_resync"] = _marcar_resync_por_odoo_ids(dormidos)
+            job["stage"] = "done"
+        if job["status"] == "running":
+            job["status"] = "completed"
+    except Exception as e:
+        job["status"] = "error"
+        job["errors"].append(f"{type(e).__name__}: {e}"[:300])
+        print(f"[ProvAdmin] despertar_apagados FAIL: {e!r}")
+    finally:
+        job["elapsed_s"] = round(time.monotonic() - t0, 2)
+        _audit("despertar_apagados",
+               f"Despertar apagados {job['proveedor']}"
+               f"{' [DRY RUN]' if dry_run else ''}: "
+               f"{job['deberian_vivos']:,} deberian estar vivos, "
+               f"{job['archivados']:,} archivados "
+               f"({job['plantillas_despertadas']:,} plantillas y "
+               f"{job['variantes_despertadas']:,} variantes despertadas), "
+               f"{job['marcados_resync']:,} marcados para re-empuje "
+               f"({job['elapsed_s']}s)",
+               job, error=(job["status"] == "error"
+                           or job["errores_escritura"] > 0))
+    return job
+
+
 async def conciliar(proveedor_email: str | None = None,
                     dry_run: bool = True) -> dict:
     """
