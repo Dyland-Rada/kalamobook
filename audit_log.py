@@ -197,8 +197,12 @@ def get_events(categoria: str | None = None, nivel: str | None = None,
         conn.close()
 
 
-# Mapeo nombre-proveedor de sinli_auditoria -> proveedor_email de
-# libros_proveedor (el n8n usa razon social, nosotros el buzon).
+# Se conserva solo como respaldo: el cruce bueno es por email_canonico,
+# que la propia tabla trae. Esta lista estaba escrita a mano y cubria 7 de
+# los 15 proveedores, asi que AZETA, Podiprint, Logista, Machado, Penguin,
+# Anaya, Arcobaleno y Disal salian en el parte CEGALD con todo a null —
+# parecia que no mandaban fichero cuando lo mandaban a diario. Se vio el
+# 07/10/2026 intentando reclamar a Logista por un ISBN.
 _AUDITORIA_TO_EMAIL = {
     "ICARO DISTRIBUIDORA, S.L.": "sinli.icaro@zonalibros.com",
     "DISTRIFORMA, S.A.": "fandite@distriforma.es",
@@ -230,20 +234,19 @@ def get_cegald_overview() -> list[dict]:
         auditoria: dict[str, dict] = {}
         try:
             db.execute_query(cur, """
-                SELECT DISTINCT ON (proveedor)
-                       proveedor, procesado_en, registros
+                SELECT DISTINCT ON (email_canonico)
+                       email_canonico, proveedor, procesado_en, registros
                 FROM sinli_auditoria
-                WHERE email_asunto ILIKE ?
-                  AND proveedor IS NOT NULL
-                  AND proveedor != 'KALAMO BOOKS'
-                ORDER BY proveedor, procesado_en DESC
+                WHERE email_canonico IS NOT NULL
+                  AND (file_type = 'CEGALD' OR email_asunto ILIKE ?)
+                  AND COALESCE(proveedor, '') <> 'KALAMO BOOKS'
+                ORDER BY email_canonico, procesado_en DESC
             """, ('%CEGALD%',))
             for r in cur.fetchall():
-                email = _AUDITORIA_TO_EMAIL.get(r[0])
-                auditoria[email or r[0]] = {
-                    "nombre": r[0],
-                    "ultimo_cegald": str(r[1]),
-                    "registros": r[2],
+                auditoria[r[0]] = {
+                    "nombre": r[1],
+                    "ultimo_cegald": str(r[2]),
+                    "registros": r[3],
                 }
         except Exception as e:
             print(f"[Audit] sinli_auditoria no accesible: {e}")

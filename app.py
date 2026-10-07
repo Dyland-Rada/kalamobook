@@ -2264,6 +2264,7 @@ async def audit_requests(
 @app.get("/api/v1/audit/trazabilidad", tags=["Auditoria"])
 async def audit_trazabilidad(
     isbn: str = Query(..., description="ISBN/EAN a rastrear"),
+    proveedor: str | None = Query(None, description="proveedor_email; vacio = todos"),
     dias: int = Query(30, ge=1, le=365, description="ventana de ficheros a listar"),
 ):
     """
@@ -2366,11 +2367,14 @@ async def audit_trazabilidad(
             intervalo = (f"NOW() - INTERVAL '{int(dias)} days'"
                          if dbmod.IS_POSTGRES
                          else f"datetime('now', '-{int(dias)} days')")
+            filtro, args = "", ()
+            if proveedor and "email_canonico" in cols_a:
+                filtro, args = " AND email_canonico = ?", (proveedor,)
             dbmod.execute_query(cur, f"""
                 SELECT {sel} FROM sinli_auditoria
-                WHERE procesado_en >= {intervalo}
+                WHERE procesado_en >= {intervalo}{filtro}
                 ORDER BY procesado_en DESC
-            """)
+            """, args)
             out["ficheros_recibidos"] = [
                 {c: (str(v) if not isinstance(v, (int, float, type(None))) else v)
                  for c, v in zip(pedidas, fila)} for fila in cur.fetchall()]
