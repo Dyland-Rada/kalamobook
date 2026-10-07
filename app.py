@@ -2261,6 +2261,131 @@ async def audit_requests(
     })
 
 
+@app.get("/api/v1/audit/trazabilidad", tags=["Auditoria"])
+async def audit_trazabilidad(
+    isbn: str = Query(..., description="ISBN/EAN a rastrear"),
+    dias: int = Query(30, ge=1, le=365, description="ventana de ficheros a listar"),
+):
+    """
+    Que nos ha mandado cada proveedor sobre un ISBN, y cuando.
+
+    Pensado para reclamar: cruza las tres fuentes que de verdad guardan
+    evidencia y las devuelve crudas, con sus fechas.
+
+      1. `libros_proveedor`  — lo que creemos hoy de ese libro.
+      2. `cegald_isbns_v2`   — cada vez que el ISBN vino dentro de un
+                               fichero. OJO: la tabla se poda y solo
+                               conserva ~10 dias, asi que la ausencia de
+                               filas antiguas NO prueba nada. El campo
+                               `retencion` dice desde cuando hay datos.
+      3. `sinli_auditoria`   — los ficheros recibidos del proveedor en la
+                               ventana, con su numero de registros.
+
+    La pregunta que contesta: "en los N ficheros que nos mandasteis entre
+    tal y tal fecha, con X registros cada uno, este ISBN no aparece".
+    """
+    import db as dbmod
+
+    isbn = (isbn or "").strip().replace("-", "")
+    if not isbn:
+        return JSONResponse(status_code=400, content={"error": "isbn requerido"})
+
+    out: dict[str, Any] = {"isbn": isbn,
+                           "generado_en": datetime.now().isoformat()}
+    conn = dbmod.get_connection()
+    cur = conn.cursor()
+
+    def _columnas(tabla: str) -> list[str]:
+        """Las columnas reales de la tabla. Se consultan en vez de darlas
+        por sabidas porque estas tablas las escribe el n8n del Server A y
+        han cambiado de forma al menos una vez (de cegald_isbns a _v2)."""
+        try:
+            dbmod.execute_query(cur, """
+                SELECT column_name FROM information_schema.columns
+                WHERE table_name = ? ORDER BY ordinal_position
+            """, (tabla,))
+            return [r[0] for r in cur.fetchall()]
+        except Exception:
+            try: conn.rollback()
+            except Exception: pass
+            return []
+
+    try:
+        # 1. Lo que creemos hoy
+        dbmod.execute_query(cur, """
+            SELECT lp.proveedor_email, lp.stock_disponible, lp.precio_con_iva,
+                   lp.stock_actualizado_en, lp.actualizado_en
+            FROM libros_proveedor lp
+            WHERE lp.isbn = ?
+            ORDER BY lp.stock_disponible DESC
+        """, (isbn,))
+        out["proveedores"] = [{
+            "proveedor_email": r[0], "stock_disponible": r[1],
+            "precio_con_iva": float(r[2]) if r[2] is not None else None,
+            "stock_cambio_por_ultima_vez": str(r[3]) if r[3] else None,
+            "fila_actualizada": str(r[4]) if r[4] else None,
+        } for r in cur.fetchall()]
+
+        # 2. Cada aparicion del ISBN dentro de un fichero
+        cols = _columnas("cegald_isbns_v2")
+        if cols:
+            sel = ", ".join(cols)
+            dbmod.execute_query(cur, f"""
+                SELECT {sel} FROM cegald_isbns_v2
+                WHERE isbn = ? ORDER BY registrado_en DESC
+            """, (isbn,))
+            out["apariciones_en_ficheros"] = [
+                {c: (str(v) if not isinstance(v, (int, float, type(None))) else v)
+                 for c, v in zip(cols, fila)} for fila in cur.fetchall()]
+            dbmod.execute_query(cur, """
+                SELECT MIN(registrado_en), MAX(registrado_en), COUNT(*)
+                FROM cegald_isbns_v2
+            """)
+            r = cur.fetchone()
+            out["retencion"] = {
+                "tabla": "cegald_isbns_v2",
+                "dato_mas_antiguo": str(r[0]) if r and r[0] else None,
+                "dato_mas_reciente": str(r[1]) if r and r[1] else None,
+                "filas_totales": int(r[2]) if r and r[2] is not None else None,
+                "aviso": "La tabla se poda. Que no haya filas de una fecha "
+                         "anterior al dato mas antiguo no prueba que el "
+                         "proveedor no lo mandara: prueba que ya no lo "
+                         "guardamos.",
+            }
+        else:
+            out["apariciones_en_ficheros"] = []
+            out["retencion"] = {"error": "cegald_isbns_v2 no accesible"}
+
+        # 3. Los ficheros que nos mandaron en la ventana
+        cols_a = _columnas("sinli_auditoria")
+        if cols_a:
+            pedidas = [c for c in ("proveedor", "email_canonico", "procesado_en",
+                                   "file_type", "registros", "archivo_nombre",
+                                   "email_asunto") if c in cols_a]
+            sel = ", ".join(pedidas)
+            intervalo = (f"NOW() - INTERVAL '{int(dias)} days'"
+                         if dbmod.IS_POSTGRES
+                         else f"datetime('now', '-{int(dias)} days')")
+            dbmod.execute_query(cur, f"""
+                SELECT {sel} FROM sinli_auditoria
+                WHERE procesado_en >= {intervalo}
+                ORDER BY procesado_en DESC
+            """)
+            out["ficheros_recibidos"] = [
+                {c: (str(v) if not isinstance(v, (int, float, type(None))) else v)
+                 for c, v in zip(pedidas, fila)} for fila in cur.fetchall()]
+            out["ventana_dias"] = dias
+        else:
+            out["ficheros_recibidos"] = []
+    except Exception as e:
+        out["error"] = f"{type(e).__name__}: {e}"[:300]
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+    return JSONResponse(content=out)
+
+
 @app.get("/api/v1/audit/cegalds", tags=["Auditoria"])
 async def audit_cegalds():
     """
