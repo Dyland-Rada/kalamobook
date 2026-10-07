@@ -2285,6 +2285,11 @@ async def audit_trazabilidad(
     La pregunta que contesta: "en los N ficheros que nos mandasteis entre
     tal y tal fecha, con X registros cada uno, este ISBN no aparece".
     """
+    # datetime no esta importado a nivel de modulo en este fichero: cada
+    # funcion que lo necesita se lo trae. Usarlo suelto daba NameError antes
+    # del try, y eso sale como un 500 pelado sin traza en la respuesta.
+    from datetime import datetime as _dt
+
     import db as dbmod
 
     isbn = (isbn or "").strip().replace("-", "")
@@ -2292,7 +2297,22 @@ async def audit_trazabilidad(
         return JSONResponse(status_code=400, content={"error": "isbn requerido"})
 
     out: dict[str, Any] = {"isbn": isbn,
-                           "generado_en": datetime.now().isoformat()}
+                           "generado_en": _dt.now().isoformat()}
+
+    def _ser(v):
+        """psycopg2 devuelve Decimal para los NUMERIC y JSONResponse no sabe
+        serializarlo: sale un 500 pelado sin traza. Todo lo que no sea int,
+        float, bool o None se pasa por str()."""
+        if v is None or isinstance(v, (int, float, bool)):
+            return v
+        try:
+            from decimal import Decimal
+            if isinstance(v, Decimal):
+                return float(v)
+        except Exception:
+            pass
+        return str(v)
+
     conn = dbmod.get_connection()
     cur = conn.cursor()
 
@@ -2321,7 +2341,7 @@ async def audit_trazabilidad(
             ORDER BY lp.stock_disponible DESC
         """, (isbn,))
         out["proveedores"] = [{
-            "proveedor_email": r[0], "stock_disponible": r[1],
+            "proveedor_email": r[0], "stock_disponible": _ser(r[1]),
             "precio_con_iva": float(r[2]) if r[2] is not None else None,
             "stock_cambio_por_ultima_vez": str(r[3]) if r[3] else None,
             "fila_actualizada": str(r[4]) if r[4] else None,
@@ -2336,8 +2356,8 @@ async def audit_trazabilidad(
                 WHERE isbn = ? ORDER BY registrado_en DESC
             """, (isbn,))
             out["apariciones_en_ficheros"] = [
-                {c: (str(v) if not isinstance(v, (int, float, type(None))) else v)
-                 for c, v in zip(cols, fila)} for fila in cur.fetchall()]
+                {c: _ser(v) for c, v in zip(cols, fila)}
+                for fila in cur.fetchall()]
             dbmod.execute_query(cur, """
                 SELECT MIN(registrado_en), MAX(registrado_en), COUNT(*)
                 FROM cegald_isbns_v2
@@ -2376,8 +2396,8 @@ async def audit_trazabilidad(
                 ORDER BY procesado_en DESC
             """, args)
             out["ficheros_recibidos"] = [
-                {c: (str(v) if not isinstance(v, (int, float, type(None))) else v)
-                 for c, v in zip(pedidas, fila)} for fila in cur.fetchall()]
+                {c: _ser(v) for c, v in zip(pedidas, fila)}
+                for fila in cur.fetchall()]
             out["ventana_dias"] = dias
         else:
             out["ficheros_recibidos"] = []
@@ -2387,7 +2407,14 @@ async def audit_trazabilidad(
         try: conn.close()
         except Exception: pass
 
-    return JSONResponse(content=out)
+    def _limpiar(o):
+        if isinstance(o, dict):
+            return {str(k): _limpiar(v) for k, v in o.items()}
+        if isinstance(o, (list, tuple)):
+            return [_limpiar(v) for v in o]
+        return _ser(o)
+
+    return JSONResponse(content=_limpiar(out))
 
 
 @app.get("/api/v1/audit/cegalds", tags=["Auditoria"])
