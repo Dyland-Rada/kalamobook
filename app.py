@@ -2377,6 +2377,31 @@ async def audit_trazabilidad(
             out["apariciones_en_ficheros"] = []
             out["retencion"] = {"error": "cegald_isbns_v2 no accesible"}
 
+        # 2b. Que ficheros de stock hemos ingerido de ese proveedor.
+        # Logista manda 2-3 adjuntos por correo (PODSTK_<fecha>_1.TXT,
+        # _2, _3...) y hasta que no se listan los nombres no hay forma de
+        # saber si se cargan todos o solo el primero.
+        if proveedor and cols:
+            try:
+                dbmod.execute_query(cur, """
+                    SELECT archivo_nombre, COUNT(DISTINCT isbn),
+                           MIN(registrado_en), MAX(registrado_en)
+                    FROM cegald_isbns_v2
+                    WHERE proveedor_email = ?
+                    GROUP BY archivo_nombre
+                    ORDER BY MAX(registrado_en) DESC
+                """, (proveedor,))
+                out["ficheros_de_stock_ingeridos"] = [{
+                    "archivo": r[0], "isbns_distintos": int(r[1] or 0),
+                    "primera_vez": str(r[2]) if r[2] else None,
+                    "ultima_vez": str(r[3]) if r[3] else None,
+                } for r in cur.fetchall()]
+            except Exception as e:
+                try: conn.rollback()
+                except Exception: pass
+                out["ficheros_de_stock_ingeridos"] = {
+                    "error": f"{type(e).__name__}: {e}"[:200]}
+
         # 3. Los ficheros que nos mandaron en la ventana
         cols_a = _columnas("sinli_auditoria")
         if cols_a:
