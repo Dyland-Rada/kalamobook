@@ -303,6 +303,21 @@ async def startup():
         except Exception as e:
             print(f"[Startup] Auto-scrape cron FALLO: {type(e).__name__}: {e}")
 
+    # El catalogo de AZETA (titulo, autor, editorial, portada, sinopsis).
+    # Va encendido por defecto, no detras de una variable como los de arriba:
+    # no tenia reloj y estuvo 30 dias congelado sin que nadie se enterara.
+    # Para apagarlo, AZETA_CATALOG_CRON_ENABLED=0.
+    if os.environ.get("AZETA_CATALOG_CRON_ENABLED", "1").lower() not in ("0", "false", "no"):
+        try:
+            import azeta_catalog
+            if azeta_catalog.start_cron():
+                print(f"[Startup] Catalogo AZETA cron AUTO-ARRANCADO "
+                      f"(intervalo {azeta_catalog.CRON_INTERVAL_S}s)")
+            else:
+                print("[Startup] Catalogo AZETA cron NO arrancado (ya activo)")
+        except Exception as e:
+            print(f"[Startup] Catalogo AZETA cron FALLO: {type(e).__name__}: {e}")
+
 
 # ─── Web Interface (HTML) ────────────────────────────────────────────
 
@@ -1182,6 +1197,33 @@ async def azeta_catalog_sync_stop():
     return JSONResponse(status_code=400, content={
         "status": "error", "message": "No hay job corriendo."
     })
+
+
+@app.post("/api/v1/azeta/catalog-cron/start", tags=["AZETA"])
+async def azeta_catalog_cron_start():
+    """Arranca el reloj diario del catalogo de AZETA."""
+    import azeta_catalog
+    if azeta_catalog.start_cron():
+        return JSONResponse(content={
+            "status": "started",
+            "interval_s": azeta_catalog.CRON_INTERVAL_S})
+    return JSONResponse(status_code=400, content={
+        "status": "error", "message": "Ya estaba corriendo."})
+
+
+@app.post("/api/v1/azeta/catalog-cron/stop", tags=["AZETA"])
+async def azeta_catalog_cron_stop():
+    import azeta_catalog
+    if azeta_catalog.stop_cron():
+        return JSONResponse(content={"status": "stopping"})
+    return JSONResponse(status_code=400, content={
+        "status": "error", "message": "No estaba corriendo."})
+
+
+@app.get("/api/v1/azeta/catalog-cron/status", tags=["AZETA"])
+async def azeta_catalog_cron_status():
+    import azeta_catalog
+    return JSONResponse(content=azeta_catalog.get_cron_status())
 
 
 @app.get("/api/v1/azeta/catalog-status", tags=["AZETA"])

@@ -96,6 +96,12 @@ def _revisar_crones(arreglar: bool) -> list[dict]:
          "get_cron_status", "start_cron"),
         ("cron_catalogo", "Cron del catalogo publicable", "catalogo_publicable",
          "get_cron_status", "start_cron"),
+        # Y este faltaba tambien. La ficha de los libros de AZETA —titulo,
+        # autor, editorial, portada, sinopsis— se quedo congelada del 08/09
+        # al 08/10 de 2026 y el vigilante daba 11 de 11 en verde todo ese
+        # mes, porque no la miraba. El stock si estaba vigilado; la ficha no.
+        ("cron_catalogo_azeta", "Cron del catalogo de AZETA", "azeta_catalog",
+         "get_cron_status", "start_cron"),
     ]
     for clave, titulo, modulo, fn_estado, fn_arrancar in definicion:
         try:

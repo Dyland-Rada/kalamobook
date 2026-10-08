@@ -449,3 +449,86 @@ async def run_catalog_sync(batch_size: int = 500) -> dict:
             pass
 
     return job
+
+
+# ─── Cron del catalogo ────────────────────────────────────────────────
+# Hasta el 08/10/2026 esto no existia: la carga del catalogo solo corria si
+# alguien le daba al boton del panel. Estuvo congelada 30 dias —del 08/09 al
+# 08/10— sin que saltara ninguna alarma, porque el vigilante tampoco la mira.
+# El stock si tenia su reloj horario; la ficha del libro no tenia ninguno.
+CRON_INTERVAL_S = int(os.environ.get("AZETA_CATALOG_CRON_INTERVAL_S", str(24 * 3600)))
+
+_cron_task = None
+_cron_state: dict = {
+    "enabled": False,
+    "interval_s": CRON_INTERVAL_S,
+    "last_run_at": None,
+    "last_run_status": None,
+    "last_summary": None,
+    "next_run_at": None,
+    "runs_total": 0,
+    "errors": [],
+}
+
+
+def get_cron_status() -> dict:
+    out = dict(_cron_state)
+    out["errors"] = out.get("errors", [])[-10:]
+    out["task_running"] = bool(_cron_task and not _cron_task.done())
+    out["azeta_last_fetched"] = _last_azeta_fetched()
+    return out
+
+
+async def _cron_loop():
+    from datetime import timedelta
+    print(f"[AZETACatCron] Arrancado, intervalo {_cron_state['interval_s']}s")
+    while _cron_state["enabled"]:
+        try:
+            res = await run_catalog_sync()
+            _cron_state["last_run_at"] = datetime.now().isoformat()
+            _cron_state["last_run_status"] = res.get("status")
+            _cron_state["last_summary"] = (
+                f"{res.get('rows_parsed', 0):,} filas, "
+                f"{res.get('updated', 0):,} actualizados")
+            _cron_state["runs_total"] += 1
+            if res.get("errors"):
+                _cron_state["errors"] += res["errors"][:3]
+            print(f"[AZETACatCron] Run #{_cron_state['runs_total']}: "
+                  f"{res.get('status')} {_cron_state['last_summary']}")
+        except Exception as e:
+            _cron_state["last_run_status"] = "error"
+            _cron_state["errors"].append(f"{type(e).__name__}: {e!r}"[:300])
+            print(f"[AZETACatCron] Fatal: {e!r}")
+
+        _cron_state["next_run_at"] = (
+            datetime.now() + timedelta(seconds=_cron_state["interval_s"])
+        ).isoformat()
+        # Se duerme de segundo en segundo para que un stop se note enseguida
+        # y no haya que esperar a que venza el intervalo entero.
+        for _ in range(_cron_state["interval_s"]):
+            if not _cron_state["enabled"]:
+                break
+            await asyncio.sleep(1)
+    print("[AZETACatCron] Detenido")
+    _cron_state["next_run_at"] = None
+
+
+def start_cron() -> bool:
+    global _cron_task
+    if _cron_task and not _cron_task.done():
+        return False
+    _cron_state["enabled"] = True
+    _cron_state["errors"] = []
+    try:
+        _cron_task = asyncio.create_task(_cron_loop())
+        return True
+    except RuntimeError:
+        _cron_state["enabled"] = False
+        return False
+
+
+def stop_cron() -> bool:
+    if not _cron_state["enabled"]:
+        return False
+    _cron_state["enabled"] = False
+    return True
