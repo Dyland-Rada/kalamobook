@@ -16,6 +16,7 @@ Solo apaga (active=False), NUNCA borra.
 El -0,01 de marketplace (API-16) NO se aplica aqui: es capa de exportacion.
 """
 import asyncio
+import os
 import time
 from collections import defaultdict
 from datetime import datetime
@@ -49,6 +50,60 @@ def web_price(pvp) -> float | None:
         return None
     p = float(pvp)
     return round(p + supplement(p), 2)
+
+
+# ── Capa 0: ajustar el PVP segun lo que nos descuenta el proveedor ──────
+# Va ANTES que el suplemento de la Capa 1, sobre el PVP crudo.
+#
+# AZETA no descuenta lo mismo en todas sus lineas. Medido sobre su feed del
+# 07/10/2026, de 1.035.248 libros con precio solo 497.705 llegan al 30%; los
+# otros 537.543 se quedan en 27, 25, 20 o menos. En esos, vender al PVP del
+# editor deja un margen por debajo del objetivo.
+#
+# La regla: subir el PVP hasta que la venta deje el margen que se busca.
+#
+#     coste_base = pvp / (1 + iva) * (1 - descuento)      <- lo que pagamos
+#     queremos    (venta_base - coste_base) / venta_base = margen
+#     => venta_base = coste_base / (1 - margen)
+#     => pvp_nuevo  = pvp * (1 - descuento) / (1 - margen)
+#
+# El IVA se va en la division, asi que el factor no depende de el. Un libro
+# al 20% de descuento necesita x1,1429; al 25%, x1,0714.
+#
+# Idempotente como el resto del motor: siempre se calcula desde el PVP crudo
+# del proveedor, nunca sobre un PVP ya ajustado.
+MARGEN_OBJETIVO = float(os.environ.get("KALAMO_MARGEN_OBJETIVO_PCT", "30"))
+
+
+def pvp_por_margen(pvp, descuento, margen_pct: float | None = None):
+    """
+    PVP necesario para que la venta deje `margen_pct` de margen, sabiendo
+    que el proveedor nos descuenta `descuento` por ciento.
+
+    Devuelve el PVP crudo sin tocar cuando el descuento ya llega al objetivo
+    —no se baja el precio nunca— y None cuando faltan datos.
+    """
+    if pvp is None or descuento is None:
+        return None
+    m = MARGEN_OBJETIVO if margen_pct is None else float(margen_pct)
+    if not (0 <= m < 100):
+        raise ValueError(f"margen fuera de rango: {m}")
+    p, d = float(pvp), float(descuento)
+    if p <= 0:
+        return None
+    if d >= m:
+        return round(p, 2)
+    return round(p * (1 - d / 100) / (1 - m / 100), 2)
+
+
+def margen_real(pvp, descuento) -> float | None:
+    """Margen que deja hoy ese libro, en por ciento. Es el propio descuento:
+    comprando al (1-d) de la base y vendiendo a la base, el margen sobre
+    venta ES d. Se expone aparte para que el calculo quede explicito donde
+    se use y no haya que recordarlo."""
+    if pvp is None or descuento is None:
+        return None
+    return round(float(descuento), 2)
 
 
 # ── Capa 3: descuento de marketplace ────────────────────────────────────

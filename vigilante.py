@@ -102,6 +102,8 @@ def _revisar_crones(arreglar: bool) -> list[dict]:
         # mes, porque no la miraba. El stock si estaba vigilado; la ficha no.
         ("cron_catalogo_azeta", "Cron del catalogo de AZETA", "azeta_catalog",
          "get_cron_status", "start_cron"),
+        ("cron_feed_azeta", "Cron del feed de descuentos AZETA", "azeta_feed",
+         "get_cron_status", "start_cron"),
     ]
     for clave, titulo, modulo, fn_estado, fn_arrancar in definicion:
         try:

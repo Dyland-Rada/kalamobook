@@ -318,6 +318,20 @@ async def startup():
         except Exception as e:
             print(f"[Startup] Catalogo AZETA cron FALLO: {type(e).__name__}: {e}")
 
+    # El feed de descuentos que AZETA deja en el SFTP. Un fichero al dia.
+    # Solo arranca si hay credencial configurada; sin ella no tiene sentido.
+    if os.environ.get("AZETA_FEED_CRON_ENABLED", "1").lower() not in ("0", "false", "no"):
+        try:
+            import azeta_feed
+            if azeta_feed.start_cron():
+                print(f"[Startup] Feed descuentos AZETA cron AUTO-ARRANCADO "
+                      f"(intervalo {azeta_feed.CRON_INTERVAL_S}s)")
+            else:
+                print("[Startup] Feed descuentos AZETA cron NO arrancado "
+                      "(ya activo, o falta AZETA_SFTP_PASS)")
+        except Exception as e:
+            print(f"[Startup] Feed descuentos AZETA cron FALLO: {type(e).__name__}: {e}")
+
 
 # ─── Web Interface (HTML) ────────────────────────────────────────────
 
@@ -1197,6 +1211,153 @@ async def azeta_catalog_sync_stop():
     return JSONResponse(status_code=400, content={
         "status": "error", "message": "No hay job corriendo."
     })
+
+
+@app.get("/api/v1/azeta/feed/ficheros", tags=["AZETA"])
+async def azeta_feed_ficheros():
+    """Que feeds de descuento hay ahora mismo en la carpeta SFTP."""
+    import azeta_feed
+    try:
+        return JSONResponse(content={"carpeta": azeta_feed.SFTP_DIR,
+                                     "ficheros": azeta_feed.listar_ficheros()})
+    except Exception as e:
+        return JSONResponse(status_code=502, content={
+            "status": "error", "message": f"{type(e).__name__}: {e}"[:300]})
+
+
+@app.post("/api/v1/azeta/feed/cargar", tags=["AZETA"])
+async def azeta_feed_cargar(
+    fichero: str | None = Query(None, description="vacio = el mas reciente"),
+    dry_run: bool = Query(False, description="True = leer y contar, sin guardar"),
+):
+    """
+    Carga el feed de descuentos de AZETA desde la carpeta SFTP.
+
+    El fichero completo son 720 MB, asi que se lee en streaming. Tarda.
+    """
+    import threading
+    import azeta_feed
+
+    if azeta_feed.get_status().get("status") == "running":
+        return JSONResponse(status_code=409, content={
+            "status": "error", "message": "Ya hay una carga del feed corriendo."})
+
+    threading.Thread(target=azeta_feed.cargar,
+                     args=(fichero, dry_run), daemon=True).start()
+    return JSONResponse(content={"status": "started", "fichero": fichero,
+                                 "dry_run": dry_run})
+
+
+@app.get("/api/v1/azeta/feed/estado", tags=["AZETA"])
+async def azeta_feed_estado():
+    import azeta_feed
+    return JSONResponse(content=azeta_feed.get_status())
+
+
+@app.post("/api/v1/azeta/feed/parar", tags=["AZETA"])
+async def azeta_feed_parar():
+    import azeta_feed
+    if azeta_feed.stop():
+        return JSONResponse(content={"status": "stopping"})
+    return JSONResponse(status_code=400, content={
+        "status": "error", "message": "No hay carga corriendo."})
+
+
+@app.post("/api/v1/azeta/feed/cron/start", tags=["AZETA"])
+async def azeta_feed_cron_start():
+    import azeta_feed
+    if azeta_feed.start_cron():
+        return JSONResponse(content={"status": "started",
+                                     "interval_s": azeta_feed.CRON_INTERVAL_S})
+    return JSONResponse(status_code=400, content={
+        "status": "error",
+        "message": "Ya estaba corriendo, o falta AZETA_SFTP_PASS."})
+
+
+@app.post("/api/v1/azeta/feed/cron/stop", tags=["AZETA"])
+async def azeta_feed_cron_stop():
+    import azeta_feed
+    if azeta_feed.stop_cron():
+        return JSONResponse(content={"status": "stopping"})
+    return JSONResponse(status_code=400, content={
+        "status": "error", "message": "No estaba corriendo."})
+
+
+@app.get("/api/v1/azeta/feed/cron/status", tags=["AZETA"])
+async def azeta_feed_cron_status():
+    import azeta_feed
+    return JSONResponse(content=azeta_feed.get_cron_status())
+
+
+@app.get("/api/v1/precios/impacto-descuentos", tags=["Precios"])
+async def precios_impacto_descuentos(
+    margen: float | None = Query(None, ge=0, lt=100,
+                                 description="margen objetivo en %; vacio = el configurado"),
+):
+    """
+    Cuanto subiria el PVP si se aplicara la Capa 0, y a cuantos libros.
+
+    NO cambia nada: es el informe previo. Cruza el feed de descuentos de
+    AZETA con lo que hoy vendemos de AZETA, para que el numero sea el de
+    libros reales y no el del catalogo entero del proveedor.
+    """
+    import db as dbmod
+    import pricing_engine as pe
+    import azeta_feed
+
+    m = pe.MARGEN_OBJETIVO if margen is None else float(margen)
+    conn = dbmod.get_connection()
+    cur = conn.cursor()
+    try:
+        dbmod.execute_query(cur, f"""
+            SELECT f.descuento, COUNT(*), SUM(f.pvp), AVG(f.pvp)
+            FROM {azeta_feed.TABLA} f
+            JOIN libros_proveedor lp
+              ON lp.isbn = f.isbn
+             AND lp.proveedor_email = 'info@azetadistribuciones.es'
+             AND lp.stock_disponible > 0
+            WHERE f.activo AND f.descuento IS NOT NULL AND f.pvp > 0
+            GROUP BY f.descuento
+            ORDER BY f.descuento DESC
+        """)
+        tramos, afectados, total = [], 0, 0
+        pvp_antes = pvp_despues = 0.0
+        for desc, n, suma, media in cur.fetchall():
+            d = float(desc); n = int(n); suma = float(suma or 0)
+            factor = 1.0 if d >= m else (1 - d / 100) / (1 - m / 100)
+            total += n
+            pvp_antes += suma
+            pvp_despues += suma * factor
+            if d < m:
+                afectados += n
+            tramos.append({
+                "descuento_pct": d, "libros": n,
+                "pvp_medio": round(float(media or 0), 2),
+                "factor": round(factor, 4),
+                "subida_pct": round((factor - 1) * 100, 1),
+                "cumple_ya": d >= m,
+            })
+        return JSONResponse(content={
+            "margen_objetivo_pct": m,
+            "variable": "KALAMO_MARGEN_OBJETIVO_PCT",
+            "libros_de_azeta_con_stock_y_descuento": total,
+            "a_los_que_subiria_el_pvp": afectados,
+            "ya_cumplen": total - afectados,
+            "suma_pvp_actual": round(pvp_antes, 2),
+            "suma_pvp_ajustado": round(pvp_despues, 2),
+            "subida_media_pct": (round((pvp_despues / pvp_antes - 1) * 100, 2)
+                                 if pvp_antes else None),
+            "tramos": tramos,
+            "aviso": "Informe previo. No se ha cambiado ningun precio.",
+        })
+    except Exception as e:
+        return JSONResponse(status_code=500, content={
+            "status": "error", "message": f"{type(e).__name__}: {e}"[:300]})
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 @app.post("/api/v1/azeta/catalog-cron/start", tags=["AZETA"])

@@ -9,3 +9,4 @@ python-multipart
 itsdangerous
 psycopg2-binary
 aiohttp
+paramiko
