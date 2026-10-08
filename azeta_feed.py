@@ -176,6 +176,13 @@ def listar_ficheros() -> list[dict]:
 def _upsert(cur, lote: list[tuple]) -> int:
     if not lote:
         return 0
+    # El feed repite EAN dentro del mismo lote y Postgres rechaza un
+    # ON CONFLICT que toque la misma fila dos veces (CardinalityViolation).
+    # Se queda la ultima aparicion, que es la que manda en un UPSERT normal.
+    unicos: dict = {}
+    for fila in lote:
+        unicos[fila[0]] = fila
+    lote = list(unicos.values())
     # db.execute_query traduce '?' a '%s' en Postgres, pero aqui se arma el
     # VALUES a mano para meter el lote entero de una vez, asi que la marca se
     # elige segun el motor en vez de confiar en esa traduccion.
