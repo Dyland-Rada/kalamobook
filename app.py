@@ -1289,6 +1289,48 @@ async def azeta_feed_cron_status():
     return JSONResponse(content=azeta_feed.get_cron_status())
 
 
+@app.get("/api/v1/informes/stock-excel", tags=["Informes"])
+async def informe_stock_excel(
+    max_proveedores: int | None = Query(None, ge=1, le=20,
+                                        description="columnas PROVEEDOR_n"),
+):
+    """
+    Excel con todos los libros con stock y quien puede servirlos.
+
+    Una fila por ISBN: ISBN, NOMBRE, PROVEEDORES y PROVEEDOR_1..n. Es la
+    foto del momento en que se pide.
+
+    Tarda unos minutos: son ~550.000 ISBN. Va a un hilo y NO se espera desde
+    el bucle del servidor, que es lo que tumbo el panel el 13/10.
+    """
+    import asyncio as _a
+    import informe_stock
+
+    if informe_stock.get_status().get("status") == "running":
+        return JSONResponse(status_code=409, content={
+            "status": "error", "message": "Ya hay un informe generandose."})
+
+    res = await _a.to_thread(informe_stock.generar, None, max_proveedores)
+    if res.get("status") != "completed":
+        return JSONResponse(status_code=500, content=res)
+
+    return FileResponse(
+        res["ruta"],
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=os.path.basename(res["ruta"]),
+        headers={
+            "X-Informe-Isbns": str(res["isbns"]),
+            "X-Informe-Generado": res["generado_en"],
+            "X-Informe-Max-Proveedores": str(res["max_proveedores"]),
+        })
+
+
+@app.get("/api/v1/informes/stock-excel/estado", tags=["Informes"])
+async def informe_stock_excel_estado():
+    import informe_stock
+    return JSONResponse(content=informe_stock.get_status())
+
+
 @app.get("/api/v1/precios/impacto-descuentos", tags=["Precios"])
 async def precios_impacto_descuentos(
     margen: float | None = Query(None, ge=0, lt=100,
