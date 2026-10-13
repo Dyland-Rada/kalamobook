@@ -479,12 +479,33 @@ def get_cron_status() -> dict:
     return out
 
 
+def _ciclo_en_su_hilo() -> dict:
+    """
+    Una vuelta completa, en un hilo aparte con su propio bucle.
+
+    run_catalog_sync es `async def` pero su cuerpo NO lo es: descomprime,
+    parsea 500.000 filas y lanza miles de UPSERT sin un solo await. Esperarla
+    desde el bucle de uvicorn lo deja bloqueado durante horas.
+
+    Paso el 13/10/2026: el panel entero dejo de responder —el proxy negociaba
+    el TLS y la aplicacion no contestaba nada, ni /login— y hubo que apagar
+    el cron a mano para levantarlo. El endpoint manual siempre lo lanzo en su
+    propio hilo; este cron, recien escrito, no. Aqui se iguala.
+    """
+    bucle = asyncio.new_event_loop()
+    asyncio.set_event_loop(bucle)
+    try:
+        return bucle.run_until_complete(run_catalog_sync())
+    finally:
+        bucle.close()
+
+
 async def _cron_loop():
     from datetime import timedelta
     print(f"[AZETACatCron] Arrancado, intervalo {_cron_state['interval_s']}s")
     while _cron_state["enabled"]:
         try:
-            res = await run_catalog_sync()
+            res = await asyncio.to_thread(_ciclo_en_su_hilo)
             _cron_state["last_run_at"] = datetime.now().isoformat()
             _cron_state["last_run_status"] = res.get("status")
             _cron_state["last_summary"] = (
@@ -514,7 +535,18 @@ async def _cron_loop():
 
 
 def start_cron() -> bool:
+    """
+    Arranca el reloj, salvo que AZETA_CATALOG_CRON_ENABLED lo prohiba.
+
+    La comprobacion se repite aqui, y no solo en el arranque de la app, por
+    el vigilante: re-arranca cualquier cron que encuentre parado, asi que sin
+    esto apagarlo por variable no servia de nada —volveria solo en la
+    siguiente ronda, cada 12 horas—. El interruptor tiene que ganar siempre.
+    """
     global _cron_task
+    if os.environ.get("AZETA_CATALOG_CRON_ENABLED", "1").lower() in ("0", "false", "no"):
+        print("[AZETACatCron] NO arranco: AZETA_CATALOG_CRON_ENABLED lo apaga")
+        return False
     if _cron_task and not _cron_task.done():
         return False
     _cron_state["enabled"] = True

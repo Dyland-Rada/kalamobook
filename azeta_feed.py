@@ -383,7 +383,13 @@ async def _cron_loop():
 
 
 def start_cron() -> bool:
+    # El vigilante re-arranca cualquier cron parado, asi que el interruptor
+    # se comprueba tambien aqui: si solo estuviera en el arranque de la app,
+    # apagarlo por variable duraria hasta la siguiente ronda del vigilante.
     global _cron_task
+    if os.environ.get("AZETA_FEED_CRON_ENABLED", "1").lower() in ("0", "false", "no"):
+        print("[AzetaFeedCron] NO arranco: AZETA_FEED_CRON_ENABLED lo apaga")
+        return False
     if _cron_task and not _cron_task.done():
         return False
     if not SFTP_PASS:
