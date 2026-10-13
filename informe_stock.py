@@ -59,19 +59,57 @@ def get_status() -> dict:
     return dict(_job) if _job else {"status": "idle"}
 
 
+def _apodo(email: str) -> str:
+    """
+    Nombre de columna para un proveedor que no esta en la tabla.
+
+    'sinli.disal@grupodismalibro.com' -> 'DISAL'. Se quita el prefijo del
+    buzon tecnico, que no identifica a nadie.
+    """
+    # Buzones tecnicos: no identifican a nadie, asi que si el nombre se
+    # queda en uno de estos tira del dominio, que si dice quien es.
+    GENERICOS = {"sinli", "info", "pedidos", "envios", "ventas", "admin",
+                 "contacto", "administracion", "documentos", "correo"}
+    local, _, dominio = (email or "").partition("@")
+    trozos = [t for t in local.split(".") if t and t.lower() not in GENERICOS]
+    if trozos:
+        return ".".join(trozos).upper()
+    etiqueta = dominio.split(".")[0] if dominio else ""
+    return (etiqueta or local or email).upper()
+
+
 def _nombres_proveedor() -> dict[str, str]:
-    """{buzon: nombre comercial}. Si falta, se queda el buzon."""
+    """
+    {buzon: nombre de columna} de TODO proveedor con stock.
+
+    Se cruzan dos fuentes porque ninguna basta sola: proveedor_almacen_odoo
+    da el nombre comercial pero no los tiene a todos —DISAL, con unos 12.000
+    libros, no figura ahi y por eso se quedaba sin columna el 13/10/2026— y
+    libros_proveedor los tiene a todos pero sin nombre. Asi no se cae nadie,
+    y un proveedor nuevo aparece solo.
+    """
     out: dict[str, str] = {}
     conn = db.get_connection()
     cur = conn.cursor()
     try:
+        db.execute_query(cur, """
+            SELECT DISTINCT proveedor_email
+            FROM libros_proveedor WHERE stock_disponible > 0
+        """)
+        for r in cur.fetchall():
+            if r[0]:
+                out[r[0]] = _apodo(r[0])
         db.execute_query(cur, """
             SELECT proveedor_email, nombre_proveedor
             FROM proveedor_almacen_odoo
         """)
         for r in cur.fetchall():
             if r[0]:
-                out[r[0]] = (r[1] or r[0]).strip()
+                # A MAYUSCULAS: la tabla los tiene mezclados -- 'AZETA' y
+                # 'DISBOOK' junto a 'Ediciones Akal' e 'ICARO DISTRIBUIDORA'
+                # -- y como las columnas van ordenadas por el nombre, la
+                # mezcla descolocaba el orden ademas de verse mal.
+                out[r[0]] = (r[1] or r[0]).strip().upper()
     except Exception as e:
         print(f"[InformeStock] sin nombres de proveedor: {e}")
     finally:
@@ -158,6 +196,7 @@ def generar(ruta: str | None = None) -> dict:
         # columnas cada dia aunque un proveedor se quede sin stock, y se
         # pueden comparar dos informes sin que se descoloquen.
         columnas = sorted(set(nombres.values()))
+        job["columnas"] = len(columnas)
         indice = {n: i for i, n in enumerate(columnas)}
         job["columnas_proveedor"] = columnas
         cabecera = ["ISBN", "NOMBRE", "PROVEEDORES", "UNIDADES"] + columnas
