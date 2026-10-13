@@ -41,6 +41,16 @@ from datetime import datetime
 
 import db
 
+
+def get_letra(n: int) -> str:
+    """1 -> A, 27 -> AA. Se define aqui para no importar openpyxl al cargar
+    el modulo: solo hace falta cuando se genera."""
+    letras = ""
+    while n:
+        n, resto = divmod(n - 1, 26)
+        letras = chr(65 + resto) + letras
+    return letras
+
 CARPETA = os.environ.get("INFORME_STOCK_DIR", "/tmp")
 _job: dict | None = None
 
@@ -151,8 +161,39 @@ def generar(ruta: str | None = None) -> dict:
         indice = {n: i for i, n in enumerate(columnas)}
         job["columnas_proveedor"] = columnas
         cabecera = ["ISBN", "NOMBRE", "PROVEEDORES", "UNIDADES"] + columnas
-        hoja_si.append(list(cabecera))
-        hoja_uds.append(list(cabecera))
+
+        # El formato se aplica SOLO a la cabecera y por reglas de hoja. Pintar
+        # celda a celda serian 550.000 x 19 = 10 millones de objetos de estilo:
+        # tardaria muchisimo y dejaria un fichero enorme. Las reglas
+        # condicionales las guarda Excel una vez y las aplica al abrir.
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        from openpyxl.cell import WriteOnlyCell
+        from openpyxl.formatting.rule import CellIsRule, ColorScaleRule
+
+        VINO = "7A1F2B"
+        fondo = PatternFill("solid", fgColor=VINO)
+        letra = Font(bold=True, color="FFFFFF", size=10)
+        raya = Border(bottom=Side(style="thin", color="FFFFFF"))
+
+        for h in (hoja_si, hoja_uds):
+            # Anchos y alto ANTES de volcar: write_only escribe la fila en
+            # cuanto se hace append y despues ya no hay donde aplicarlos.
+            h.row_dimensions[1].height = 42
+            for col, ancho in (("A", 15), ("B", 48), ("C", 13), ("D", 10)):
+                h.column_dimensions[col].width = ancho
+            for i in range(len(columnas)):
+                h.column_dimensions[get_letra(5 + i)].width = 13
+
+            fila = []
+            for i, titulo in enumerate(cabecera):
+                c = WriteOnlyCell(h, value=titulo)
+                c.fill, c.font, c.border = fondo, letra, raya
+                c.alignment = Alignment(
+                    horizontal="left" if i < 2 else "center",
+                    vertical="center",
+                    wrap_text=i >= 4, shrink_to_fit=False)
+                fila.append(c)
+            h.append(fila)
 
         # El ORDER BY agrupa las filas del mismo ISBN, asi que se acumula el
         # grupo que esta pasando y se vuelca al cambiar. Nunca hay mas de un
@@ -215,6 +256,22 @@ def generar(ruta: str | None = None) -> dict:
         rango = f"A1:{ultima}{job['isbns'] + 1}"
         hoja_si.auto_filter.ref = rango
         hoja_uds.auto_filter.ref = rango
+
+        # Color por regla, no por celda: una sola entrada en el fichero.
+        primera = get_letra(5)
+        datos = f"{primera}2:{ultima}{job['isbns'] + 1}"
+        hoja_si.conditional_formatting.add(datos, CellIsRule(
+            operator="equal", formula=['"SI"'],
+            fill=PatternFill("solid", fgColor="C6EFCE"),
+            font=Font(color="106B33", bold=True)))
+        hoja_si.conditional_formatting.add(datos, CellIsRule(
+            operator="equal", formula=['"NO"'],
+            font=Font(color="C8C8C8")))
+        # En unidades, escala de color: se ve de un vistazo donde hay mas.
+        hoja_uds.conditional_formatting.add(datos, ColorScaleRule(
+            start_type="num", start_value=0, start_color="FFFFFF",
+            mid_type="percentile", mid_value=70, mid_color="DDF0DC",
+            end_type="percentile", end_value=99, end_color="63BE7B"))
 
         job["stage"] = "guardando"
         wb.save(ruta)
