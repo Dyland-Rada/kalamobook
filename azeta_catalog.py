@@ -510,6 +510,31 @@ async def _cron_loop():
     print(f"[AZETACatCron] Arrancado, intervalo {_cron_state['interval_s']}s")
     while _cron_state["enabled"]:
         try:
+            # El bucle arranca con la app, asi que sin esto CADA despliegue
+            # dispararia una descarga de 192 MB y una carga de horas. Si la
+            # ultima es mas joven que el intervalo, se espera a que toque.
+            ultima = _last_azeta_fetched()
+            if ultima:
+                try:
+                    edad = (datetime.now()
+                            - datetime.fromisoformat(str(ultima)[:19])).total_seconds()
+                except (TypeError, ValueError):
+                    edad = None
+                if edad is not None and 0 <= edad < _cron_state["interval_s"]:
+                    horas = edad / 3600
+                    _cron_state["last_summary"] = (
+                        f"saltada: el catalogo es de hace {horas:.1f} h")
+                    print(f"[AZETACatCron] Salto esta vuelta: "
+                          f"cargado hace {horas:.1f} h")
+                    _cron_state["next_run_at"] = (
+                        datetime.now() + timedelta(
+                            seconds=_cron_state["interval_s"] - edad)).isoformat()
+                    for _ in range(int(_cron_state["interval_s"] - edad)):
+                        if not _cron_state["enabled"]:
+                            break
+                        await asyncio.sleep(1)
+                    continue
+
             res = await asyncio.to_thread(_ciclo_en_su_hilo)
             _cron_state["last_run_at"] = datetime.now().isoformat()
             _cron_state["last_run_status"] = res.get("status")
