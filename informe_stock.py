@@ -10,13 +10,25 @@ sacar "los que tiene Distriforma" habria que mirar en todas las columnas,
 ya que cada libro los lista en el orden que le toque. Asi, cada proveedor
 tiene su columna y el autofiltro de Excel vale directamente.
 
-El libro trae DOS HOJAS con los mismos libros y las mismas columnas:
+UNA hoja, con las unidades, y la celda VACIA donde ese proveedor no lo
+tiene. Un numero es un "si" y un hueco es un "no", asi que una sola hoja
+dice las dos cosas; y en Excel se filtra igual, por "(Vacias)" o por
+"No vacias".
 
-  * "Disponibilidad" -- SI / NO. Para filtrar de un vistazo.
-  * "Unidades"       -- cuantas hay. Para decidir a quien pedirle.
+El vacio no es cosmetica, es lo que hace el fichero enviable. Medido sobre
+el informe real del 13/10/2026 con 537.760 libros:
 
-Las dos sirven para filtrar; la segunda ademas dice cuanto. Van juntas
-porque son la misma consulta y separarlas obligaba a elegir.
+    2 hojas, con NO y ceros .... 74,8 MB
+    2 hojas, vacias ............ 39,4 MB
+    1 hoja, con ceros .......... 36,2 MB
+    1 hoja, vacias ............. 19,6 MB   <- entra en el correo
+
+El limite de Gmail son 25 MB. El 95% del fichero eran 16 millones de celdas
+diciendo "aqui no hay nada", y openpyxl escribe cada texto en linea, sin
+tabla de cadenas compartidas: cada "NO" ocupaba 50 bytes para dos letras.
+
+Comprimirlo aparte no vale: un .xlsx YA es un zip. Re-comprimido con LZMA se
+queda en 46,5 MB, que sigue sin entrar.
 
 `PROVEEDORES` es cuantos lo tienen, para ordenar por disponibilidad.
 
@@ -184,12 +196,10 @@ def generar(ruta: str | None = None) -> dict:
 
         job["stage"] = "escribiendo"
         wb = Workbook(write_only=True)
-        hoja_si = wb.create_sheet("Disponibilidad")
-        hoja_uds = wb.create_sheet("Unidades")
+        hoja = wb.create_sheet("Stock")
         # Antes de volcar nada: en modo write_only las filas se escriben
         # segun llegan y fijarlo despues no tiene efecto.
-        for h in (hoja_si, hoja_uds):
-            h.freeze_panes = "C2"
+        hoja.freeze_panes = "C2"
 
         # Las columnas se fijan ANTES de leer: salen de la tabla de
         # proveedores, no de los datos. Asi el fichero tiene las mismas
@@ -207,14 +217,14 @@ def generar(ruta: str | None = None) -> dict:
         # condicionales las guarda Excel una vez y las aplica al abrir.
         from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
         from openpyxl.cell import WriteOnlyCell
-        from openpyxl.formatting.rule import CellIsRule, ColorScaleRule
+        from openpyxl.formatting.rule import ColorScaleRule
 
         VINO = "7A1F2B"
         fondo = PatternFill("solid", fgColor=VINO)
         letra = Font(bold=True, color="FFFFFF", size=10)
         raya = Border(bottom=Side(style="thin", color="FFFFFF"))
 
-        for h in (hoja_si, hoja_uds):
+        for h in (hoja,):
             # Anchos y alto ANTES de volcar: write_only escribe la fila en
             # cuanto se hace append y despues ya no hay donde aplicarlos.
             h.row_dimensions[1].height = 42
@@ -239,9 +249,11 @@ def generar(ruta: str | None = None) -> dict:
         # libro en memoria.
         actual = None
         nombre_actual = ""
-        # NO y 0 por defecto, nunca vacio: una celda vacia no se distingue de
-        # un fallo al generar, y en el autofiltro sale como "(Vacias)".
-        marcas: list = []
+        # None donde no hay stock: ver la cabecera del modulo. Se escogio
+        # antes escribir "NO" para que un hueco no se confundiera con un
+        # fallo, pero a 537.760 libros eso costaba 55 MB y dejaba el fichero
+        # fuera del correo. El numero de proveedores va en su columna, asi
+        # que una fila a cero sigue siendo reconocible.
         uds: list = []
         cuantos = 0
         unidades = 0
@@ -250,9 +262,7 @@ def generar(ruta: str | None = None) -> dict:
         def volcar():
             if actual is None:
                 return
-            cabeza = [actual, nombre_actual, cuantos, unidades]
-            hoja_si.append(cabeza + marcas)
-            hoja_uds.append(cabeza + uds)
+            hoja.append([actual, nombre_actual, cuantos, unidades] + uds)
             job["isbns"] += 1
             if cuantos > job["max_proveedores"]:
                 job["max_proveedores"] = cuantos
@@ -262,8 +272,7 @@ def generar(ruta: str | None = None) -> dict:
             if isbn != actual:
                 volcar()
                 actual, nombre_actual = isbn, nombre or ""
-                marcas = ["NO"] * len(columnas)
-                uds = [0] * len(columnas)
+                uds = [None] * len(columnas)
                 cuantos = unidades = 0
             elif nombre and not nombre_actual:
                 nombre_actual = nombre
@@ -279,7 +288,6 @@ def generar(ruta: str | None = None) -> dict:
                     sueltos.append(email)
                 continue
             i = indice[quien]
-            marcas[i] = "SI"
             uds[i] = n_uds
         volcar()
         if sueltos:
@@ -293,21 +301,13 @@ def generar(ruta: str | None = None) -> dict:
         from openpyxl.utils import get_column_letter
         ultima = get_column_letter(4 + len(columnas))
         rango = f"A1:{ultima}{job['isbns'] + 1}"
-        hoja_si.auto_filter.ref = rango
-        hoja_uds.auto_filter.ref = rango
+        hoja.auto_filter.ref = rango
 
         # Color por regla, no por celda: una sola entrada en el fichero.
         primera = get_letra(5)
         datos = f"{primera}2:{ultima}{job['isbns'] + 1}"
-        hoja_si.conditional_formatting.add(datos, CellIsRule(
-            operator="equal", formula=['"SI"'],
-            fill=PatternFill("solid", fgColor="C6EFCE"),
-            font=Font(color="106B33", bold=True)))
-        hoja_si.conditional_formatting.add(datos, CellIsRule(
-            operator="equal", formula=['"NO"'],
-            font=Font(color="C8C8C8")))
-        # En unidades, escala de color: se ve de un vistazo donde hay mas.
-        hoja_uds.conditional_formatting.add(datos, ColorScaleRule(
+        # Escala de color: se ve de un vistazo donde hay mas stock.
+        hoja.conditional_formatting.add(datos, ColorScaleRule(
             start_type="num", start_value=0, start_color="FFFFFF",
             mid_type="percentile", mid_value=70, mid_color="DDF0DC",
             end_type="percentile", end_value=99, end_color="63BE7B"))
