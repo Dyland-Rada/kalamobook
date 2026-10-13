@@ -1289,6 +1289,26 @@ async def azeta_feed_cron_status():
     return JSONResponse(content=azeta_feed.get_cron_status())
 
 
+@app.get("/api/v1/panel/disponibilidad", tags=["Informes"])
+async def panel_disponibilidad_resumen(
+    forzar: bool = Query(False, description="saltarse la cache de 60 s"),
+):
+    """
+    Todo lo que pinta la pestaña de Disponibilidad, en una sola llamada.
+
+    Va a un hilo: recorre las ~650.000 filas de libros_proveedor y eso no se
+    espera desde el bucle del servidor.
+    """
+    import asyncio as _a
+    import panel_disponibilidad
+    try:
+        return JSONResponse(content=await _a.to_thread(
+            panel_disponibilidad.resumen, forzar))
+    except Exception as e:
+        return JSONResponse(status_code=500, content={
+            "status": "error", "message": f"{type(e).__name__}: {e}"[:300]})
+
+
 @app.get("/api/v1/informes/stock-excel", tags=["Informes"])
 async def informe_stock_excel():
     """

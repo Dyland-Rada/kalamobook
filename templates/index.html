@@ -893,6 +893,77 @@
                 grid-template-columns: 1fr 1fr;
             }
         }
+        /* ── DISPONIBILIDAD POR PROVEEDOR ──────────────────── */
+        .dispo-kpis {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+            gap: 14px; margin-bottom: 24px;
+        }
+        .dispo-kpi {
+            background: rgba(255,255,255,.05);
+            border: 1px solid rgba(255,255,255,.1);
+            border-left: 3px solid #6366f1;
+            border-radius: 14px; padding: 18px 20px;
+        }
+        .dispo-kpi.ok    { border-left-color: #2ecc71; }
+        .dispo-kpi.aviso { border-left-color: #f5a623; }
+        .dispo-kpi.malo  { border-left-color: #e94560; }
+        .dispo-kpi .et {
+            font-size: .68rem; color: #8b93a7; text-transform: uppercase;
+            letter-spacing: .08em; font-weight: 600;
+        }
+        .dispo-kpi .num {
+            font-size: 1.9rem; font-weight: 800; color: #fff;
+            line-height: 1.15; margin: 6px 0 2px;
+            font-variant-numeric: tabular-nums;
+        }
+        .dispo-kpi .pie { font-size: .76rem; color: #8b93a7; }
+
+        .dispo-barra-fila {
+            display: grid; grid-template-columns: 150px 1fr 90px;
+            align-items: center; gap: 14px; margin-bottom: 11px;
+        }
+        .dispo-barra-nom {
+            font-size: .82rem; color: #cdd3e0; font-weight: 500;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .dispo-barra-pista {
+            background: rgba(255,255,255,.07); border-radius: 7px;
+            height: 11px; overflow: hidden;
+        }
+        .dispo-barra-rell {
+            height: 100%; border-radius: 7px;
+            background: linear-gradient(90deg, #6366f1, #22d3ee);
+            transition: width .5s ease; min-width: 3px;
+        }
+        .dispo-barra-rell.caido   { background: linear-gradient(90deg,#e94560,#f5a623); }
+        .dispo-barra-rell.retraso { background: linear-gradient(90deg,#f5a623,#f7d070); }
+        .dispo-barra-val {
+            font-size: .82rem; color: #e8ecf4; text-align: right;
+            font-variant-numeric: tabular-nums; font-weight: 600;
+        }
+
+        .dispo-tabla { width: 100%; border-collapse: collapse; font-size: .84rem; }
+        .dispo-tabla th {
+            text-align: left; color: #8b93a7; font-weight: 600;
+            font-size: .7rem; text-transform: uppercase; letter-spacing: .06em;
+            padding: 9px 10px; border-bottom: 1px solid rgba(255,255,255,.1);
+        }
+        .dispo-tabla td {
+            padding: 10px; border-bottom: 1px solid rgba(255,255,255,.05);
+            color: #cdd3e0;
+        }
+        .dispo-tabla td.n { text-align: right; font-variant-numeric: tabular-nums; }
+        .dispo-tabla tr:hover td { background: rgba(255,255,255,.03); }
+        .dispo-pastilla {
+            display: inline-block; padding: 3px 9px; border-radius: 20px;
+            font-size: .68rem; font-weight: 700; letter-spacing: .04em;
+        }
+        .dispo-pastilla.ok      { background: rgba(46,204,113,.15); color: #2ecc71; }
+        .dispo-pastilla.retraso { background: rgba(245,166,35,.15);  color: #f5a623; }
+        .dispo-pastilla.caido   { background: rgba(233,69,96,.15);   color: #e94560; }
+        .dispo-pastilla.sin_datos { background: rgba(255,255,255,.07); color: #8b93a7; }
+        .dispo-sello { font-size: .76rem; color: #8b93a7; }
     </style>
 </head>
 
@@ -928,6 +999,7 @@
             <button class="tab-btn" onclick="switchTab('odoo')" id="tab-odoo"><ion-icon name="sync-outline"></ion-icon> Odoo Sync</button>
             <button class="tab-btn" onclick="switchTab('manual')" id="tab-manual"><ion-icon name="create-outline"></ion-icon> Relleno manual</button>
             <button class="tab-btn" onclick="switchTab('shopify')" id="tab-shopify"><ion-icon name="storefront-outline"></ion-icon> Shopify</button>
+            <button class="tab-btn" onclick="switchTab('dispo')" id="tab-dispo"><ion-icon name="cube-outline"></ion-icon> Disponibilidad</button>
             <button class="tab-btn" onclick="switchTab('salud')" id="tab-salud"><ion-icon name="pulse-outline"></ion-icon> Salud <span id="tab-salud-punto" style="display:none; width:8px; height:8px; border-radius:50%; margin-left:5px;"></span></button>
         </div>
 
@@ -2647,6 +2719,53 @@
         </div>
 
         <!-- ═══ TAB: SALUD ═══ -->
+        <div class="tab-content" id="content-dispo">
+            <div class="card" style="padding:20px 24px; margin-bottom:18px;">
+                <div style="display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap;">
+                    <div>
+                        <div class="card-title" style="margin-bottom:4px;">
+                            <ion-icon name="cube-outline"></ion-icon> Disponibilidad por proveedor
+                        </div>
+                        <div class="dispo-sello" id="dispo-sello">Cargando…</div>
+                    </div>
+                    <div style="display:flex; gap:10px; align-items:center;">
+                        <a class="btn" id="dispo-excel" href="/api/v1/informes/stock-excel"
+                           style="background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.12); color:#cdd3e0; text-decoration:none; padding:9px 16px; border-radius:10px; font-size:.85rem;">
+                            <ion-icon name="download-outline"></ion-icon> Excel
+                        </a>
+                        <button class="btn btn-primary" onclick="dispoCargar(true)">
+                            <ion-icon name="refresh-outline"></ion-icon> Actualizar
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="dispo-kpis" id="dispo-kpis"></div>
+
+            <div class="card">
+                <div class="card-title"><ion-icon name="bar-chart-outline"></ion-icon> Libros con stock por proveedor</div>
+                <div id="dispo-barras"></div>
+            </div>
+
+            <div class="card">
+                <div class="card-title"><ion-icon name="list-outline"></ion-icon> Detalle y frescura</div>
+                <div style="overflow-x:auto;">
+                    <table class="dispo-tabla">
+                        <thead><tr>
+                            <th>Proveedor</th><th>Almacén</th>
+                            <th style="text-align:right;">Libros</th>
+                            <th style="text-align:right;">Unidades</th>
+                            <th style="text-align:right;">En Odoo</th>
+                            <th>Último fichero</th>
+                            <th style="text-align:right;">Hace</th>
+                            <th>Estado</th>
+                        </tr></thead>
+                        <tbody id="dispo-tbody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
         <div class="tab-content" id="content-salud">
             <div class="card" id="salud-card" style="border:2px solid rgba(148,163,184,.3);">
                 <div class="card-title">
@@ -3013,6 +3132,7 @@
             if (tab === 'manual') manualSub(manualTipo);
             if (tab === 'shopify') { shLoad(true); stkEstado(); shPubCronEstado(); } else shPollStop();
             if (tab === 'salud') { saludCargar(); auditSondear(); faltSondear(); }
+            if (tab === 'dispo') { dispoCargar(false); dispoAuto(true); } else dispoAuto(false);
             if (tab === 'audit') { auditLoadAll(); auditStartAutoRefresh(); asLoad(); }
             else { auditStopAutoRefresh(); }
             if (tab !== 'odoo') {
@@ -7369,6 +7489,93 @@
             document.getElementById('ayuda-fondo').classList.remove('abierto');
         }
         document.addEventListener('keydown', e => { if (e.key === 'Escape') cerrarAyuda(); });
+        // ── DISPONIBILIDAD POR PROVEEDOR ───────────────────────────────
+        let dispoTimer = null;
+
+        function dispoMiles(n) {
+            return (n == null ? '—' : Number(n).toLocaleString('es-ES'));
+        }
+
+        function dispoHace(h) {
+            if (h == null) return '—';
+            if (h < 1) return Math.round(h * 60) + ' min';
+            if (h < 48) return h.toFixed(1) + ' h';
+            return (h / 24).toFixed(1) + ' d';
+        }
+
+        async function dispoCargar(forzar) {
+            const sello = document.getElementById('dispo-sello');
+            try {
+                const r = await fetch('/api/v1/panel/disponibilidad' + (forzar ? '?forzar=true' : ''));
+                const d = await r.json();
+                if (d.status === 'error') { sello.textContent = 'Error: ' + d.message; return; }
+
+                const t = d.totales || {};
+                document.getElementById('dispo-kpis').innerHTML = `
+                    <div class="dispo-kpi">
+                        <div class="et">Libros con stock</div>
+                        <div class="num">${dispoMiles(t.libros_con_stock)}</div>
+                        <div class="pie">${dispoMiles(t.unidades)} unidades en total</div>
+                    </div>
+                    <div class="dispo-kpi ok">
+                        <div class="et">Proveedores sirviendo</div>
+                        <div class="num">${dispoMiles(t.proveedores)}</div>
+                        <div class="pie">con al menos un libro</div>
+                    </div>
+                    <div class="dispo-kpi ${t.un_solo_proveedor > 0 ? 'aviso' : ''}">
+                        <div class="et">Con un solo proveedor</div>
+                        <div class="num">${dispoMiles(t.un_solo_proveedor)}</div>
+                        <div class="pie">se quedan sin stock si ese falla</div>
+                    </div>
+                    <div class="dispo-kpi ${t.caidos > 0 ? 'malo' : (t.retrasados > 0 ? 'aviso' : 'ok')}">
+                        <div class="et">Fuera de plazo</div>
+                        <div class="num">${dispoMiles(t.caidos)}</div>
+                        <div class="pie">${dispoMiles(t.retrasados)} con retraso</div>
+                    </div>`;
+
+                const provs = d.proveedores || [];
+                const tope = Math.max(1, ...provs.map(p => p.libros));
+                document.getElementById('dispo-barras').innerHTML = provs
+                    .filter(p => p.libros > 0)
+                    .map(p => `
+                        <div class="dispo-barra-fila">
+                            <div class="dispo-barra-nom" title="${p.email}">${p.nombre}</div>
+                            <div class="dispo-barra-pista">
+                                <div class="dispo-barra-rell ${p.estado}"
+                                     style="width:${(p.libros / tope * 100).toFixed(1)}%"></div>
+                            </div>
+                            <div class="dispo-barra-val">${dispoMiles(p.libros)}</div>
+                        </div>`).join('');
+
+                const ET = { ok: 'AL DÍA', retraso: 'RETRASO', caido: 'FUERA DE PLAZO', sin_datos: 'SIN DATOS' };
+                document.getElementById('dispo-tbody').innerHTML = provs.map(p => `
+                    <tr>
+                        <td style="color:#fff; font-weight:600;">${p.nombre}</td>
+                        <td style="color:#8b93a7;">${p.almacen || '—'}</td>
+                        <td class="n">${dispoMiles(p.libros)}</td>
+                        <td class="n">${dispoMiles(p.unidades)}</td>
+                        <td class="n">${dispoMiles(p.en_odoo)}</td>
+                        <td style="color:#8b93a7;">${p.ultimo_fichero ? p.ultimo_fichero.slice(0, 16).replace('T', ' ') : '—'}</td>
+                        <td class="n">${dispoHace(p.horas)}</td>
+                        <td><span class="dispo-pastilla ${p.estado}">${ET[p.estado] || p.estado}</span>
+                            <span style="color:#6b7280; font-size:.68rem; margin-left:6px;">corte ${p.corte_dias}d</span></td>
+                    </tr>`).join('');
+
+                const hora = new Date(d.generado_en).toLocaleTimeString('es-ES');
+                sello.textContent = `Actualizado a las ${hora}` +
+                    (d.de_cache ? ` · en cache desde hace ${d.edad_s} s` : ` · ${d.elapsed_s} s de consulta`);
+            } catch (e) {
+                sello.textContent = 'No se pudo cargar: ' + e;
+            }
+        }
+
+        function dispoAuto(on) {
+            if (dispoTimer) { clearInterval(dispoTimer); dispoTimer = null; }
+            // Cada 60 s, que es lo que dura la cache del servidor: pedir mas a
+            // menudo devolveria el mismo dato y gastaria por gastar.
+            if (on) dispoTimer = setInterval(() => dispoCargar(false), 60000);
+        }
+
     </script>
 
     <!-- Panel de ayuda contextual -->
