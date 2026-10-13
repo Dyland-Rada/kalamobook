@@ -1,13 +1,24 @@
 """
 Excel con todos los libros que tienen stock y quien se lo puede servir.
 
-Una fila por ISBN:
+Una fila por ISBN y una COLUMNA FIJA POR PROVEEDOR:
 
-    ISBN | NOMBRE | PROVEEDORES | PROVEEDOR_1 | PROVEEDOR_2 | ...
+    ISBN | NOMBRE | PROVEEDORES | AZETA | DISTRIFORMA | PODIPRINT | ...
 
-`PROVEEDORES` es cuantos lo tienen, para poder ordenar y filtrar en Excel
-sin contar columnas a ojo. Las columnas PROVEEDOR_n llevan el nombre
-comercial, no el buzon: 'DISTRIFORMA' en vez de 'fandite@distriforma.es'.
+Columna fija y no PROVEEDOR_1/2/3 porque eso no se puede filtrar: para
+sacar "los que tiene Distriforma" habria que mirar en todas las columnas,
+ya que cada libro los lista en el orden que le toque. Asi, cada proveedor
+tiene su columna y el autofiltro de Excel vale directamente.
+
+El libro trae DOS HOJAS con los mismos libros y las mismas columnas:
+
+  * "Disponibilidad" -- SI / NO. Para filtrar de un vistazo.
+  * "Unidades"       -- cuantas hay. Para decidir a quien pedirle.
+
+Las dos sirven para filtrar; la segunda ademas dice cuanto. Van juntas
+porque son la misma consulta y separarlas obligaba a elegir.
+
+`PROVEEDORES` es cuantos lo tienen, para ordenar por disponibilidad.
 
 Es una FOTO del momento en que se genera. No lee catalogo_publicable sino
 libros_proveedor, a proposito: el catalogo se queda con UN proveedor por
@@ -86,7 +97,7 @@ def _podar(actual: str, conservar: int = 3) -> int:
         return 0
 
 
-def generar(ruta: str | None = None, max_columnas: int | None = None) -> dict:
+def generar(ruta: str | None = None) -> dict:
     """
     Escribe el Excel y devuelve el resumen. Sincrona: llamar desde un hilo.
     """
@@ -125,40 +136,86 @@ def generar(ruta: str | None = None, max_columnas: int | None = None) -> dict:
 
         job["stage"] = "escribiendo"
         wb = Workbook(write_only=True)
-        hoja = wb.create_sheet("Stock")
+        hoja_si = wb.create_sheet("Disponibilidad")
+        hoja_uds = wb.create_sheet("Unidades")
+        # Antes de volcar nada: en modo write_only las filas se escriben
+        # segun llegan y fijarlo despues no tiene efecto.
+        for h in (hoja_si, hoja_uds):
+            h.freeze_panes = "C2"
 
-        tope = max_columnas or int(os.environ.get("INFORME_STOCK_MAX_PROV", "8"))
-        hoja.append(["ISBN", "NOMBRE", "PROVEEDORES"]
-                    + [f"PROVEEDOR_{i}" for i in range(1, tope + 1)])
+        # Las columnas se fijan ANTES de leer: salen de la tabla de
+        # proveedores, no de los datos. Asi el fichero tiene las mismas
+        # columnas cada dia aunque un proveedor se quede sin stock, y se
+        # pueden comparar dos informes sin que se descoloquen.
+        columnas = sorted(set(nombres.values()))
+        indice = {n: i for i, n in enumerate(columnas)}
+        job["columnas_proveedor"] = columnas
+        cabecera = ["ISBN", "NOMBRE", "PROVEEDORES", "UNIDADES"] + columnas
+        hoja_si.append(list(cabecera))
+        hoja_uds.append(list(cabecera))
 
         # El ORDER BY agrupa las filas del mismo ISBN, asi que se acumula el
         # grupo que esta pasando y se vuelca al cambiar. Nunca hay mas de un
         # libro en memoria.
         actual = None
         nombre_actual = ""
-        provs: list[str] = []
+        # NO y 0 por defecto, nunca vacio: una celda vacia no se distingue de
+        # un fallo al generar, y en el autofiltro sale como "(Vacias)".
+        marcas: list = []
+        uds: list = []
+        cuantos = 0
+        unidades = 0
+        sueltos: list[str] = []
 
         def volcar():
             if actual is None:
                 return
-            fila = [actual, nombre_actual, len(provs)] + provs[:tope]
-            fila += [None] * (3 + tope - len(fila))
-            hoja.append(fila)
+            cabeza = [actual, nombre_actual, cuantos, unidades]
+            hoja_si.append(cabeza + marcas)
+            hoja_uds.append(cabeza + uds)
             job["isbns"] += 1
-            if len(provs) > job["max_proveedores"]:
-                job["max_proveedores"] = len(provs)
+            if cuantos > job["max_proveedores"]:
+                job["max_proveedores"] = cuantos
 
-        for isbn, nombre, email, _stock in cur:
+        for isbn, nombre, email, stock in cur:
             job["filas"] += 1
             if isbn != actual:
                 volcar()
-                actual, nombre_actual, provs = isbn, nombre or "", []
+                actual, nombre_actual = isbn, nombre or ""
+                marcas = ["NO"] * len(columnas)
+                uds = [0] * len(columnas)
+                cuantos = unidades = 0
             elif nombre and not nombre_actual:
                 nombre_actual = nombre
-            provs.append(nombres.get(email, email))
+            n_uds = int(stock or 0)
+            cuantos += 1
+            unidades += n_uds
+            quien = nombres.get(email)
+            if quien is None:
+                # Proveedor sin fila en proveedor_almacen_odoo: no tiene
+                # columna. Se cuenta igual y se avisa, que perderlo en
+                # silencio seria peor.
+                if email not in sueltos:
+                    sueltos.append(email)
+                continue
+            i = indice[quien]
+            marcas[i] = "SI"
+            uds[i] = n_uds
         volcar()
+        if sueltos:
+            job["proveedores_sin_columna"] = sueltos
 
         cur.close()
+
+        # Autofiltro en la cabecera y primeras columnas congeladas: sin esto
+        # hay que activarlos a mano en cada informe, y con 19 columnas y
+        # medio millon de filas se navega fatal.
+        from openpyxl.utils import get_column_letter
+        ultima = get_column_letter(4 + len(columnas))
+        rango = f"A1:{ultima}{job['isbns'] + 1}"
+        hoja_si.auto_filter.ref = rango
+        hoja_uds.auto_filter.ref = rango
+
         job["stage"] = "guardando"
         wb.save(ruta)
         job["bytes"] = os.path.getsize(ruta)

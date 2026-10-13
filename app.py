@@ -1290,15 +1290,13 @@ async def azeta_feed_cron_status():
 
 
 @app.get("/api/v1/informes/stock-excel", tags=["Informes"])
-async def informe_stock_excel(
-    max_proveedores: int | None = Query(None, ge=1, le=20,
-                                        description="columnas PROVEEDOR_n"),
-):
+async def informe_stock_excel():
     """
     Excel con todos los libros con stock y quien puede servirlos.
 
-    Una fila por ISBN: ISBN, NOMBRE, PROVEEDORES y PROVEEDOR_1..n. Es la
-    foto del momento en que se pide.
+    Dos hojas con los mismos libros y las mismas columnas —una por
+    proveedor—: "Disponibilidad" con SI/NO y "Unidades" con cuantas hay.
+    Es la foto del momento en que se pide.
 
     Tarda unos minutos: son ~550.000 ISBN. Va a un hilo y NO se espera desde
     el bucle del servidor, que es lo que tumbo el panel el 13/10.
@@ -1310,7 +1308,7 @@ async def informe_stock_excel(
         return JSONResponse(status_code=409, content={
             "status": "error", "message": "Ya hay un informe generandose."})
 
-    res = await _a.to_thread(informe_stock.generar, None, max_proveedores)
+    res = await _a.to_thread(informe_stock.generar)
     if res.get("status") != "completed":
         return JSONResponse(status_code=500, content=res)
 
