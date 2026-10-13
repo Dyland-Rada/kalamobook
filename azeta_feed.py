@@ -347,6 +347,11 @@ def get_cron_status() -> dict:
     out = dict(_cron_state)
     out["errors"] = out.get("errors", [])[-10:]
     out["task_running"] = bool(_cron_task and not _cron_task.done())
+    # Para que el vigilante distinga "parado porque se ha caido" de
+    # "parado porque alguien lo apago": lo primero es un error, lo
+    # segundo no, y confundirlos llena el parte de rojos falsos.
+    out["apagado_por_config"] = os.environ.get(
+        "AZETA_FEED_CRON_ENABLED", "1").lower() in ("0", "false", "no")
     return out
 
 

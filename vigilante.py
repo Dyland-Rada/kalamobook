@@ -113,6 +113,13 @@ def _revisar_crones(arreglar: bool) -> list[dict]:
             if vivo:
                 salida.append(_chequeo(clave, titulo, OK, "en marcha"))
                 continue
+            # Apagado a proposito por su variable: ni es un fallo ni hay que
+            # resucitarlo. Arrancarlo aqui seria pasar por encima de quien lo
+            # apago, que es justo lo que no debe hacer un vigilante.
+            if est.get("apagado_por_config"):
+                salida.append(_chequeo(
+                    clave, titulo, OK, "apagado a proposito por su variable"))
+                continue
             arreglado = False
             if arreglar:
                 try:
