@@ -2524,6 +2524,78 @@ async def audit_requests(
     })
 
 
+@app.get("/api/v1/audit/precios-sin-iva", tags=["Auditoria"])
+async def audit_precios_sin_iva(
+    tolerancia: float = Query(0.02, ge=0.001, le=0.5),
+):
+    """
+    Que proveedores nos mandan el precio SIN IVA en el campo del precio CON
+    IVA, y a cuantos libros afecta.
+
+    Se contrasta contra el feed de AZETA, que es la unica fuente que trae el
+    PVP y el tipo de IVA por separado y por tanto permite saber cual es el
+    precio de verdad. Para cada libro que ambos tienen se mira si el precio
+    del proveedor se parece al PVP (correcto) o al PVP sin IVA (mal).
+
+    Un proveedor que manda la base imponible parece un 4% mas barato que los
+    demas, asi que el catalogo lo elige SIEMPRE como el mas barato y acabamos
+    vendiendo por debajo del PVP del editor. Detectado el 14/10/2026 por
+    Sandra: pedidos anulados por diferencias de hasta 3 euros.
+    """
+    import asyncio as _a
+    import db as dbmod
+
+    def _trabajo():
+        conn = dbmod.get_connection()
+        cur = conn.cursor()
+        try:
+            dbmod.execute_query(cur, """
+                SELECT lp.proveedor_email,
+                       COUNT(*),
+                       COUNT(*) FILTER (
+                           WHERE ABS(lp.precio_con_iva - f.pvp) <= ?),
+                       COUNT(*) FILTER (
+                           WHERE ABS(lp.precio_con_iva
+                                     - ROUND(f.pvp / (1 + f.iva/100.0), 2)) <= ?),
+                       COUNT(*) FILTER (WHERE lp.stock_disponible > 0)
+                FROM libros_proveedor lp
+                JOIN azeta_feed_descuentos f
+                  ON f.isbn = lp.isbn AND f.pvp > 0 AND f.iva > 0
+                WHERE lp.precio_con_iva > 0
+                GROUP BY lp.proveedor_email
+                ORDER BY 2 DESC
+            """, (tolerancia, tolerancia))
+            filas = []
+            for r in cur.fetchall():
+                comunes = int(r[1] or 0)
+                con, sin = int(r[2] or 0), int(r[3] or 0)
+                filas.append({
+                    "proveedor": r[0],
+                    "libros_comparables": comunes,
+                    "con_iva_ok": con,
+                    "SIN_IVA": sin,
+                    "pct_sin_iva": round(sin * 100.0 / comunes, 1) if comunes else None,
+                    "ni_uno_ni_otro": comunes - con - sin,
+                    "con_stock": int(r[4] or 0),
+                    "veredicto": ("MANDA SIN IVA" if comunes and sin > con * 2
+                                  else ("ok" if con >= sin else "mezclado")),
+                })
+            return {"tolerancia_eur": tolerancia,
+                    "referencia": "feed de AZETA (PVP e IVA por separado)",
+                    "proveedores": filas}
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    try:
+        return JSONResponse(content=await _a.to_thread(_trabajo))
+    except Exception as e:
+        return JSONResponse(status_code=500, content={
+            "status": "error", "message": f"{type(e).__name__}: {e}"[:300]})
+
+
 @app.get("/api/v1/audit/trazabilidad", tags=["Auditoria"])
 async def audit_trazabilidad(
     isbn: str = Query(..., description="ISBN/EAN a rastrear"),
