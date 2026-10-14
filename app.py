@@ -2615,7 +2615,8 @@ async def audit_impacto_iva(
                 muestra = await odoo.search_read(
                     "sale.order.line", dominio,
                     ["order_id", "product_id", "product_uom_qty",
-                     "price_unit", "price_subtotal", "create_date"], limit=5)
+                     "price_unit", "price_subtotal", "price_total",
+                     "tax_id", "create_date"], limit=8)
                 out["muestra"] = muestra
                 return JSONResponse(content=jsonable_encoder(out))
 
