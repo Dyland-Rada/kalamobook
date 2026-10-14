@@ -2580,6 +2580,127 @@ async def audit_requests(
     })
 
 
+@app.get("/api/v1/audit/impacto-iva", tags=["Auditoria"])
+async def audit_impacto_iva(
+    dias: int = Query(180, ge=1, le=1460),
+    sonda: bool = Query(False, description="solo mirar que campos y cuantas lineas hay"),
+    tolerancia: float = Query(0.05, ge=0.001, le=1.0),
+):
+    """
+    Cuanto dinero se ha perdido DE VERDAD por cobrar el precio sin IVA.
+
+    Esto no es la diferencia del catalogo -- esa es exposicion, no perdida.
+    Aqui se miran las lineas de pedido ya vendidas y se compara lo cobrado
+    contra el PVP real del feed de AZETA:
+
+        perdida = (PVP real - precio cobrado) x unidades
+
+    Solo cuenta las lineas donde lo cobrado se parece al PVP SIN IVA, que
+    son las atribuibles a este fallo. Las que difieren por otra razon se
+    cuentan aparte y NO se suman: meterlas inflaria la cifra.
+    """
+    from odoo_client import OdooClient
+    import db as dbmod
+    from datetime import datetime, timedelta
+
+    desde = (datetime.now() - timedelta(days=dias)).strftime("%Y-%m-%d 00:00:00")
+    out: dict[str, Any] = {"desde": desde, "dias": dias}
+
+    try:
+        async with OdooClient() as odoo:
+            dominio = [["order_id.state", "in", ["sale", "done"]],
+                       ["create_date", ">=", desde]]
+            out["lineas_totales"] = await odoo.search_count("sale.order.line", dominio)
+            if sonda:
+                muestra = await odoo.search_read(
+                    "sale.order.line", dominio,
+                    ["order_id", "product_id", "product_uom_qty",
+                     "price_unit", "price_subtotal", "create_date"], limit=5)
+                out["muestra"] = muestra
+                return JSONResponse(content=jsonable_encoder(out))
+
+            lineas = await odoo.search_read(
+                "sale.order.line", dominio,
+                ["order_id", "product_id", "product_uom_qty",
+                 "price_unit", "create_date"], limit=100000)
+            ids = sorted({(l["product_id"][0] if isinstance(l["product_id"], list)
+                           else l["product_id"])
+                          for l in lineas if l.get("product_id")})
+            barcodes: dict[int, str] = {}
+            for i in range(0, len(ids), 500):
+                for p in await odoo.search_read(
+                        "product.product", [["id", "in", ids[i:i + 500]]],
+                        ["id", "barcode"]):
+                    if p.get("barcode"):
+                        barcodes[p["id"]] = str(p["barcode"]).strip()
+
+        # Referencia: PVP e IVA del feed de AZETA
+        ref: dict[str, tuple] = {}
+        conn = dbmod.get_connection()
+        cur = conn.cursor()
+        try:
+            dbmod.execute_query(cur, """
+                SELECT isbn, pvp, iva FROM azeta_feed_descuentos
+                WHERE pvp > 0 AND iva > 0
+            """)
+            ref = {r[0]: (float(r[1]), float(r[2])) for r in cur.fetchall()}
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+        res = {"lineas": 0, "sin_barcode": 0, "sin_referencia": 0,
+               "correctas": 0, "AFECTADAS": 0, "otras": 0,
+               "unidades_afectadas": 0.0, "PERDIDA_EUR": 0.0,
+               "otras_dif_eur": 0.0, "peores": []}
+        for l in lineas:
+            res["lineas"] += 1
+            pid = (l["product_id"][0] if isinstance(l.get("product_id"), list)
+                   else l.get("product_id"))
+            cb = barcodes.get(pid)
+            if not cb:
+                res["sin_barcode"] += 1
+                continue
+            par = ref.get(cb)
+            if not par:
+                res["sin_referencia"] += 1
+                continue
+            pvp, iva = par
+            base = round(pvp / (1 + iva / 100.0), 2)
+            cobrado = float(l.get("price_unit") or 0)
+            uds = float(l.get("product_uom_qty") or 0)
+            if cobrado <= 0 or uds <= 0:
+                continue
+            dif = round(pvp - cobrado, 2)
+            if abs(cobrado - pvp) <= tolerancia:
+                res["correctas"] += 1
+            elif abs(cobrado - base) <= tolerancia + 0.02:
+                res["AFECTADAS"] += 1
+                res["unidades_afectadas"] += uds
+                res["PERDIDA_EUR"] += dif * uds
+                if len(res["peores"]) < 2000:
+                    res["peores"].append({
+                        "isbn": cb, "pvp": pvp, "cobrado": cobrado,
+                        "uds": uds, "perdida": round(dif * uds, 2),
+                        "fecha": str(l.get("create_date"))[:10]})
+            else:
+                res["otras"] += 1
+                res["otras_dif_eur"] += dif * uds
+        res["PERDIDA_EUR"] = round(res["PERDIDA_EUR"], 2)
+        res["otras_dif_eur"] = round(res["otras_dif_eur"], 2)
+        res["peores"] = sorted(res["peores"], key=lambda x: -x["perdida"])[:50]
+        out.update(res)
+        out["aviso"] = ("PERDIDA_EUR solo suma las lineas cobradas al PVP sin "
+                        "IVA. Las de 'otras' difieren por otra razon y no se "
+                        "suman. 'sin_referencia' son libros que AZETA no "
+                        "lleva: no se pueden verificar.")
+        return JSONResponse(content=jsonable_encoder(out))
+    except Exception as e:
+        return JSONResponse(status_code=500, content={
+            "status": "error", "message": f"{type(e).__name__}: {e}"[:400]})
+
+
 @app.get("/api/v1/audit/precios-sin-iva", tags=["Auditoria"])
 async def audit_precios_sin_iva(
     tolerancia: float = Query(0.02, ge=0.001, le=0.5),
