@@ -139,9 +139,13 @@ def _podar(actual: str, conservar: int = 3) -> int:
     """
     try:
         carpeta = os.path.dirname(actual) or "."
+        # El prefijo sale del propio nombre -- 'stock_kalamo_20261014_1530'
+        # -> 'stock_kalamo_' -- para que sirva a cualquier informe y no solo
+        # al de stock: cada uno poda los suyos y no toca los de los demas.
+        prefijo = os.path.basename(actual).rsplit("_", 2)[0] + "_"
         mios = sorted(
             (os.path.join(carpeta, f) for f in os.listdir(carpeta)
-             if f.startswith("stock_kalamo_") and f.endswith(".xlsx")),
+             if f.startswith(prefijo) and f.endswith(".xlsx")),
             key=os.path.getmtime, reverse=True)
         borrados = 0
         for viejo in mios[conservar:]:

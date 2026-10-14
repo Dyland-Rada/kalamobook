@@ -1309,6 +1309,62 @@ async def panel_disponibilidad_resumen(
             "status": "error", "message": f"{type(e).__name__}: {e}"[:300]})
 
 
+@app.get("/api/v1/informes/precios-ejemplos", tags=["Informes"])
+async def informe_precios_ejemplos(
+    por_caso: int = Query(15, ge=1, le=200,
+                          description="filas de cada caso y proveedor"),
+):
+    """
+    Unas pocas filas por proveedor de cada caso -- nos manda CON IVA o SIN
+    IVA -- para que cada uno pueda comprobarlo contra su propio fichero.
+    """
+    import asyncio as _a
+    import informe_precios
+    if informe_precios.get_status().get("status") == "running":
+        return JSONResponse(status_code=409, content={
+            "status": "error", "message": "Ya hay un informe generandose."})
+    res = await _a.to_thread(informe_precios.ejemplos, por_caso, None)
+    if res.get("status") != "completed":
+        return JSONResponse(status_code=500, content=res)
+    return FileResponse(
+        res["ruta"],
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=os.path.basename(res["ruta"]))
+
+
+@app.get("/api/v1/informes/precios-catalogo", tags=["Informes"])
+async def informe_precios_catalogo():
+    """
+    Una fila por ISBN con el PVP de CADA proveedor en su columna, el PVP de
+    referencia, lo que cobramos hoy y la diferencia. Es el fichero para
+    evaluar el impacto economico.
+
+    Tarda varios minutos: cruza libros_proveedor con el feed de AZETA y con
+    catalogo_publicable.
+    """
+    import asyncio as _a
+    import informe_precios
+    if informe_precios.get_status().get("status") == "running":
+        return JSONResponse(status_code=409, content={
+            "status": "error", "message": "Ya hay un informe generandose."})
+    res = await _a.to_thread(informe_precios.catalogo)
+    if res.get("status") != "completed":
+        return JSONResponse(status_code=500, content=res)
+    return FileResponse(
+        res["ruta"],
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=os.path.basename(res["ruta"]),
+        headers={"X-Isbns": str(res["isbns"]),
+                 "X-Afectados": str(res["afectados"]),
+                 "X-Impacto-Eur": str(res["impacto_eur"])})
+
+
+@app.get("/api/v1/informes/precios/estado", tags=["Informes"])
+async def informe_precios_estado():
+    import informe_precios
+    return JSONResponse(content=informe_precios.get_status())
+
+
 @app.get("/api/v1/informes/stock-excel", tags=["Informes"])
 async def informe_stock_excel():
     """
