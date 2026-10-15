@@ -549,7 +549,10 @@ COLS_ODOO = [
      "que venia sin IVA."),
     ("IVA %", 8, "El tipo que se le aplico para reconstruir el PVP."),
     ("QUE PASA", 30,
-     "«SUBE» se aplica. «BAJA - no se toca» queda fuera: una bajada "
+     "«SUBE» se aplica, y la columna DIFERENCIA dice cuanto. «SIN PRECIO "
+     "HOY» tambien se aplica, pero no suma euros: el producto no tenia "
+     "precio en Odoo, asi que no hay subida que contar. «BAJA - no se "
+     "toca» queda fuera: una bajada "
      "significa que la referencia esta por debajo de lo publicado y eso se "
      "mira a mano. «SE ARCHIVARIA - no se toca» tambien queda fuera: el PVP "
      "no llega a 2,90 y archivar saca el libro de la tienda."),
@@ -584,7 +587,8 @@ def cambios_odoo(ruta: str | None = None) -> dict:
                                 f"precios_odoo_{sello:%Y%m%d_%H%M}.xlsx")
     _job = {"status": "running", "accion": "cambios_odoo", "ruta": ruta,
             "started_at": sello.isoformat(), "filas": 0, "suben": 0,
-            "bajan": 0, "archivarian": 0, "euros_que_suben": 0.0,
+            "bajan": 0, "archivarian": 0, "sin_precio_hoy": 0,
+            "euros_que_suben": 0.0,
             "errors": [], "elapsed_s": 0}
     job = _job
     t0 = time.monotonic()
@@ -625,9 +629,17 @@ def cambios_odoo(ruta: str | None = None) -> dict:
                 if nuevo is None:
                     que, dif = "SE ARCHIVARIA - no se toca", None
                     job["archivarian"] += 1
-                elif actual is None or nuevo > actual:
+                elif actual is None:
+                    # Sin precio en Odoo no hay subida que sumar: pasar de
+                    # nada a 8,95 no son 8,95 de mas, es ponerle precio a
+                    # algo que no lo tenia. Contarlo como subida inflaba el
+                    # total 6,6 veces -637.656 frente a 96.019 reales-.
+                    que, dif = "SIN PRECIO HOY - se le pone", None
+                    job["sin_precio_hoy"] += 1
+                    job["suben"] += 1
+                elif nuevo > actual:
                     que = "SUBE"
-                    dif = round(nuevo - (actual or 0), 2)
+                    dif = round(nuevo - actual, 2)
                     job["suben"] += 1
                     job["euros_que_suben"] += dif
                 elif nuevo < actual:
@@ -699,8 +711,11 @@ def _guia_odoo(hoja, job):
          "aqui para mirarlas a mano; no se tocan.")
     f("")
     f("RECUENTO", None, True, "F6F3F0")
-    f("Suben", f"{job['suben']:,} productos · {job['euros_que_suben']:,.2f} "
-               f"EUR de subida acumulada")
+    f("Suben", f"{job['suben'] - job['sin_precio_hoy']:,} productos · "
+               f"{job['euros_que_suben']:,.2f} EUR de subida acumulada")
+    f("Sin precio hoy, se le pone",
+      f"{job['sin_precio_hoy']:,} productos. No suman euros: pasar de no "
+      f"tener precio a tenerlo no es una subida.")
     f("Bajan (no se tocan)", f"{job['bajan']:,}")
     f("Se archivarian (no se tocan)", f"{job['archivarian']:,}")
     f("")
