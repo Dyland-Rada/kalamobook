@@ -2585,6 +2585,7 @@ async def audit_impacto_iva(
     dias: int = Query(180, ge=1, le=1460),
     sonda: bool = Query(False, description="solo mirar que campos y cuantas lineas hay"),
     pedido: str | None = Query(None, description="sonda de un pedido concreto, ej A001449"),
+    detalle: bool = Query(False, description="devolver TODAS las lineas afectadas"),
     tolerancia: float = Query(0.05, ge=0.001, le=1.0),
 ):
     """
@@ -2707,7 +2708,9 @@ async def audit_impacto_iva(
                 res["otras_dif_eur"] += dif * uds
         res["PERDIDA_EUR"] = round(res["PERDIDA_EUR"], 2)
         res["otras_dif_eur"] = round(res["otras_dif_eur"], 2)
-        res["peores"] = sorted(res["peores"], key=lambda x: -x["perdida"])[:50]
+        res["peores"] = sorted(res["peores"], key=lambda x: -x["perdida"])
+        if not detalle:
+            res["peores"] = res["peores"][:50]
         out.update(res)
         out["aviso"] = ("PERDIDA_EUR solo suma las lineas cobradas al PVP sin "
                         "IVA. Las de 'otras' difieren por otra razon y no se "
