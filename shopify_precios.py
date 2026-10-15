@@ -359,7 +359,12 @@ _cron_task = None
 
 
 def get_cron_status() -> dict:
-    return dict(_cron)
+    out = dict(_cron)
+    # El vigilante mira 'enabled' Y 'task_running'. Sin la segunda lo da por
+    # caido en cada revision y trata de arrancarlo cada 12 h: no rompe nada,
+    # pero llena el parte de rojos falsos.
+    out["task_running"] = bool(_cron_task and not _cron_task.done())
+    return out
 
 
 def _ciclo_en_su_hilo() -> dict:
