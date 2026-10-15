@@ -1481,6 +1481,32 @@ async def shopify_precios_parar():
     return JSONResponse(content={"status": "ok", "parado": sp.stop()})
 
 
+@app.get("/api/v1/precios/referencia/cambios-odoo", tags=["Precios"])
+async def precios_ref_cambios_odoo():
+    """
+    Excel con lo que cambiaria de precio en Odoo, fila a fila.
+
+    Incluye a proposito los que se quedan fuera -los que bajarian y los que
+    se archivarian- diciendo por que: son los unicos que hay que mirar a
+    mano. No escribe nada en Odoo.
+    """
+    import asyncio as _a
+    import precios_referencia as pr
+    if pr.get_status().get("status") == "running":
+        return JSONResponse(status_code=409, content={
+            "status": "error", "message": "Ya hay un trabajo en marcha."})
+    res = await _a.to_thread(pr.cambios_odoo)
+    if res.get("status") != "completed":
+        return JSONResponse(status_code=500, content=res)
+    return FileResponse(
+        res["ruta"],
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=os.path.basename(res["ruta"]),
+        headers={"X-Suben": str(res["suben"]),
+                 "X-Bajan": str(res["bajan"]),
+                 "X-Euros": str(res["euros_que_suben"])})
+
+
 @app.get("/api/v1/informes/stock-excel", tags=["Informes"])
 async def informe_stock_excel():
     """

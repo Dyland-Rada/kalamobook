@@ -521,3 +521,191 @@ def impacto(limite: int = 40) -> dict:
                 "muestra": muestra}
     finally:
         conn.close()
+
+
+# ── 5. El Excel de lo que cambiaria en Odoo ─────────────────────────────
+COLS_ODOO = [
+    ("ISBN", 15, "El codigo del libro."),
+    ("TITULO", 48, "Como esta en Odoo."),
+    ("PRECIO EN ODOO HOY", 14, "El list_price que tiene ahora mismo."),
+    ("PASARIA A", 12, "El precio que saldria del PVP de referencia."),
+    ("DIFERENCIA", 12, "La columna anterior menos la de hoy."),
+    ("DIF %", 9, "Esa diferencia en porcentaje."),
+    ("PVP DE REFERENCIA", 14,
+     "El PVP corregido. De aqui sale el precio: se le suma el suplemento de "
+     "los libros baratos (2,00 por debajo de 4,99; 1,50 hasta 6,00; 1,00 "
+     "hasta 7,50) y nada por encima de 7,50."),
+    ("DE DONDE SALE", 13,
+     "«azeta» = su catalogo nos da el PVP y el IVA en campos separados. "
+     "«proveedor» = no esta en AZETA y el PVP se reconstruye multiplicando "
+     "lo que manda el proveedor por su IVA."),
+    ("PROVEEDOR", 22,
+     "Quien manda ese precio, cuando la referencia se reconstruyo."),
+    ("PRECIO QUE MANDA", 13,
+     "El importe tal cual llega en su fichero, sin tocar. Es la prueba de "
+     "que venia sin IVA."),
+    ("IVA %", 8, "El tipo que se le aplico para reconstruir el PVP."),
+    ("QUE PASA", 30,
+     "«SUBE» se aplica. «BAJA - no se toca» queda fuera: una bajada "
+     "significa que la referencia esta por debajo de lo publicado y eso se "
+     "mira a mano. «SE ARCHIVARIA - no se toca» tambien queda fuera: el PVP "
+     "no llega a 2,90 y archivar saca el libro de la tienda."),
+]
+
+SQL_CAMBIOS = f"""
+    SELECT m.barcode, COALESCE(NULLIF(m.name, ''), ''), m.list_price,
+           r.pvp, r.origen, r.proveedor_email, r.precio_recibido, r.iva
+    FROM odoo_books_mirror m
+    JOIN {TABLA_PVP} r ON r.isbn = m.barcode
+    WHERE m.odoo_id IS NOT NULL AND r.pvp > 0 AND NOT r.dudoso
+"""
+
+
+def cambios_odoo(ruta: str | None = None) -> dict:
+    """
+    Una fila por producto que cambiaria de precio en Odoo, con los que se
+    quedan fuera incluidos y dicho por que.
+
+    Los protegidos van dentro a proposito: son los unicos que hay que mirar
+    a mano, y un informe que solo enseñara lo que sale bien no serviria
+    para decidir nada.
+    """
+    global _job
+    import pricing_engine
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.cell import WriteOnlyCell
+
+    sello = datetime.now()
+    ruta = ruta or os.path.join(CARPETA,
+                                f"precios_odoo_{sello:%Y%m%d_%H%M}.xlsx")
+    _job = {"status": "running", "accion": "cambios_odoo", "ruta": ruta,
+            "started_at": sello.isoformat(), "filas": 0, "suben": 0,
+            "bajan": 0, "archivarian": 0, "euros_que_suben": 0.0,
+            "errors": [], "elapsed_s": 0}
+    job = _job
+    t0 = time.monotonic()
+    conn = None
+    try:
+        conn = db.get_connection()
+        cur = conn.cursor(name="camodoo") if db.IS_POSTGRES else conn.cursor()
+        if db.IS_POSTGRES:
+            cur.itersize = 5000
+        cur.execute(SQL_CAMBIOS)
+
+        wb = Workbook(write_only=True)
+        guia = wb.create_sheet("Como leerlo")
+        hoja = wb.create_sheet("Cambios")
+        for i, (_n, ancho, _a) in enumerate(COLS_ODOO):
+            hoja.column_dimensions[get_letra(i + 1)].width = ancho
+        hoja.freeze_panes = "C2"
+        fondo = PatternFill("solid", fgColor="7A1F2B")
+        cab = []
+        for i, (t, _a, _d) in enumerate(COLS_ODOO):
+            c = WriteOnlyCell(hoja, value=t)
+            c.fill = fondo
+            c.font = Font(bold=True, color="FFFFFF", size=10)
+            c.border = Border(bottom=Side(style="thin", color="FFFFFF"))
+            c.alignment = Alignment(horizontal="left" if i < 2 else "center",
+                                    vertical="center", wrap_text=i >= 2)
+            cab.append(c)
+        hoja.row_dimensions[1].height = 40
+        hoja.append(cab)
+
+        while True:
+            lote = cur.fetchmany(5000)
+            if not lote:
+                break
+            for isbn, tit, lp, pvp, origen, prov, recib, iva in lote:
+                nuevo = pricing_engine.web_price(float(pvp))
+                actual = round(float(lp), 2) if lp is not None else None
+                if nuevo is None:
+                    que, dif = "SE ARCHIVARIA - no se toca", None
+                    job["archivarian"] += 1
+                elif actual is None or nuevo > actual:
+                    que = "SUBE"
+                    dif = round(nuevo - (actual or 0), 2)
+                    job["suben"] += 1
+                    job["euros_que_suben"] += dif
+                elif nuevo < actual:
+                    que, dif = "BAJA - no se toca", round(nuevo - actual, 2)
+                    job["bajan"] += 1
+                else:
+                    continue
+                job["filas"] += 1
+                hoja.append([
+                    isbn, (tit or "")[:110], actual, nuevo, dif,
+                    round(dif * 100 / actual, 1) if (dif and actual) else None,
+                    float(pvp), origen, prov,
+                    float(recib) if recib is not None else None,
+                    float(iva) if iva is not None else None,
+                    que,
+                ])
+
+        _guia_odoo(guia, job)
+        wb.save(ruta)
+        job["bytes"] = os.path.getsize(ruta)
+        job["euros_que_suben"] = round(job["euros_que_suben"], 2)
+        job["borrados"] = _podar(ruta)
+        job["status"] = "completed"
+        print(f"[PvpRef] cambios Odoo: {job['filas']:,} filas")
+    except Exception as e:
+        job["status"] = "error"
+        job["errors"].append(f"{type(e).__name__}: {e}"[:300])
+        print(f"[PvpRef] cambios_odoo FAIL: {e!r}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        job["elapsed_s"] = round(time.monotonic() - t0, 2)
+    return job
+
+
+def _guia_odoo(hoja, job):
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.cell import WriteOnlyCell
+    hoja.column_dimensions["A"].width = 30
+    hoja.column_dimensions["B"].width = 96
+
+    def f(a, b=None, neg=False, rel=None):
+        fila = []
+        for v in (a, b):
+            c = WriteOnlyCell(hoja, value=v)
+            c.alignment = Alignment(wrap_text=True, vertical="top")
+            if neg:
+                c.font = Font(bold=True, size=11)
+            if rel:
+                c.fill = PatternFill("solid", fgColor=rel)
+            fila.append(c)
+        hoja.append(fila)
+
+    f("PRECIOS QUE CAMBIARIAN EN ODOO", None, True)
+    f("Generado", datetime.now().strftime("%d/%m/%Y %H:%M"))
+    f("")
+    f("QUE PASO", None, True, "FFF4E0")
+    f("", "Once de los quince proveedores mandan la BASE IMPONIBLE en el "
+         "campo donde guardamos el precio con IVA. Un libro de 23,50 llega "
+         "como 22,60. Cruzando con el catalogo de AZETA -la unica fuente que "
+         "da el PVP y el tipo de IVA en campos separados- se sabe el tipo de "
+         "cada libro y se reconstruye el PVP de verdad.")
+    f("")
+    f("QUE SE HACE CON ESTE FICHERO", None, True, "F6F3F0")
+    f("", "Solo se aplican las filas que ponen SUBE. Las otras dos estan "
+         "aqui para mirarlas a mano; no se tocan.")
+    f("")
+    f("RECUENTO", None, True, "F6F3F0")
+    f("Suben", f"{job['suben']:,} productos · {job['euros_que_suben']:,.2f} "
+               f"EUR de subida acumulada")
+    f("Bajan (no se tocan)", f"{job['bajan']:,}")
+    f("Se archivarian (no se tocan)", f"{job['archivarian']:,}")
+    f("")
+    f("LAS COLUMNAS", None, True, "F6F3F0")
+    for i, (t, _a, desc) in enumerate(COLS_ODOO):
+        f(f"{get_letra(i+1)} · {t}", desc)
+    f("")
+    f("UN AVISO", None, True, "FFF4E0")
+    f("", "La suma en euros NO es dinero perdido ni dinero que se vaya a "
+         "ganar: es lo que cada libro esta mal valorado. Lo que se recupera "
+         "depende de cuantos se vendan.")
