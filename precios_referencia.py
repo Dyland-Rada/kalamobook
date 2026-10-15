@@ -335,10 +335,17 @@ def construir(dry_run: bool = True) -> dict:
     conn = None
     try:
         ensure_schema()
+        # Las dos mediciones se guardan SIEMPRE, tambien en seco, y no es
+        # una licencia: son tablas de consulta que no publica nadie -quien
+        # mueve precios es KALAMO_PVP_REFERENCIA-, y si no se guardan, la
+        # consulta de abajo no encuentra el mapa de IVA por editorial y
+        # todo cae al 4% por defecto. Es decir: la corrida en seco daria un
+        # resultado distinto del real, que es justo lo que no puede pasar
+        # en lo unico que se mira antes de tocar precios.
         job["fase"] = "clasificando proveedores"
-        job["proveedores"] = clasificar_proveedores(guardar=not dry_run)["proveedores"]
+        job["proveedores"] = clasificar_proveedores(guardar=True)["proveedores"]
         job["fase"] = "aprendiendo IVA por editorial"
-        job["iva_editorial"] = aprender_iva_editorial(guardar=not dry_run)
+        job["iva_editorial"] = aprender_iva_editorial(guardar=True)
 
         # Dos conexiones a proposito: un cursor del lado del servidor se
         # cierra en cuanto se hace commit en SU conexion, asi que leer y
