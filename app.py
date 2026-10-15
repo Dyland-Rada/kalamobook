@@ -2623,7 +2623,7 @@ async def audit_impacto_iva(
             lineas = await odoo.search_read(
                 "sale.order.line", dominio,
                 ["order_id", "product_id", "product_uom_qty",
-                 "price_unit", "create_date"], limit=100000)
+                 "price_unit", "price_total", "create_date"], limit=100000)
             ids = sorted({(l["product_id"][0] if isinstance(l["product_id"], list)
                            else l["product_id"])
                           for l in lineas if l.get("product_id")})
@@ -2669,8 +2669,14 @@ async def audit_impacto_iva(
                 continue
             pvp, iva = par
             base = round(pvp / (1 + iva / 100.0), 2)
-            cobrado = float(l.get("price_unit") or 0)
             uds = float(l.get("product_uom_qty") or 0)
+            # price_unit y price_subtotal en Odoo son SIN impuestos; el PVP
+            # del editor los lleva. Comparar contra price_unit daria que el
+            # 100% de las lineas estan mal -- y el patron es identico al del
+            # fallo real, asi que la cifra habria parecido creible. El campo
+            # bueno es price_total, que si incluye el IVA.
+            total = float(l.get("price_total") or 0)
+            cobrado = round(total / uds, 2) if uds else 0
             if cobrado <= 0 or uds <= 0:
                 continue
             dif = round(pvp - cobrado, 2)
