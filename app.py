@@ -2584,6 +2584,7 @@ async def audit_requests(
 async def audit_impacto_iva(
     dias: int = Query(180, ge=1, le=1460),
     sonda: bool = Query(False, description="solo mirar que campos y cuantas lineas hay"),
+    pedido: str | None = Query(None, description="sonda de un pedido concreto, ej A001449"),
     tolerancia: float = Query(0.05, ge=0.001, le=1.0),
 ):
     """
@@ -2610,8 +2611,12 @@ async def audit_impacto_iva(
         async with OdooClient() as odoo:
             dominio = [["order_id.state", "in", ["sale", "done"]],
                        ["create_date", ">=", desde]]
+            if pedido:
+                # Sonda de un pedido concreto: sin filtro de fecha ni estado,
+                # que lo que se quiere es ver la linea tal cual esta.
+                dominio = [["order_id.name", "=", pedido]]
             out["lineas_totales"] = await odoo.search_count("sale.order.line", dominio)
-            if sonda:
+            if sonda or pedido:
                 muestra = await odoo.search_read(
                     "sale.order.line", dominio,
                     ["order_id", "product_id", "product_uom_qty",
