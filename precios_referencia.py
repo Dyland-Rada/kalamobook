@@ -51,6 +51,9 @@ import time
 from datetime import datetime
 
 import db
+from informe_stock import get_letra, _podar
+
+CARPETA = os.environ.get("INFORME_STOCK_DIR", "/tmp")
 
 TABLA_MODO = "proveedor_precio_modo"
 TABLA_PVP = "pvp_referencia"
