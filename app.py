@@ -2660,7 +2660,7 @@ async def audit_impacto_iva(
         res = {"lineas": 0, "sin_barcode": 0, "sin_referencia": 0,
                "correctas": 0, "AFECTADAS": 0, "otras": 0,
                "unidades_afectadas": 0.0, "PERDIDA_EUR": 0.0,
-               "otras_dif_eur": 0.0, "peores": []}
+               "otras_dif_eur": 0.0, "peores": [], "otras_detalle": []}
         for l in lineas:
             res["lineas"] += 1
             pid = (l["product_id"][0] if isinstance(l.get("product_id"), list)
@@ -2706,6 +2706,12 @@ async def audit_impacto_iva(
             else:
                 res["otras"] += 1
                 res["otras_dif_eur"] += dif * uds
+                if detalle and len(res["otras_detalle"]) < 3000:
+                    res["otras_detalle"].append({
+                        "isbn": cb, "pvp": pvp, "iva": iva, "cobrado": cobrado,
+                        "uds": uds, "dif": round(dif * uds, 2),
+                        "ratio": round(cobrado / pvp, 4) if pvp else None,
+                        "fecha": str(l.get("create_date"))[:10]})
         res["PERDIDA_EUR"] = round(res["PERDIDA_EUR"], 2)
         res["otras_dif_eur"] = round(res["otras_dif_eur"], 2)
         res["peores"] = sorted(res["peores"], key=lambda x: -x["perdida"])
