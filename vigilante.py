@@ -104,6 +104,11 @@ def _revisar_crones(arreglar: bool) -> list[dict]:
          "get_cron_status", "start_cron"),
         ("cron_feed_azeta", "Cron del feed de descuentos AZETA", "azeta_feed",
          "get_cron_status", "start_cron"),
+        # Nace apagado (SHOPIFY_PRECIO_CRON_ENABLED). Se vigila igual para
+        # que el dia que se encienda no se quede caido en silencio, que es
+        # justo lo que le paso al catalogo de AZETA durante un mes.
+        ("cron_shopify_precios", "Cron de precios a Shopify", "shopify_precios",
+         "get_cron_status", "start_cron"),
     ]
     for clave, titulo, modulo, fn_estado, fn_arrancar in definicion:
         try:

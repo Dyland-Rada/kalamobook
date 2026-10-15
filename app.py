@@ -1365,6 +1365,122 @@ async def informe_precios_estado():
     return JSONResponse(content=informe_precios.get_status())
 
 
+@app.get("/api/v1/precios/referencia/proveedores", tags=["Precios"])
+async def precios_ref_proveedores():
+    """Que manda cada proveedor: el PVP o la base imponible. Solo mide."""
+    import asyncio as _a
+    import precios_referencia as pr
+    return JSONResponse(content=await _a.to_thread(
+        pr.clasificar_proveedores, False))
+
+
+@app.post("/api/v1/precios/referencia/fijar-modo", tags=["Precios"])
+async def precios_ref_fijar_modo(
+    proveedor_email: str = Query(..., description="buzon del proveedor"),
+    modo: str = Query(..., description="pvp | base | desconocido"),
+):
+    """
+    Clavar a mano lo que manda un proveedor; gana sobre lo medido.
+
+    Para PODIPRINT y para cualquiera que nos lo confirme por escrito: su
+    respuesta vale mas que nuestra estadistica.
+    """
+    import asyncio as _a
+    import precios_referencia as pr
+    try:
+        return JSONResponse(content=await _a.to_thread(
+            pr.fijar_modo, proveedor_email, modo))
+    except ValueError as e:
+        return JSONResponse(status_code=400,
+                            content={"status": "error", "message": str(e)})
+
+
+@app.post("/api/v1/precios/referencia/construir", tags=["Precios"])
+async def precios_ref_construir(
+    dry_run: bool = Query(True, description="en seco no escribe nada"),
+):
+    """
+    Calcula el PVP de referencia de cada ISBN: AZETA cuando lo tiene, y si
+    no, el precio del proveedor corregido con su IVA.
+
+    Tarda varios minutos. En seco la primera vez, siempre.
+    """
+    import asyncio as _a
+    import precios_referencia as pr
+    if pr.get_status().get("status") == "running":
+        return JSONResponse(status_code=409, content={
+            "status": "error", "message": "Ya hay un calculo en marcha."})
+    return JSONResponse(content=await _a.to_thread(pr.construir, dry_run))
+
+
+@app.get("/api/v1/precios/referencia/estado", tags=["Precios"])
+async def precios_ref_estado():
+    import precios_referencia as pr
+    return JSONResponse(content=pr.get_status())
+
+
+@app.get("/api/v1/precios/referencia/impacto", tags=["Precios"])
+async def precios_ref_impacto(
+    limite: int = Query(40, ge=1, le=500, description="filas de muestra"),
+):
+    """Cuanto subiria cada precio si se aplicase la referencia. No escribe."""
+    import asyncio as _a
+    import precios_referencia as pr
+    return JSONResponse(content=await _a.to_thread(pr.impacto, limite))
+
+
+@app.post("/api/v1/shopify/precios/leer", tags=["Shopify"])
+async def shopify_precios_leer():
+    """Baja de la tienda el precio actual de cada libro. Solo lee."""
+    import asyncio as _a
+    import shopify_precios as sp
+    return JSONResponse(content=await _a.to_thread(sp.exportar_precios))
+
+
+@app.get("/api/v1/shopify/precios/comparar", tags=["Shopify"])
+async def shopify_precios_comparar(
+    limite_muestra: int = Query(40, ge=1, le=500),
+):
+    """
+    Que precios cambiarian y cuantos bajarian. No escribe nada.
+
+    Las que bajan son la señal de alarma: hay que mirarlas antes de
+    aplicar nada.
+    """
+    import asyncio as _a
+    import shopify_precios as sp
+    return JSONResponse(content=await _a.to_thread(sp.comparar, limite_muestra))
+
+
+@app.post("/api/v1/shopify/precios/sincronizar", tags=["Shopify"])
+async def shopify_precios_sincronizar(
+    dry_run: bool = Query(True, description="en seco no escribe en la tienda"),
+    solo_subidas: bool = Query(True, description="no bajar precios solo"),
+    limite: int | None = Query(None, ge=1, description="tope de libros"),
+):
+    """Escribe en Shopify los precios que han cambiado."""
+    import asyncio as _a
+    import shopify_precios as sp
+    if sp.get_status().get("status") == "running":
+        return JSONResponse(status_code=409, content={
+            "status": "error", "message": "Ya hay una sincronizacion en marcha."})
+    return JSONResponse(content=await _a.to_thread(
+        sp.sincronizar, dry_run, solo_subidas, limite))
+
+
+@app.get("/api/v1/shopify/precios/estado", tags=["Shopify"])
+async def shopify_precios_estado():
+    import shopify_precios as sp
+    return JSONResponse(content={"job": sp.get_status(),
+                                 "cron": sp.get_cron_status()})
+
+
+@app.post("/api/v1/shopify/precios/parar", tags=["Shopify"])
+async def shopify_precios_parar():
+    import shopify_precios as sp
+    return JSONResponse(content={"status": "ok", "parado": sp.stop()})
+
+
 @app.get("/api/v1/informes/stock-excel", tags=["Informes"])
 async def informe_stock_excel():
     """

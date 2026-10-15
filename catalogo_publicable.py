@@ -48,6 +48,21 @@ PAGINA_QUANT = 40000
 # reserva no puede retener la unidad para siempre.
 RESERVA_TTL_HORAS = int(os.environ.get("RESERVA_TTL_HORAS", "48"))
 
+# De donde sale el PVP del que se calcula el precio de venta.
+#
+# Apagado: MAX(libros_proveedor.precio_con_iva), que es lo que hay desde el
+# 29/09/2026 y lo que produjo el problema del IVA -once de los quince
+# proveedores mandan ahi la base imponible-.
+#
+# Encendido: pvp_referencia, que es AZETA cuando lo tiene y, si no, el
+# precio del proveedor corregido con su IVA. Cae al comportamiento viejo
+# para los ISBN que no tengan referencia o la tengan marcada como dudosa,
+# asi que encenderlo no deja a nadie sin precio.
+#
+# Nace apagado a proposito: encenderlo MUEVE PRECIOS PUBLICADOS. Primero se
+# mira /api/v1/precios/referencia/impacto y despues se enciende.
+USAR_PVP_REFERENCIA = os.environ.get("KALAMO_PVP_REFERENCIA", "0") == "1"
+
 _job: dict | None = None
 
 
@@ -136,6 +151,11 @@ def ensure_schema():
         conn.commit()
     finally:
         conn.close()
+    # La consulta de _filas nombra pvp_referencia aunque el interruptor este
+    # apagado, y Postgres resuelve la tabla al planificar: si no existe, la
+    # vuelta entera falla. Crearla vacia no cambia ningun precio.
+    import precios_referencia
+    precios_referencia.ensure_schema()
 
 
 async def _totales_odoo(odoo: OdooClient, job: dict,
@@ -326,22 +346,9 @@ _brecha_grande = [0]
 BRECHA_MAX = 0.30
 
 
-def _filas(totales: dict[int, float]) -> list[tuple]:
-    """
-    Junta el stock de Odoo con la ficha y el proveedor mas barato que lo
-    tiene. El precio de marketplace se calcula aqui, que antes solo existia
-    dentro del workflow de n8n y no se podia consultar desde ningun sitio.
-    """
-    con_stock = [k for k, v in totales.items() if v > 0]
-    if not con_stock:
-        return []
-    conn = db.get_connection()
-    cur = conn.cursor()
-    try:
-        filas = []
-        for i in range(0, len(con_stock), 5000):
-            trozo = con_stock[i:i + 5000]
-            db.execute_query(cur, """
+# El interruptor se resuelve al cargar el modulo, no en cada vuelta: es
+# una constante dentro de la consulta y asi el plan se reutiliza.
+_SQL_FILAS = """
                 SELECT m.odoo_id, m.barcode, m.name, m.list_price,
                        lp.proveedor_email, lp.precio_con_iva,
                        GREATEST(lp.stock_actualizado_en,
@@ -395,7 +402,11 @@ def _filas(totales: dict[int, float]) -> list[tuple]:
                        -- alto del mercado. Antes esto estaba congelado en
                        -- odoo_books_mirror.list_price desde el dia del alta,
                        -- que es lo que producia las recaidas.
-                       mx.pvp_max
+                       -- Con KALAMO_PVP_REFERENCIA=1 manda pvp_referencia,
+                       -- que es el PVP corregido del IVA; si ese ISBN no
+                       -- tiene referencia o es dudosa, cae al MAX de
+                       -- siempre y nadie se queda sin precio.
+                       COALESCE(ref.pvp, mx.pvp_max) AS pvp_max
                 FROM odoo_books_mirror m
                 LEFT JOIN LATERAL (
                     SELECT proveedor_email, precio_con_iva,
@@ -436,6 +447,12 @@ def _filas(totales: dict[int, float]) -> list[tuple]:
                                       WHERE pp3.proveedor_email = lp3.proveedor_email
                                         AND pp3.activo = false)
                 ) mx ON true
+                LEFT JOIN LATERAL (
+                    SELECT r.pvp
+                    FROM pvp_referencia r
+                    WHERE %USAR_REF% AND r.isbn = m.barcode
+                      AND r.pvp > 0 AND NOT r.dudoso
+                ) ref ON true
                 -- La fecha buena es esta. stock_actualizado_en, en la via
                 -- SINLI, solo se mueve cuando CAMBIA la cantidad: un libro
                 -- que Distriforma confirma a diario con 1 unidad se quedaba
@@ -451,7 +468,26 @@ def _filas(totales: dict[int, float]) -> list[tuple]:
                 ) ce ON true
                 WHERE m.odoo_id = ANY(?)
                   AND m.barcode IS NOT NULL
-            """, (trozo,))
+""".replace(
+    "%USAR_REF%", "true" if USAR_PVP_REFERENCIA else "false")
+
+
+def _filas(totales: dict[int, float]) -> list[tuple]:
+    """
+    Junta el stock de Odoo con la ficha y el proveedor mas barato que lo
+    tiene. El precio de marketplace se calcula aqui, que antes solo existia
+    dentro del workflow de n8n y no se podia consultar desde ningun sitio.
+    """
+    con_stock = [k for k, v in totales.items() if v > 0]
+    if not con_stock:
+        return []
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        filas = []
+        for i in range(0, len(con_stock), 5000):
+            trozo = con_stock[i:i + 5000]
+            db.execute_query(cur, _SQL_FILAS, (trozo,))
             for (oid, isbn, nombre, precio, prov, coste, conf,
                  castigado, reservadas, desmentido, pvp_max) in cur.fetchall():
                 # El precio se recalcula en cada vuelta desde el PVP mas alto

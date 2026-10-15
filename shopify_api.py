@@ -221,6 +221,110 @@ def crear_producto(fila: dict, canal_ids: list[str] | None = None) -> dict:
     return {"id": res["product"]["id"], "handle": res["product"]["handle"]}
 
 
+# ─── Escritura masiva ────────────────────────────────────────────────
+# Cambiar un precio es productVariantsBulkUpdate, y esa mutacion pide el
+# producto: como cada libro tiene una sola variante, serian 700.000
+# llamadas. La via buena es la misma que para leer, pero al reves: se sube
+# un JSONL con una linea por cambio y Shopify lo aplica en su lado.
+_SUBIDA = """
+mutation($input: [StagedUploadInput!]!) {
+  stagedUploadsCreate(input: $input) {
+    stagedTargets { url resourceUrl parameters { name value } }
+    userErrors { field message }
+  }
+}
+"""
+
+_MUTACION_MASIVA = """
+mutation($mutacion: String!, $ruta: String!) {
+  bulkOperationRunMutation(mutation: $mutacion, stagedUploadPath: $ruta) {
+    bulkOperation { id status }
+    userErrors { field message }
+  }
+}
+"""
+
+
+def _multipart(campos: list[tuple[str, str]], nombre_fichero: str,
+               contenido: bytes) -> tuple[bytes, str]:
+    """Arma el cuerpo multipart a mano; aqui no hay requests."""
+    sep = "----kalamo" + str(int(time.time() * 1000))
+    trozos = []
+    for k, v in campos:
+        trozos.append(
+            f"--{sep}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n"
+            f"{v}\r\n".encode())
+    trozos.append(
+        f"--{sep}\r\nContent-Disposition: form-data; name=\"file\"; "
+        f"filename=\"{nombre_fichero}\"\r\n"
+        f"Content-Type: text/jsonl\r\n\r\n".encode())
+    trozos.append(contenido)
+    trozos.append(f"\r\n--{sep}--\r\n".encode())
+    return b"".join(trozos), f"multipart/form-data; boundary={sep}"
+
+
+def subir_jsonl(lineas: list[str], nombre: str = "kalamo.jsonl") -> str:
+    """
+    Deja un JSONL en el almacen temporal de Shopify y devuelve su ruta,
+    que es lo que pide despues bulkOperationRunMutation.
+    """
+    d = graphql(_SUBIDA, {"input": [{
+        "resource": "BULK_MUTATION_VARIABLES", "filename": nombre,
+        "mimeType": "text/jsonl", "httpMethod": "POST"}]})
+    res = d["stagedUploadsCreate"]
+    if res["userErrors"]:
+        raise ShopifyError(f"subida preparada: {res['userErrors']}")
+    destino = res["stagedTargets"][0]
+    campos = [(p["name"], p["value"]) for p in destino["parameters"]]
+    cuerpo, tipo = _multipart(campos, nombre,
+                              ("\n".join(lineas) + "\n").encode("utf-8"))
+    req = urllib.request.Request(destino["url"], data=cuerpo,
+                                 headers={"Content-Type": tipo})
+    try:
+        with urllib.request.urlopen(req, timeout=600) as r:
+            r.read()
+    except urllib.error.HTTPError as e:
+        raise ShopifyError(
+            f"subiendo el JSONL: HTTP {e.code} "
+            f"{e.read()[:300].decode('utf-8', 'replace')}")
+    ruta = dict(campos).get("key")
+    if not ruta:
+        raise ShopifyError("la subida no devolvio 'key'")
+    return ruta
+
+
+def mutacion_masiva(mutacion: str, ruta_jsonl: str, espera_s: int = 15,
+                    maximo_min: int = 90) -> dict:
+    """
+    Lanza la mutacion sobre el JSONL subido y espera a que acabe.
+
+    Devuelve el resumen de la operacion. Si Shopify deja un fichero de
+    errores, su URL viene en 'url_errores': ahi es donde se ve linea a
+    linea que no se pudo aplicar.
+    """
+    d = graphql(_MUTACION_MASIVA, {"mutacion": mutacion, "ruta": ruta_jsonl})
+    res = d["bulkOperationRunMutation"]
+    if res["userErrors"]:
+        raise ShopifyError(f"no arranco la mutacion masiva: {res['userErrors']}")
+    limite = time.time() + maximo_min * 60
+    while time.time() < limite:
+        time.sleep(espera_s)
+        est = graphql("{ currentBulkOperation(type: MUTATION) "
+                      "{ status objectCount errorCode url partialDataUrl } }")
+        op = est.get("currentBulkOperation") or {}
+        if op.get("status") == "COMPLETED":
+            return {"status": "completed",
+                    "objetos": op.get("objectCount"),
+                    "url_errores": op.get("partialDataUrl"),
+                    "url": op.get("url")}
+        if op.get("status") in ("FAILED", "CANCELED"):
+            raise ShopifyError(f"mutacion masiva {op.get('status')}: "
+                               f"{op.get('errorCode')}")
+        print(f"[Shopify] aplicando... {op.get('objectCount') or 0} objetos",
+              flush=True)
+    raise ShopifyError("la mutacion masiva no termino a tiempo")
+
+
 if __name__ == "__main__":
     import sys
     accion = sys.argv[1] if len(sys.argv) > 1 else "info"

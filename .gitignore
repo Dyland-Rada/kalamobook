@@ -42,3 +42,9 @@ reports/
 
 # Ficheros de trabajo de analisis (no se commitean)
 scratch_*.json
+
+# Volcados de la API de Dokploy/EasyPanel (llevan credenciales en claro)
+app.json
+dep.json
+proj.json
+app_one.json
