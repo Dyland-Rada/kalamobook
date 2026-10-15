@@ -176,7 +176,8 @@ async def reactivar_variantes(odoo, template_ids: list[int]) -> int:
     return reactivadas
 
 
-def _load_targets(limit=None, solo_suplemento: bool = False):
+def _load_targets(limit=None, solo_suplemento: bool = False,
+                  desde_referencia: bool = False):
     """
     Lee mirror: (odoo_id, pvp_base, list_price).
 
@@ -193,13 +194,31 @@ def _load_targets(limit=None, solo_suplemento: bool = False):
     devuelve None por debajo de 2,90 o sin PVP, y ambos quedan fuera.
     """
     conn = db.get_connection(); cur = conn.cursor()
-    q = """
-        SELECT odoo_id, pvp_base, list_price
-        FROM odoo_books_mirror
-        WHERE odoo_id IS NOT NULL
-    """
-    if solo_suplemento:
-        q += " AND pvp_base >= 2.90 AND pvp_base < 7.51"
+    if desde_referencia:
+        # El PVP sale de pvp_referencia, que es AZETA cuando lo tiene y, si
+        # no, el precio del proveedor corregido con su IVA. Es la misma
+        # fuente que usan los marketplaces desde el 15/10/2026, y ponerla
+        # aqui es lo que hace que Odoo y los tres canales digan lo mismo.
+        #
+        # Los dudosos quedan fuera: un PVP que no se ha podido confirmar no
+        # entra en el ERP.
+        q = """
+            SELECT m.odoo_id, r.pvp, m.list_price
+            FROM odoo_books_mirror m
+            JOIN pvp_referencia r ON r.isbn = m.barcode
+            WHERE m.odoo_id IS NOT NULL
+              AND r.pvp > 0 AND NOT r.dudoso
+        """
+        if solo_suplemento:
+            q += " AND r.pvp >= 2.90 AND r.pvp < 7.51"
+    else:
+        q = """
+            SELECT odoo_id, pvp_base, list_price
+            FROM odoo_books_mirror
+            WHERE odoo_id IS NOT NULL
+        """
+        if solo_suplemento:
+            q += " AND pvp_base >= 2.90 AND pvp_base < 7.51"
     if limit:
         q += f" LIMIT {int(limit)}"
     cur.execute(q)
@@ -210,11 +229,13 @@ def _load_targets(limit=None, solo_suplemento: bool = False):
 
 async def run_price_update(dry_run: bool = True, limit: int | None = None,
                            solo_suplemento: bool = False,
-                           solo_subidas: bool = False) -> dict:
+                           solo_subidas: bool = False,
+                           desde_referencia: bool = False) -> dict:
     global price_job
     price_job = {"status": "running", "dry_run": dry_run,
                  "solo_suplemento": solo_suplemento,
                  "solo_subidas": solo_subidas,
+                 "desde_referencia": desde_referencia,
                  "started_at": datetime.now().isoformat(), "stage": "leyendo",
                  "total": 0, "precio_actualizado": 0, "apagados": 0,
                  "sin_cambio": 0, "calls": 0, "bajarian": 0,
@@ -222,7 +243,7 @@ async def run_price_update(dry_run: bool = True, limit: int | None = None,
     job = price_job
     t0 = time.monotonic()
     try:
-        rows = _load_targets(limit, solo_suplemento)
+        rows = _load_targets(limit, solo_suplemento, desde_referencia)
         job["total"] = len(rows)
 
         price_updates = defaultdict(list)   # web_price -> [odoo_id] (solo los que cambian)

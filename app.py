@@ -1926,6 +1926,12 @@ async def pricing_mass_update(
     solo_subidas: bool = Query(
         False, description="No tocar los que bajarian de precio: son los que "
                            "tienen el pvp_base sin relacion con su precio"),
+    desde_referencia: bool = Query(
+        False, description="Tomar el PVP de pvp_referencia -AZETA, o el "
+                           "precio del proveedor corregido con su IVA- en "
+                           "vez de pvp_base, que es el scrapeo del dia del "
+                           "alta. Es la misma fuente que usan los "
+                           "marketplaces: pone a Odoo a decir lo mismo"),
 ):
     """
     Motor de precios (API-15, Capa 1): aplica el suplemento por PVP bajo
@@ -1954,12 +1960,14 @@ async def pricing_mass_update(
             loop.run_until_complete(pricing_engine.run_price_update(
                 dry_run=dry_run, limit=limit,
                 solo_suplemento=solo_suplemento,
-                solo_subidas=solo_subidas))
+                solo_subidas=solo_subidas,
+                desde_referencia=desde_referencia))
         finally:
             loop.close()
 
     threading.Thread(target=_run, daemon=True).start()
-    return JSONResponse(content={"status": "started", "dry_run": dry_run})
+    return JSONResponse(content={"status": "started", "dry_run": dry_run,
+                                 "desde_referencia": desde_referencia})
 
 
 @app.get("/api/v1/pricing/status", tags=["Precios"])
