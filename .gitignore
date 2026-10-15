@@ -42,8 +42,3 @@ reports/
 
 # Ficheros de trabajo de analisis (no se commitean)
 scratch_*.json
-
-# Volcados de la API de EasyPanel (llevan credenciales en claro)
-app.json
-dep.json
-proj.json

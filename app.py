@@ -1365,42 +1365,6 @@ async def informe_precios_estado():
     return JSONResponse(content=informe_precios.get_status())
 
 
-@app.get("/api/v1/informes/cobertura", tags=["Informes"])
-async def informe_cobertura():
-    """
-    El espejo entero de Odoo, libro a libro, diciendo en que lista esta y
-    que le falta para estar en las demas.
-
-    Responde a por que Shopify tiene 747.861 fichas, el archivo de precios
-    589.448 ISBN y solo 479.653 se venden: son criterios distintos y aqui se
-    ven uno al lado del otro con el motivo en la ultima columna.
-
-    Tarda varios minutos: ~1,3 millones de filas. Va a un hilo.
-    """
-    import asyncio as _a
-    import informe_cobertura as _ic
-    if _ic.get_status().get("status") == "running":
-        return JSONResponse(status_code=409, content={
-            "status": "error", "message": "Ya hay un informe generandose."})
-    res = await _a.to_thread(_ic.generar)
-    if res.get("status") != "completed":
-        return JSONResponse(status_code=500, content=res)
-    return FileResponse(
-        res["ruta"],
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        filename=os.path.basename(res["ruta"]),
-        headers={"X-Espejo": str(res["espejo"]),
-                 "X-Shopify": str(res["en_shopify"]),
-                 "X-Precios": str(res["en_precios"]),
-                 "X-Vendibles": str(res["vendibles"])})
-
-
-@app.get("/api/v1/informes/cobertura/estado", tags=["Informes"])
-async def informe_cobertura_estado():
-    import informe_cobertura as _ic
-    return JSONResponse(content=_ic.get_status())
-
-
 @app.get("/api/v1/informes/stock-excel", tags=["Informes"])
 async def informe_stock_excel():
     """
