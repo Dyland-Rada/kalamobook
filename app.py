@@ -2675,13 +2675,19 @@ async def audit_impacto_iva(
             pvp, iva = par
             base = round(pvp / (1 + iva / 100.0), 2)
             uds = float(l.get("product_uom_qty") or 0)
-            # price_unit y price_subtotal en Odoo son SIN impuestos; el PVP
-            # del editor los lleva. Comparar contra price_unit daria que el
-            # 100% de las lineas estan mal -- y el patron es identico al del
-            # fallo real, asi que la cifra habria parecido creible. El campo
-            # bueno es price_total, que si incluye el IVA.
-            total = float(l.get("price_total") or 0)
-            cobrado = round(total / uds, 2) if uds else 0
+            # price_unit ES lo que cobro el marketplace.
+            #
+            # Odoo lo guarda como base imponible y le suma el 4% encima, asi
+            # que su price_total es un numero que NO pago nadie. Comprobado
+            # en el pedido A001449: nuestro feed publico 28,36, Odoo guarda
+            # price_unit 28,36 y price_total 29,49, y el PVP del editor son
+            # 29,50. Lo cobrado fueron 28,36.
+            #
+            # Primero compare contra price_total por evitar el error
+            # contrario -- en Odoo price_unit es sin impuestos y el PVP los
+            # lleva -- y eso daba 174 EUR cuando la cifra real es doce veces
+            # mayor. El campo bueno es price_unit.
+            cobrado = float(l.get("price_unit") or 0)
             if cobrado <= 0 or uds <= 0:
                 continue
             dif = round(pvp - cobrado, 2)
