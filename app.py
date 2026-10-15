@@ -216,6 +216,20 @@ async def startup():
     except Exception as e:
         print(f"[Startup] cron de precios FALLO: {type(e).__name__}: {e}")
 
+    # Cron de precios de la tienda. Solo sube: los 10.049 que estan por
+    # ENCIMA de la referencia -con importes multiplo de 47,50, sin
+    # explicar- no se tocan hasta que alguien los mire.
+    try:
+        import shopify_precios as _sp
+        if _sp.start_cron():
+            print(f"[Startup] cron de precios Shopify ARRANCADO "
+                  f"(cada {_sp.CRON_HORAS}h, solo subidas)")
+        else:
+            print("[Startup] cron de precios Shopify NO arrancado "
+                  f"(apagado_por_config={_sp.get_cron_status().get('apagado_por_config')})")
+    except Exception as e:
+        print(f"[Startup] cron de precios Shopify FALLO: {type(e).__name__}: {e}")
+
     # Auto-arrancar el cron de stock AZETA si la env var lo pide
     if os.environ.get("AZETA_STOCK_CRON_ENABLED", "").lower() in ("1", "true", "yes"):
         try:

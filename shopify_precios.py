@@ -346,7 +346,10 @@ def _marcar_escritos(trozo):
 
 # ── 4. Cron ─────────────────────────────────────────────────────────────
 CRON_HORAS = float(os.environ.get("SHOPIFY_PRECIO_CRON_HORAS", "24"))
-CRON_ACTIVO = os.environ.get("SHOPIFY_PRECIO_CRON_ENABLED", "0") == "1"
+# Nace encendido: el problema que arregla es justamente que no habia nada
+# que tocara el precio de la tienda y nadie lo iba a lanzar a mano. Se
+# apaga con SHOPIFY_PRECIO_CRON_ENABLED=0.
+CRON_ACTIVO = os.environ.get("SHOPIFY_PRECIO_CRON_ENABLED", "1") == "1"
 
 # "enabled" es lo que mira el vigilante para saber si deberia estar
 # en marcha; sin esa clave lo da por caido en cada revision.
