@@ -109,6 +109,11 @@ def _revisar_crones(arreglar: bool) -> list[dict]:
         # justo lo que le paso al catalogo de AZETA durante un mes.
         ("cron_shopify_precios", "Cron de precios a Shopify", "shopify_precios",
          "get_cron_status", "start_cron"),
+        # El que arregla el caso del 15/10: AZETA tarifaba a 32,00 desde el
+        # dia 13 y Odoo seguia en 28,00 porque el empuje del precio era
+        # manual y no lo lanzaba nadie.
+        ("cron_precios", "Cron de precios a Odoo", "pricing_engine",
+         "get_cron_status", "start_cron"),
     ]
     for clave, titulo, modulo, fn_estado, fn_arrancar in definicion:
         try:

@@ -176,6 +176,24 @@ async def reactivar_variantes(odoo, template_ids: list[int]) -> int:
     return reactivadas
 
 
+def _espejar(odoo_ids: list[int], precio: float, job: dict):
+    """Refleja en odoo_books_mirror el list_price que se acaba de escribir."""
+    try:
+        conn = db.get_connection()
+        cur = conn.cursor()
+        try:
+            db.execute_query(cur, """
+                UPDATE odoo_books_mirror SET list_price = ?
+                WHERE odoo_id = ANY(?)
+            """, (precio, odoo_ids))
+            conn.commit()
+            job["espejados"] = job.get("espejados", 0) + len(odoo_ids)
+        finally:
+            conn.close()
+    except Exception as e:
+        job["errors"].append(f"espejo @{precio}: {str(e)[:100]}")
+
+
 def _load_targets(limit=None, solo_suplemento: bool = False,
                   desde_referencia: bool = False):
     """
@@ -318,6 +336,13 @@ async def run_price_update(dry_run: bool = True, limit: int | None = None,
                         job["precio_actualizado"] += len(chunk)
                         job["calls"] += 1
                         reactivados.extend(chunk)
+                        # Y lo mismo en el espejo. Sin esto, la proxima
+                        # corrida vuelve a comparar contra el precio viejo:
+                        # la sincronizacion Odoo -> espejo no tiene cron y
+                        # puede llevar meses parada. Escribir aqui lo que
+                        # acabamos de escribir alli no cuesta nada y deja
+                        # la referencia de "precio actual" siempre buena.
+                        _espejar(chunk, wp, job)
                     except Exception as e:
                         job["errors"].append(f"precio {wp}: {str(e)[:100]}")
             # Desarchivar variantes de lo reactivado (Odoo no lo hace solo)
@@ -354,3 +379,112 @@ async def run_price_update(dry_run: bool = True, limit: int | None = None,
         job["errors"].append(f"{type(e).__name__}: {e!r}"[:300])
         job["elapsed_s"] = round(time.monotonic() - t0, 1)
         return job
+
+
+# ── Cron: mantener el precio al dia sin que nadie lo lance ──────────────
+# POR QUE EXISTE. El 15/10/2026 se encuentra el libro 9788416011841 a 28,00
+# en Odoo cuando AZETA lo tarifa a 32,00 desde el dia 13. El precio bueno
+# estaba en nuestra base; lo que faltaba era alguien que lo moviera. El
+# empuje de la ficha de AZETA -que es quien lleva azeta_price_eur a
+# list_price- solo corre a mano: el cron que si existe es de STOCK.
+#
+# Asi que el precio solo se actualizaba cuando alguien se acordaba, y nadie
+# se acordaba. Esto lo deja corriendo solo.
+#
+# Cada vuelta hace dos cosas, en orden:
+#   1. recalcula pvp_referencia, que es de donde sale el PVP bueno
+#   2. escribe en Odoo lo que haya subido
+#
+# Y con las dos protecciones puestas siempre: no baja precios y no archiva
+# nada. Una bajada significa que la referencia esta peor que lo publicado,
+# y eso lo mira una persona, no un cron de madrugada.
+CRON_HORAS = float(os.environ.get("KALAMO_PRECIOS_CRON_HORAS", "24"))
+CRON_ACTIVO = os.environ.get("KALAMO_PRECIOS_CRON_ENABLED", "1") == "1"
+
+# "enabled" es lo que mira el vigilante para saber si deberia estar
+# en marcha; sin esa clave lo da por caido en cada revision.
+_cron: dict = {"enabled": CRON_ACTIVO, "running": False, "ultima": None, "ultimo_resultado": None,
+               "runs_total": 0, "interval_s": int(CRON_HORAS * 3600),
+               "apagado_por_config": not CRON_ACTIVO}
+_cron_task = None
+
+
+def get_cron_status() -> dict:
+    out = dict(_cron)
+    out["task_running"] = bool(_cron_task and not _cron_task.done())
+    return out
+
+
+def _ciclo_en_su_hilo() -> dict:
+    """
+    Recalcula la referencia y escribe los precios que suban.
+
+    Va en su propio hilo con su propio bucle: son minutos de trabajo
+    sincrono y hacerlo en el del servidor deja el panel colgado, que es
+    lo que paso el 13/10 con el catalogo de AZETA.
+    """
+    import asyncio as _aio
+    import precios_referencia
+    bucle = _aio.new_event_loop()
+    _aio.set_event_loop(bucle)
+    try:
+        ref = precios_referencia.construir(dry_run=False)
+        esc = bucle.run_until_complete(run_price_update(
+            dry_run=False, desde_referencia=True,
+            solo_subidas=True, apagar_sin_precio=False))
+        return {
+            "referencia": {k: ref.get(k) for k in
+                           ("status", "isbns", "escritos", "dudosos")},
+            "precios": {k: esc.get(k) for k in
+                        ("status", "precio_actualizado", "euros_que_suben",
+                         "omitidos_por_bajar", "omitidos_por_apagar",
+                         "calls", "errors")},
+        }
+    finally:
+        bucle.close()
+
+
+async def _cron_loop():
+    while True:
+        try:
+            _cron["running"] = True
+            r = await asyncio.to_thread(_ciclo_en_su_hilo)
+            _cron["ultimo_resultado"] = r
+            _cron["runs_total"] += 1
+            _cron["ultima"] = datetime.now().isoformat()
+            print(f"[Pricing] cron: "
+                  f"{r['precios'].get('precio_actualizado', 0):,} precios "
+                  f"actualizados")
+        except Exception as e:
+            _cron["ultimo_resultado"] = {"status": "error", "error": str(e)[:200]}
+            print(f"[Pricing] cron FAIL: {e!r}")
+        finally:
+            _cron["running"] = False
+        await asyncio.sleep(CRON_HORAS * 3600)
+
+
+def start_cron() -> bool:
+    """
+    Arranca el cron. La variable de entorno manda sobre el vigilante: si
+    esta apagado a proposito, nadie lo vuelve a encender por su cuenta.
+    """
+    global _cron_task
+    if not CRON_ACTIVO:
+        _cron["apagado_por_config"] = True
+        return False
+    if _cron_task and not _cron_task.done():
+        return False
+    _cron_task = asyncio.create_task(_cron_loop())
+    _cron["apagado_por_config"] = False
+    _cron["enabled"] = True
+    return True
+
+
+def stop_cron() -> bool:
+    global _cron_task
+    if _cron_task and not _cron_task.done():
+        _cron_task.cancel()
+        _cron_task = None
+        _cron["enabled"] = False
+        return True
+    return False

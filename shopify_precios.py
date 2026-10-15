@@ -348,8 +348,10 @@ def _marcar_escritos(trozo):
 CRON_HORAS = float(os.environ.get("SHOPIFY_PRECIO_CRON_HORAS", "24"))
 CRON_ACTIVO = os.environ.get("SHOPIFY_PRECIO_CRON_ENABLED", "0") == "1"
 
-_cron: dict = {"running": False, "ultima": None, "ultimo_resultado": None,
-               "runs_total": 0, "apagado_por_config": not CRON_ACTIVO}
+# "enabled" es lo que mira el vigilante para saber si deberia estar
+# en marcha; sin esa clave lo da por caido en cada revision.
+_cron: dict = {"enabled": CRON_ACTIVO, "running": False, "ultima": None, "ultimo_resultado": None,
+               "runs_total": 0, "interval_s": int(CRON_HORAS * 3600), "apagado_por_config": not CRON_ACTIVO}
 _cron_task = None
 
 
@@ -412,6 +414,7 @@ def start_cron() -> bool:
         return False
     _cron_task = asyncio.create_task(_cron_loop())
     _cron["apagado_por_config"] = False
+    _cron["enabled"] = True
     return True
 
 
@@ -420,5 +423,6 @@ def stop_cron() -> bool:
     if _cron_task and not _cron_task.done():
         _cron_task.cancel()
         _cron_task = None
+        _cron["enabled"] = False
         return True
     return False

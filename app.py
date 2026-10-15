@@ -201,6 +201,21 @@ async def startup():
     except Exception as e:
         print(f"[Startup] proveedores ensure_schema FALLO: {type(e).__name__}: {e}")
 
+    # Cron de precios: recalcula la referencia y escribe en Odoo lo que
+    # suba. Nace encendido porque el problema que arregla es justamente
+    # que nadie lanzaba el empuje a mano; se apaga con
+    # KALAMO_PRECIOS_CRON_ENABLED=0.
+    try:
+        import pricing_engine as _pe
+        if _pe.start_cron():
+            print(f"[Startup] cron de precios ARRANCADO "
+                  f"(cada {_pe.CRON_HORAS}h, solo subidas)")
+        else:
+            print("[Startup] cron de precios NO arrancado "
+                  f"(apagado_por_config={_pe.get_cron_status().get('apagado_por_config')})")
+    except Exception as e:
+        print(f"[Startup] cron de precios FALLO: {type(e).__name__}: {e}")
+
     # Auto-arrancar el cron de stock AZETA si la env var lo pide
     if os.environ.get("AZETA_STOCK_CRON_ENABLED", "").lower() in ("1", "true", "yes"):
         try:
@@ -2000,6 +2015,19 @@ async def pricing_mass_update(
     threading.Thread(target=_run, daemon=True).start()
     return JSONResponse(content={"status": "started", "dry_run": dry_run,
                                  "desde_referencia": desde_referencia})
+
+
+@app.get("/api/v1/pricing/cron/status", tags=["Precios"])
+async def pricing_cron_status():
+    import pricing_engine
+    return JSONResponse(content=pricing_engine.get_cron_status())
+
+
+@app.post("/api/v1/pricing/cron/stop", tags=["Precios"])
+async def pricing_cron_stop():
+    import pricing_engine
+    return JSONResponse(content={"status": "ok",
+                                 "parado": pricing_engine.stop_cron()})
 
 
 @app.get("/api/v1/pricing/status", tags=["Precios"])
