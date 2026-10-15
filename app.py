@@ -1932,6 +1932,11 @@ async def pricing_mass_update(
                            "vez de pvp_base, que es el scrapeo del dia del "
                            "alta. Es la misma fuente que usan los "
                            "marketplaces: pone a Odoo a decir lo mismo"),
+    apagar_sin_precio: bool = Query(
+        True, description="Archivar (active=False) los que se queden por "
+                          "debajo de 2,90. OJO: solo_subidas NO frena esto, "
+                          "va por rama aparte. Ponerlo en false para tocar "
+                          "precios sin sacar nada de la tienda"),
 ):
     """
     Motor de precios (API-15, Capa 1): aplica el suplemento por PVP bajo
@@ -1961,7 +1966,8 @@ async def pricing_mass_update(
                 dry_run=dry_run, limit=limit,
                 solo_suplemento=solo_suplemento,
                 solo_subidas=solo_subidas,
-                desde_referencia=desde_referencia))
+                desde_referencia=desde_referencia,
+                apagar_sin_precio=apagar_sin_precio))
         finally:
             loop.close()
 

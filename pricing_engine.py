@@ -230,16 +230,20 @@ def _load_targets(limit=None, solo_suplemento: bool = False,
 async def run_price_update(dry_run: bool = True, limit: int | None = None,
                            solo_suplemento: bool = False,
                            solo_subidas: bool = False,
-                           desde_referencia: bool = False) -> dict:
+                           desde_referencia: bool = False,
+                           apagar_sin_precio: bool = True) -> dict:
     global price_job
     price_job = {"status": "running", "dry_run": dry_run,
                  "solo_suplemento": solo_suplemento,
                  "solo_subidas": solo_subidas,
                  "desde_referencia": desde_referencia,
+                 "apagar_sin_precio": apagar_sin_precio,
                  "started_at": datetime.now().isoformat(), "stage": "leyendo",
                  "total": 0, "precio_actualizado": 0, "apagados": 0,
                  "sin_cambio": 0, "calls": 0, "bajarian": 0,
-                 "omitidos_por_bajar": 0, "errors": []}
+                 "omitidos_por_bajar": 0, "omitidos_por_apagar": 0,
+                 "euros_que_suben": 0.0, "euros_que_bajan": 0.0,
+                 "errors": []}
     job = price_job
     t0 = time.monotonic()
     try:
@@ -251,7 +255,14 @@ async def run_price_update(dry_run: bool = True, limit: int | None = None,
         for odoo_id, pvp_base, list_price in rows:
             wp = web_price(pvp_base)
             if wp is None:
-                to_deactivate.append(odoo_id)
+                # El apagado va por rama aparte y solo_subidas NO lo frena:
+                # quien pide "solo subir precios" no espera que ademas se le
+                # archiven productos, que en Odoo arrastra las variantes y
+                # los saca de la tienda. Por eso tiene su propio permiso.
+                if apagar_sin_precio:
+                    to_deactivate.append(odoo_id)
+                else:
+                    job["omitidos_por_apagar"] += 1
             else:
                 cur_lp = round(float(list_price), 2) if list_price is not None else None
                 baja = cur_lp is not None and wp < cur_lp
@@ -267,6 +278,11 @@ async def run_price_update(dry_run: bool = True, limit: int | None = None,
                     job["omitidos_por_bajar"] += 1
                 elif cur_lp != wp:
                     price_updates[wp].append(odoo_id)
+                    if cur_lp is not None:
+                        if wp > cur_lp:
+                            job["euros_que_suben"] += wp - cur_lp
+                        else:
+                            job["euros_que_bajan"] += cur_lp - wp
                     # Una bajada de precio es la senal de alarma de esta
                     # corrida: significa que list_price estaba por encima
                     # del PVP y la regla se lo lleva por delante. En seco
@@ -277,6 +293,8 @@ async def run_price_update(dry_run: bool = True, limit: int | None = None,
                 else:
                     job["sin_cambio"] += 1
 
+        job["euros_que_suben"] = round(job["euros_que_suben"], 2)
+        job["euros_que_bajan"] = round(job["euros_que_bajan"], 2)
         job["a_actualizar"] = sum(len(v) for v in price_updates.values())
         job["a_apagar"] = len(to_deactivate)
         job["valores_precio_distintos"] = len(price_updates)
