@@ -89,6 +89,23 @@ AYUDA = {
                               "Books · «ambos» · «ninguno».",
 }
 
+# Caracteres de control que Excel no admite en una celda. Llegan del
+# scrapeo: el apostrofo de "BRYAN LEE O'MALLEY" viene como 0x1A y openpyxl
+# aborta el fichero entero por una sola celda.
+# Codigos de control que Excel rechaza en una celda. Se construye por
+# numero y no con un regex escapado: el apostrofo de "BRYAN LEE
+# O'MALLEY" llega del scrapeo como 0x1A y openpyxl aborta el fichero
+# entero por esa sola celda.
+_PROHIBIDOS = frozenset(list(range(0, 9)) + [11, 12] + list(range(14, 32)))
+
+
+def _limpio(txt, tope=None):
+    if txt is None:
+        return None
+    t = "".join(c for c in str(txt) if ord(c) not in _PROHIBIDOS)
+    return t[:tope] if tope else t
+
+
 # '502.0 gr' -> 502.0 ; '19,1 cm' -> 19.1 ; '' -> None
 _NUM = re.compile(r"-?\d+(?:[.,]\d+)?")
 
@@ -211,16 +228,16 @@ def generar(todos: bool = False, ruta: str | None = None) -> dict:
                 if tramo[1] >= TOPE_HOJA:
                     tramo = nueva(len(hojas) + 1)
                 tramo[0].append([
-                    isbn, (tit or "")[:150], (aut or "")[:90],
-                    (edi or gedi or "")[:70], (col or "")[:70],
-                    (tra or "")[:70], (ilu or "")[:70], (idi or "")[:40],
-                    (enc or "")[:50], _entero(pag), (pub or "")[:30],
+                    _limpio(isbn), _limpio(tit, 150), _limpio(aut, 90),
+                    _limpio(edi or gedi, 70), _limpio(col, 70),
+                    _limpio(tra, 70), _limpio(ilu, 70), _limpio(idi, 40),
+                    _limpio(enc, 50), _entero(pag), _limpio(pub, 30),
                     p, al, an,
                     float(pvp) if pvp is not None else None,
                     float(pvpb) if pvpb is not None else None,
-                    (categ or "")[:90], (infer or "")[:120],
-                    int(desc or 0), (img or "")[:250],
-                    (prov or "")[:120], origen,
+                    _limpio(categ, 90), _limpio(infer, 120),
+                    int(desc or 0), _limpio(img, 250),
+                    _limpio(prov, 120), origen,
                     act.strftime("%Y-%m-%d") if act else None,
                 ])
                 tramo[1] += 1
