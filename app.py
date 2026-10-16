@@ -1600,6 +1600,36 @@ async def admin_odoo_movimientos(
     return JSONResponse(content=out)
 
 
+@app.get("/api/v1/informes/metadata", tags=["Informes"])
+async def informe_metadata(
+    todos: bool = Query(False, description="True = los 1,3 millones del "
+                                           "espejo; False = solo los que "
+                                           "tienen ficha"),
+):
+    """
+    Excel con la ficha de cada libro: autor, editorial, coleccion, idioma,
+    paginas, encuadernacion y —lo que nadie tenia junto— PESO, ALTO y ANCHO.
+
+    Las medidas solo existen en el scrapeo de Casa del Libro y llegan como
+    texto con unidad; aqui salen ya como numero para poder filtrarlas.
+    """
+    import asyncio as _a
+    import informe_metadata as im
+    if im.get_status().get("status") == "running":
+        return JSONResponse(status_code=409, content={
+            "status": "error", "message": "Ya hay un informe generandose."})
+    res = await _a.to_thread(im.generar, todos)
+    if res.get("status") != "completed":
+        return JSONResponse(status_code=500, content=res)
+    return FileResponse(
+        res["ruta"],
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=os.path.basename(res["ruta"]),
+        headers={"X-Filas": str(res["filas"]),
+                 "X-Con-Peso": str(res["con_peso"]),
+                 "X-Con-Medidas": str(res["con_medidas"])})
+
+
 @app.get("/api/v1/informes/stock-excel", tags=["Informes"])
 async def informe_stock_excel():
     """
