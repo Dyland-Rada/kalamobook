@@ -284,6 +284,193 @@ def _revisar_bd() -> dict:
         except Exception: pass
 
 
+
+# ─── Coherencia del negocio ──────────────────────────────────────────
+# Las siete comprobaciones de arriba miran infraestructura: crones vivos,
+# locks sueltos, ficheros que entran, Odoo y Shopify respondiendo. Ninguna
+# pregunta si lo que hacemos tiene sentido.
+#
+# El 16/10/2026 el parte daba 14 de 15 en verde mientras AbeBooks vendia
+# por segunda vez un libro sin existencias desde el 9, UDL llevaba meses
+# sin fuente de stock y DISMALIBRO mandaba 12.318 libros a diario que no
+# llegaban a ningun almacen. Nada de eso es un cron caido ni un servicio
+# muerto, asi que nada de eso se veia.
+#
+# Estas cuatro comprobaciones son las que lo habrian cazado sin que nadie
+# lo reportara desde atencion al cliente.
+
+def _revisar_ventas_sin_stock() -> dict:
+    """
+    Reservas abiertas de libros que el catalogo da a cero.
+
+    Una reserva nace cuando entra un pedido. Si el libro esta a 0, es que
+    se vendio algo que no tenemos: o la oferta sigue viva en un marketplace
+    que no hemos podido apagar, o el proveedor se quedo sin existencias
+    entre la venta y ahora.
+
+    Lo que distingue un caso del otro es `confirmado_en`: si el proveedor
+    lo confirmo hace horas, es la carrera normal del dropship; si lleva
+    dias sin confirmarse, la oferta esta encallada.
+    """
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        db.execute_query(cur, """
+            SELECT r.canal, COUNT(*),
+                   COUNT(*) FILTER (
+                       WHERE c.confirmado_en IS NULL
+                          OR c.confirmado_en < NOW() - INTERVAL '2 days')
+            FROM reserva_stock r
+            LEFT JOIN catalogo_publicable c ON c.isbn = r.isbn
+            WHERE r.liberada_en IS NULL
+              AND COALESCE(c.stock, 0) = 0
+            GROUP BY r.canal
+            ORDER BY 2 DESC
+        """)
+        filas = cur.fetchall()
+        if not filas:
+            return _chequeo("ventas_sin_stock", "Ventas sin stock", OK,
+                            "ninguna reserva abierta sobre un libro a cero")
+        total = sum(int(r[1]) for r in filas)
+        rancias = sum(int(r[2]) for r in filas)
+        txt = ", ".join(f"{r[0]} {int(r[1])}" for r in filas)
+        # Las rancias son las graves: el proveedor no lo confirma desde
+        # hace dias y aun asi se sigue vendiendo.
+        estado = ERROR if rancias else AVISO
+        detalle = f"{total} reservas abiertas sobre libros a 0 ({txt})"
+        if rancias:
+            detalle += f"; {rancias} llevan mas de 2 dias sin confirmarse"
+        return _chequeo(
+            "ventas_sin_stock", "Ventas sin stock", estado, detalle,
+            accion=("Mira /api/v1/reservas. Si el libro lleva dias a cero, "
+                    "la oferta esta encallada en el marketplace")
+            if rancias else None)
+    except Exception as e:
+        return _chequeo("ventas_sin_stock", "Ventas sin stock", AVISO,
+                        f"no se pudo comprobar: {type(e).__name__}")
+    finally:
+        conn.close()
+
+
+def _revisar_proveedores_mudos_con_almacen() -> dict:
+    """
+    Proveedores con almacen dado de alta y CERO libros con stock.
+
+    Es el caso de UDL: almacen UDL01 listo, mapeo listo, y ni una linea en
+    libros_proveedor porque solo manda ESTADO y ENVIO, nunca CEGALD. Manda
+    ficheros a diario, asi que la comprobacion de frescura lo da por bueno;
+    simplemente no traen stock.
+    """
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        db.execute_query(cur, """
+            SELECT m.nombre_proveedor, m.proveedor_email
+            FROM proveedor_almacen_odoo m
+            WHERE NOT EXISTS (
+                SELECT 1 FROM libros_proveedor lp
+                WHERE lp.proveedor_email = m.proveedor_email
+                  AND lp.stock_disponible > 0)
+            ORDER BY 1
+        """)
+        mudos = [(r[0] or r[1]) for r in cur.fetchall()]
+        if not mudos:
+            return _chequeo("prov_sin_stock", "Proveedores sin stock", OK,
+                            "todos los que tienen almacen aportan libros")
+        return _chequeo(
+            "prov_sin_stock", "Proveedores sin stock", AVISO,
+            f"{len(mudos)} con almacen y 0 libros: {', '.join(mudos[:6])}",
+            accion="Probablemente no mandan CEGALD. Pedirselo o montar la "
+                   "ingesta manual")
+    finally:
+        conn.close()
+
+
+def _revisar_stock_sin_almacen() -> dict:
+    """
+    Lo contrario: proveedores que mandan stock y no tienen donde ponerlo.
+
+    Es el caso de DISMALIBRO, 12.318 libros a diario sin almacen en Odoo.
+    El catalogo exige almacen para dejar que alguien gane la puja, asi que
+    todo ese stock era invisible. Le paso igual a PENGUIN en septiembre con
+    22.193 libros.
+    """
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        db.execute_query(cur, """
+            SELECT lp.proveedor_email, COUNT(*)
+            FROM libros_proveedor lp
+            WHERE lp.stock_disponible > 0
+              AND NOT EXISTS (
+                  SELECT 1 FROM proveedor_almacen_odoo m
+                  WHERE m.proveedor_email = lp.proveedor_email)
+            GROUP BY lp.proveedor_email
+            ORDER BY 2 DESC
+        """)
+        filas = [(r[0], int(r[1])) for r in cur.fetchall()]
+        if not filas:
+            return _chequeo("stock_sin_almacen", "Stock sin almacen", OK,
+                            "todo el stock que entra tiene donde ir")
+        total = sum(n for _e, n in filas)
+        txt = ", ".join(f"{e.split('@')[0]} ({n:,})" for e, n in filas[:4])
+        return _chequeo(
+            "stock_sin_almacen", "Stock sin almacen", ERROR,
+            f"{total:,} libros con stock de {len(filas)} proveedores sin "
+            f"almacen: {txt}",
+            accion="Darles de alta con /api/v1/proveedores/alta y despues "
+                   "/proveedores/empujar-ahora")
+    finally:
+        conn.close()
+
+
+def _revisar_feeds_topados() -> dict:
+    """
+    Un feed que lleva muchas vueltas seguidas en su tope no esta al dia:
+    esta drenando una cola que no se vacia nunca.
+
+    AbeBooks manda 1.000 por vuelta cada 15 minutos -96.000 al dia- y el
+    catalogo genera mas cambios que eso, asi que su oferta va siempre por
+    detras. Eso no lo ve ninguna comprobacion de infraestructura: el
+    workflow corre, termina bien y da success.
+    """
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        # Lo que el espejo de cada canal dice tener vivo frente a lo que el
+        # catalogo da por vendible. Una diferencia enorme y sostenida es la
+        # firma de una cola que no se vacia.
+        salida = []
+        for canal, tabla in (("AbeBooks", "abe_offer_state"),
+                             ("Casa del Libro", "mirakl_offer_state"),
+                             ("Fnac", "fnac_offer_state")):
+            try:
+                db.execute_query(cur, f"""
+                    SELECT COUNT(*) FROM {tabla} m
+                    WHERE m.last_quantity > 0
+                      AND NOT EXISTS (
+                          SELECT 1 FROM catalogo_publicable c
+                          WHERE c.isbn = m.sku AND c.stock > 0)
+                """)
+                n = int(cur.fetchone()[0])
+                if n:
+                    salida.append((canal, n))
+            except Exception:
+                continue        # la tabla puede no existir todavia
+        if not salida:
+            return _chequeo("feeds_al_dia", "Ofertas vivas sin stock", OK,
+                            "lo publicado coincide con lo vendible")
+        total = sum(n for _c, n in salida)
+        txt = ", ".join(f"{c} {n:,}" for c, n in salida)
+        return _chequeo(
+            "feeds_al_dia", "Ofertas vivas sin stock", AVISO,
+            f"{total:,} ofertas publicadas sin stock en catalogo: {txt}",
+            accion="Es la cola del feed. Si no baja en unas horas, la oferta "
+                   "esta encallada")
+    finally:
+        conn.close()
+
+
 # ─── Revision completa ───────────────────────────────────────────────
 async def revisar(arreglar: bool = True) -> dict:
     """Pasa todas las comprobaciones. Devuelve el parte completo."""
@@ -297,6 +484,17 @@ async def revisar(arreglar: bool = True) -> dict:
     chequeos.append(_revisar_shopify())
     chequeos.append(_revisar_proveedores())
     chequeos.append(_revisar_sync())
+    # Coherencia del negocio. Sin estas, el parte da verde mientras se
+    # vende lo que no hay.
+    for fn in (_revisar_ventas_sin_stock,
+               _revisar_proveedores_mudos_con_almacen,
+               _revisar_stock_sin_almacen,
+               _revisar_feeds_topados):
+        try:
+            chequeos.append(fn())
+        except Exception as e:
+            chequeos.append(_chequeo(fn.__name__, fn.__name__, AVISO,
+                                     f"no se pudo comprobar: {type(e).__name__}"))
 
     errores = [c for c in chequeos if c["estado"] == ERROR]
     avisos = [c for c in chequeos if c["estado"] == AVISO]
