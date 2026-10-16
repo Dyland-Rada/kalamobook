@@ -1536,6 +1536,70 @@ async def precios_ref_cambios_odoo():
                  "X-Euros": str(res["euros_que_suben"])})
 
 
+@app.get("/api/v1/admin/odoo-movimientos", tags=["Admin"])
+async def admin_odoo_movimientos(
+    isbn: str = Query(..., description="ISBN/EAN del libro"),
+    limite: int = Query(100, ge=1, le=500),
+):
+    """
+    El libro mayor de almacen de un ISBN: cada entrada y cada salida.
+
+    Es lo que en Odoo esta en Inventario - Informes - Movimientos de
+    producto, pero sin tener que navegar hasta alli.
+
+    Importante para leerlo: trabajamos en dropship, asi que NO hay
+    recepciones de proveedor. El stock entra por "Ajuste de inventario"
+    -el eco del fichero que manda el proveedor- y sale a "Clientes" cuando
+    se vende. Un libro sin movimientos de entrada no es un fallo: es que
+    su stock se escribio por ajuste y, al llegar a cero, Odoo borro el
+    registro.
+    """
+    from odoo_client import OdooClient
+    isbn = (isbn or "").strip()
+    out: dict = {"isbn": isbn}
+    try:
+        async with OdooClient() as odoo:
+            prods = await odoo.search_read(
+                "product.product", [["barcode", "=", isbn]],
+                ["id", "name"], limit=5)
+            if not prods:
+                return JSONResponse(status_code=404, content={
+                    "isbn": isbn, "error": "no existe en Odoo"})
+            out["productos"] = [{"id": p["id"], "name": p.get("name")}
+                                for p in prods]
+            ids = [p["id"] for p in prods]
+            lineas = await odoo.search_read(
+                "stock.move.line",
+                [["product_id", "in", ids]],
+                ["date", "quantity", "location_id", "location_dest_id",
+                 "reference", "state", "picking_id"],
+                limit=limite, order="date desc")
+
+            def _n(v):
+                return v[1] if isinstance(v, list) and len(v) > 1 else v
+
+            out["movimientos"] = [{
+                "fecha": m.get("date"),
+                "cantidad": m.get("quantity"),
+                "desde": _n(m.get("location_id")),
+                "hacia": _n(m.get("location_dest_id")),
+                "referencia": m.get("reference"),
+                "albaran": _n(m.get("picking_id")) or None,
+                "estado": m.get("state"),
+            } for m in lineas]
+            out["total"] = len(out["movimientos"])
+            entradas = sum(float(m["cantidad"] or 0) for m in out["movimientos"]
+                           if "Stock" in str(m["hacia"] or ""))
+            salidas = sum(float(m["cantidad"] or 0) for m in out["movimientos"]
+                          if "Stock" in str(m["desde"] or ""))
+            out["resumen"] = {"entradas_a_almacen": entradas,
+                              "salidas_de_almacen": salidas}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={
+            "isbn": isbn, "error": f"{type(e).__name__}: {e}"[:200]})
+    return JSONResponse(content=out)
+
+
 @app.get("/api/v1/informes/stock-excel", tags=["Informes"])
 async def informe_stock_excel():
     """
