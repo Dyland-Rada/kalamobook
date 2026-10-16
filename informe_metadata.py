@@ -150,8 +150,16 @@ SQL = """
     FROM odoo_books_mirror m
     WHERE m.barcode IS NOT NULL AND m.barcode <> ''
 """
-SOLO_CON_FICHA = ("  AND (m.cdl_fetched_at IS NOT NULL "
-                  "OR m.gbooks_fetched_at IS NOT NULL)")
+# El corte por defecto. La primera version pedia scrapeo o Google Books y
+# dejaba fuera a casi un millon de libros enriquecidos desde el catalogo de
+# AZETA, que no pasan por ninguno de los dos: salian 458.274 cuando en
+# Shopify hay 734.957 publicados.
+#
+# El criterio bueno lo dio operaciones: vale cualquier libro que tenga algo
+# mas que su ISBN y su precio. Eso es tener titulo de verdad -que el nombre
+# no sea el propio codigo de barras-.
+SOLO_CON_FICHA = ("  AND NULLIF(m.name, '') IS NOT NULL "
+                  "AND m.name <> m.barcode")
 
 
 def _cabecera(hoja):
