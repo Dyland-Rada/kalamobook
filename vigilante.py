@@ -441,6 +441,27 @@ def _revisar_feeds_topados() -> dict:
         # catalogo da por vendible. Una diferencia enorme y sostenida es la
         # firma de una cola que no se vacia.
         salida = []
+        # AbeBooks falla de otra manera y esta consulta no lo veia. Su
+        # espejo SI tiene la fila, con cantidad 0: nosotros creemos haberlo
+        # apagado y AbeBooks nunca aplico el delete. Medido por Alexander el
+        # 16/10/2026: 35.207 ofertas vivas que respondieron "Book deleted"
+        # al reenviarles la orden, prueba de que seguian publicadas.
+        #
+        # Lo que se mide aqui es el tamano de esa cola pendiente de
+        # reconfirmar. El feed la drena a 150 por vuelta; si crece en vez de
+        # bajar, el delete esta volviendo a fallar.
+        try:
+            db.execute_query(cur, """
+                SELECT COUNT(*) FROM abe_offer_state
+                WHERE last_quantity = 0
+                  AND last_pushed_at < NOW() - INTERVAL '2 days'
+            """)
+            pendientes = int(cur.fetchone()[0])
+            if pendientes:
+                salida.append(("AbeBooks sin reconfirmar", pendientes))
+        except Exception:
+            pass
+
         for canal, tabla in (("AbeBooks", "abe_offer_state"),
                              ("Casa del Libro", "mirakl_offer_state"),
                              ("Fnac", "fnac_offer_state")):
