@@ -122,6 +122,12 @@ def ensure_schema():
                 -- Lo que manda el proveedor sin tocar, para poder enseñar
                 -- siempre de donde sale el corregido.
                 precio_recibido  NUMERIC(10,2),
+                -- Capa 0: lo que AZETA nos descuenta y el PVP que haria
+                -- falta para que la venta deje el margen objetivo. Se
+                -- calcula SIEMPRE; usarlo o no lo decide
+                -- KALAMO_CAPA0_ENABLED en quien lee esta tabla.
+                descuento        NUMERIC(5,2),
+                pvp_ajustado     NUMERIC(10,2),
                 dudoso           BOOLEAN NOT NULL DEFAULT FALSE,
                 motivo           TEXT,
                 calculado_en     TIMESTAMP NOT NULL DEFAULT NOW()
@@ -129,6 +135,15 @@ def ensure_schema():
         """)
         db.execute_query(cur, f"CREATE INDEX IF NOT EXISTS {TABLA_PVP}_origen_idx "
                               f"ON {TABLA_PVP} (origen)")
+        # La tabla puede venir de antes de la Capa 0. Cada ALTER va suelto
+        # porque en Postgres uno fallido aborta la transaccion entera.
+        for col in ("descuento NUMERIC(5,2)", "pvp_ajustado NUMERIC(10,2)"):
+            try:
+                db.execute_query(cur, f"ALTER TABLE {TABLA_PVP} "
+                                      f"ADD COLUMN IF NOT EXISTS {col}")
+                conn.commit()
+            except Exception:
+                conn.rollback()
         conn.commit()
     finally:
         conn.close()
@@ -289,7 +304,7 @@ def aprender_iva_editorial(guardar: bool = True) -> dict:
 # ── 3. El PVP de referencia, ISBN a ISBN ────────────────────────────────
 CONSULTA_PVP = f"""
     SELECT lp.isbn,
-           f.pvp, f.iva,
+           f.pvp, f.iva, f.descuento,
            ed.iva  AS iva_editorial,
            m.cdl_editorial,
            lp.proveedor_email, lp.precio_con_iva,
@@ -372,7 +387,10 @@ def construir(dry_run: bool = True) -> dict:
             pvp_az = iva_az = None
             mejor = None          # (pvp_normalizado, email, recibido, dudoso, motivo)
             crudo_max = 0.0
-            for (p_az, i_az, i_ed, _ed, email, precio, modo) in acc:
+            desc_az = None
+            for (p_az, i_az, d_az, i_ed, _ed, email, precio, modo) in acc:
+                if d_az is not None:
+                    desc_az = float(d_az)
                 precio = float(precio)
                 crudo_max = max(crudo_max, precio)
                 if p_az is not None and float(p_az) > 0 and i_az is not None:
@@ -408,6 +426,16 @@ def construir(dry_run: bool = True) -> dict:
                         recibido, dud, mot)
                 org, fiva = "proveedor", fuente
 
+            # Capa 0. Solo se calcula cuando AZETA nos dice cuanto
+            # descuenta; sin ese dato no hay margen que corregir.
+            import pricing_engine as _pe
+            ajust = _pe.pvp_por_margen(fila[1], desc_az) if desc_az is not None else None
+            if ajust is not None and fila[1] and ajust > float(fila[1]) + 0.005:
+                job["capa0_subirian"] = job.get("capa0_subirian", 0) + 1
+                job["capa0_euros"] = round(
+                    job.get("capa0_euros", 0.0) + ajust - float(fila[1]), 2)
+            fila = fila[:6] + (desc_az, ajust) + fila[6:]
+
             job["origen"][org] = job["origen"].get(org, 0) + 1
             job["fuente_iva"][fiva] = job["fuente_iva"].get(fiva, 0) + 1
             if fila[6]:
@@ -426,16 +454,18 @@ def construir(dry_run: bool = True) -> dict:
             execute_values(escritor, f"""
                 INSERT INTO {TABLA_PVP}
                     (isbn, pvp, iva, origen, proveedor_email, precio_recibido,
-                     dudoso, motivo, calculado_en)
+                     descuento, pvp_ajustado, dudoso, motivo, calculado_en)
                 VALUES %s
                 ON CONFLICT (isbn) DO UPDATE SET
                     pvp = EXCLUDED.pvp, iva = EXCLUDED.iva,
                     origen = EXCLUDED.origen,
                     proveedor_email = EXCLUDED.proveedor_email,
                     precio_recibido = EXCLUDED.precio_recibido,
+                    descuento = EXCLUDED.descuento,
+                    pvp_ajustado = EXCLUDED.pvp_ajustado,
                     dudoso = EXCLUDED.dudoso, motivo = EXCLUDED.motivo,
                     calculado_en = NOW()
-            """, lote, template="(%s,%s,%s,%s,%s,%s,%s,%s,NOW())",
+            """, lote, template="(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())",
                 page_size=2000)
             job["escritos"] += len(lote)
             conn_esc.commit()

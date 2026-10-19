@@ -74,6 +74,11 @@ def web_price(pvp) -> float | None:
 # del proveedor, nunca sobre un PVP ya ajustado.
 MARGEN_OBJETIVO = float(os.environ.get("KALAMO_MARGEN_OBJETIVO_PCT", "30"))
 
+# Si la Capa 0 esta encendida, el PVP del que parte todo es el ajustado al
+# margen, no el del editor. Mismo interruptor que usa el catalogo, para que
+# Odoo y los marketplaces no puedan decir cosas distintas.
+USAR_CAPA0 = os.environ.get("KALAMO_CAPA0_ENABLED", "0") == "1"
+
 
 def pvp_por_margen(pvp, descuento, margen_pct: float | None = None):
     """
@@ -220,15 +225,17 @@ def _load_targets(limit=None, solo_suplemento: bool = False,
         #
         # Los dudosos quedan fuera: un PVP que no se ha podido confirmar no
         # entra en el ERP.
-        q = """
-            SELECT m.odoo_id, r.pvp, m.list_price
+        pvp_col = ("COALESCE(r.pvp_ajustado, r.pvp)" if USAR_CAPA0
+                   else "r.pvp")
+        q = f"""
+            SELECT m.odoo_id, {pvp_col}, m.list_price
             FROM odoo_books_mirror m
             JOIN pvp_referencia r ON r.isbn = m.barcode
             WHERE m.odoo_id IS NOT NULL
               AND r.pvp > 0 AND NOT r.dudoso
         """
         if solo_suplemento:
-            q += " AND r.pvp >= 2.90 AND r.pvp < 7.51"
+            q += f" AND {pvp_col} >= 2.90 AND {pvp_col} < 7.51"
     else:
         q = """
             SELECT odoo_id, pvp_base, list_price

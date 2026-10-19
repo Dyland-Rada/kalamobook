@@ -63,6 +63,18 @@ RESERVA_TTL_HORAS = int(os.environ.get("RESERVA_TTL_HORAS", "48"))
 # mira /api/v1/precios/referencia/impacto y despues se enciende.
 USAR_PVP_REFERENCIA = os.environ.get("KALAMO_PVP_REFERENCIA", "0") == "1"
 
+# Capa 0: vender al PVP del editor cuando el proveedor nos descuenta menos
+# del margen objetivo deja la venta por debajo de ese margen. La regla sube
+# el PVP hasta recuperarlo: pvp x (1 - descuento) / (1 - margen).
+#
+# Medido el 19/10/2026 sobre AZETA: de 249.822 libros con stock y descuento,
+# 188.005 ya llegan al 30% y 61.766 no -47.014 de ellos al 25%, que es un
+# 7,1% de subida-. El pedido L000328 dejo un 25% de margen en vez del 30%.
+#
+# Nace apagado y se enciende con KALAMO_CAPA0_ENABLED=1. Subir el PVP por
+# encima del que marca el editor es una decision comercial, no tecnica.
+USAR_CAPA0 = os.environ.get("KALAMO_CAPA0_ENABLED", "0") == "1"
+
 _job: dict | None = None
 
 
@@ -448,7 +460,7 @@ _SQL_FILAS = """
                                         AND pp3.activo = false)
                 ) mx ON true
                 LEFT JOIN LATERAL (
-                    SELECT r.pvp
+                    SELECT COALESCE(%CAPA0%, r.pvp) AS pvp
                     FROM pvp_referencia r
                     WHERE %USAR_REF% AND r.isbn = m.barcode
                       AND r.pvp > 0 AND NOT r.dudoso
@@ -469,7 +481,9 @@ _SQL_FILAS = """
                 WHERE m.odoo_id = ANY(?)
                   AND m.barcode IS NOT NULL
 """.replace(
-    "%USAR_REF%", "true" if USAR_PVP_REFERENCIA else "false")
+    "%USAR_REF%", "true" if USAR_PVP_REFERENCIA else "false"
+).replace(
+    "%CAPA0%", "r.pvp_ajustado" if USAR_CAPA0 else "NULL::numeric")
 
 
 def _filas(totales: dict[int, float]) -> list[tuple]:

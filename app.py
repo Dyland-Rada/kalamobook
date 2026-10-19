@@ -3523,6 +3523,45 @@ async def admin_stock_debug(isbn: str = Query(..., description="ISBN/barcode a i
             "actualizado_en": str(r[4]) if r[4] else None,
         } for r in cur.fetchall()]
 
+        # 1b. catalogo publicable: lo que se publica de verdad. Sin esto
+        #     no se puede responder "por que el cliente pago X", que es la
+        #     pregunta que llega cada vez que alguien revisa un pedido.
+        try:
+            dbmod.execute_query(cur, """
+                SELECT stock, precio_marketplace, precio_odoo, precio_coste,
+                       proveedor, confirmado_en
+                FROM catalogo_publicable WHERE isbn = ?
+            """, (isbn,))
+            r = cur.fetchone()
+            out["catalogo_publicable"] = ({
+                "stock": r[0],
+                "precio_marketplace": float(r[1]) if r[1] is not None else None,
+                "precio_web": float(r[2]) if r[2] is not None else None,
+                "precio_coste": float(r[3]) if r[3] is not None else None,
+                "proveedor": r[4],
+                "confirmado_en": str(r[5]) if r[5] else None,
+            } if r else None)
+        except Exception as e:
+            out["catalogo_publicable"] = {"error": str(e)[:120]}
+
+        # 1c. el PVP de referencia y, si la hay, su version ajustada al margen
+        try:
+            dbmod.execute_query(cur, """
+                SELECT pvp, iva, origen, descuento, pvp_ajustado, dudoso, motivo
+                FROM pvp_referencia WHERE isbn = ?
+            """, (isbn,))
+            r = cur.fetchone()
+            out["pvp_referencia"] = ({
+                "pvp": float(r[0]) if r[0] is not None else None,
+                "iva": float(r[1]) if r[1] is not None else None,
+                "origen": r[2],
+                "descuento": float(r[3]) if r[3] is not None else None,
+                "pvp_ajustado": float(r[4]) if r[4] is not None else None,
+                "dudoso": r[5], "motivo": r[6],
+            } if r else None)
+        except Exception as e:
+            out["pvp_referencia"] = {"error": str(e)[:120]}
+
         # 2. mirror
         dbmod.execute_query(cur, """
             SELECT odoo_id, name, list_price, azeta_fetched_at,
