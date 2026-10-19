@@ -9,7 +9,38 @@ es libro). Medido sobre 589.448 lineas contrastadas contra AZETA:
 
     AZETA, GRUPO ANAYA, MACHADO      mandan el PVP          98-99,9%
     los otros once                   mandan la base         92-99,6%
-    PODIPRINT                        sin contrastar         118.170 lineas
+    PODIPRINT y ARCOBALENO           sin contrastar
+
+LOS DOS QUE QUEDARON SIN CLASIFICAR. El contraste de abajo mira solo contra
+AZETA, y a quien comparte poco catalogo con AZETA lo deja en "desconocido".
+Resueltos el 19/10/2026 contrastando contra los catorce ya clasificados -de
+un proveedor "base" se reconstruye el PVP multiplicando por su IVA- y con un
+segundo test que no depende de ningun espejo: si lo que mandan es la base,
+multiplicarla por el IVA tiene que devolver un precio de escaparate (acabado
+en 00, 25, 50, 75, 90, 95 o 99). Un precio cualquiera acierta eso el 7% de
+las veces, asi que el 7% es el suelo de la nada:
+
+                        contra 14 espejos        x IVA cae en precio
+                        base      pvp            de escaparate
+    ARCOBALENO          75,3%     0,2%           85,8% (*)   31,6%
+    PODIPRINT           40,7%     7,3%           82,0% (*)    7,6%
+
+    (*) control: solo los libros que YA coinciden con la base de un espejo.
+        Mide si el test funciona, y funciona: 82-86% frente al 7% del azar.
+
+ARCOBALENO manda la base en todo su catalogo: ningun espejo lo contradice y
+sus propios libros reconstruyen escaparate 4,5 veces mas que el azar.
+
+PODIPRINT no, y es la unica distribuidora con dos comportamientos. Donde
+reparte un libro que tambien lleva otro -2.900 titulos- manda la base y se
+le ve: el precio acaba en centimo raro (16,35 = 17,00/1,04) y coincide con
+el espejo el 92,6%. Pero sus 121.634 titulos propios son impresion bajo
+demanda, con precio calculado por ellos, y ahi el test cae al 7,6%: es el
+azar exacto, no hay ningun PVP de editor detras. Multiplicarlos por 1,04
+seria inventarse un IVA que nadie cobro. Se quedan como estan, y no cuesta
+dinero: de los 922 libros suyos que SI son base, el 98,5% ya se publica al
+PVP bueno del otro proveedor, porque el catalogo se queda con el maximo.
+Lo que falta en total son 8,41 EUR.
 
 El porcentaje NO es del proveedor: es del libro. Cada proveedor hace
 siempre lo mismo -o PVP o base-, y lo que cambia dentro de uno es el tipo

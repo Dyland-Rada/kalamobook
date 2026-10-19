@@ -352,6 +352,7 @@ _desmentidos = [0]
 _sin_precio_apagados = [0]
 _no_elegibles = [0]
 _brecha_grande = [0]
+_sin_titulo = [0]
 
 # Hasta que operaciones revise el lote, un libro cuyo proveedor real cobre mas
 # de un 30% por debajo del precio publicado no se oferta. Eran 604 el 29/09.
@@ -546,10 +547,32 @@ def _filas(totales: dict[int, float]) -> list[tuple]:
                 brecha_grande = brecha is not None and brecha > BRECHA_MAX
                 if brecha_grande:
                     _brecha_grande[0] += 1
+
+                # Un libro cuyo titulo es su propio codigo de barras no se
+                # puede poner a la venta: el cliente ve un numero. Son fichas
+                # que crea crear_faltantes cuando un proveedor declara stock
+                # de un ISBN que nunca se enriquecio, y en Odoo el name queda
+                # literalmente igual que el barcode.
+                #
+                # Esto ya se vigilaba, pero mal: la tabla productos_sin_titulo
+                # la llenaba un workflow de n8n que corrio UNA vez -el
+                # 08/09/2026, 64.688 filas- y no ha vuelto a correr. CdL y
+                # Fnac filtran contra esa foto congelada, asi que cubren los
+                # de entonces y no los de despues. Medido el 19/10/2026:
+                # 58.140 libros con stock sin titulo, de los que 7.240 no
+                # estaban en la foto y se estaban ofertando.
+                #
+                # Calculado aqui sale de m.name en cada vuelta y vale para
+                # los cuatro canales a la vez, sin depender del workflow.
+                sin_titulo = (not nombre or not str(nombre).strip()
+                              or str(nombre).strip() == isbn)
+                if sin_titulo:
+                    _sin_titulo[0] += 1
                 filas.append((
                     isbn, nombre,
                     0 if (castigado or desmentido or sin_precio_valido
-                          or no_elegible or brecha_grande) else neto,
+                          or no_elegible or brecha_grande
+                          or sin_titulo) else neto,
                     pm,
                     None,          # precio_web: falta la Capa 2
                     pw, prov,
@@ -648,11 +671,13 @@ async def refrescar(dry_run: bool = False) -> dict:
         _sin_precio_apagados[0] = 0
         _no_elegibles[0] = 0
         _brecha_grande[0] = 0
+        _sin_titulo[0] = 0
         filas = _filas(totales)
         job["desmentidos"] = _desmentidos[0]
         job["apagados_por_precio"] = _sin_precio_apagados[0]
         job["no_elegibles_menos_290"] = _no_elegibles[0]
         job["apagados_por_brecha"] = _brecha_grande[0]
+        job["apagados_sin_titulo"] = _sin_titulo[0]
         job["filas"] = len(filas)
         job["sin_precio"] = sum(1 for f in filas if f[3] is None)
 
