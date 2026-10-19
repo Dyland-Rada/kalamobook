@@ -146,6 +146,51 @@ def encolar_sin_titulo(creados: list[dict]) -> int:
     return n
 
 
+def rellenar_cola_vendibles() -> int:
+    """
+    Encolar los libros que HOY serian vendibles si tuvieran titulo.
+
+    El encolado al crear la ficha -encolar_sin_titulo- solo cubre lo que
+    nace. Pero un libro creado hace meses sin titulo, que entonces no tenia
+    stock y hoy si, no lo coge nadie: ya existia, asi que nadie lo esta
+    creando, y _detect_new tampoco lo mira. Medido el 19/10/2026, dos horas
+    despues de sembrar la cola a mano: 3.563 se habian colado por ahi.
+
+    El criterio es el mismo con el que se decide publicar: proveedor que
+    puede servir y precio valido. Si no se puede vender aunque tenga
+    titulo, no hay prisa por titularlo, y meterlo en la cola solo serviria
+    para tapar a los que si.
+
+    Se llama desde el supervisor, que pasa cada diez minutos.
+    """
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        db.execute_query(cur, """
+            INSERT INTO enrichment_queue
+                (odoo_id, barcode, name, status, attempts, queued_at)
+            SELECT c.odoo_id, c.isbn, '', 'pending', 0, NOW()
+            FROM catalogo_publicable c
+            JOIN odoo_books_mirror m ON m.odoo_id = c.odoo_id
+            WHERE (m.name IS NULL OR TRIM(m.name) = ''
+                   OR TRIM(m.name) = m.barcode)
+              AND c.proveedor IS NOT NULL
+              AND c.precio_marketplace >= 2.90
+              AND c.odoo_id IS NOT NULL
+              -- LEFT() y no LIKE: psycopg2 lee el comodin como marcador de
+              -- parametro y revienta con un IndexError.
+              AND LEFT(c.isbn, 3) IN ('978', '979')
+            ON CONFLICT (odoo_id) DO NOTHING
+        """)
+        n = cur.rowcount or 0
+        conn.commit()
+    finally:
+        conn.close()
+    if n:
+        print(f"[Enrich] {n} libros vendibles sin titulo anadidos a la cola")
+    return n
+
+
 def _claim_pending(limit: int = 1) -> list[dict]:
     """
     Atomically claim pending rows: SELECT FOR UPDATE SKIP LOCKED + UPDATE
@@ -1156,6 +1201,7 @@ _cron_state: dict = {
     "last_check_at": None,
     "last_revival_at": None,
     "revividos": 0,
+    "anadidos": 0,
     "checks_total": 0,
     "errors": [],
 }
@@ -1201,6 +1247,15 @@ async def _cron_loop():
         try:
             _cron_state["checks_total"] += 1
             _cron_state["last_check_at"] = datetime.now().isoformat()
+            # Primero rellenar: un libro que gana stock hoy no lo encola
+            # nadie, porque su ficha se creo hace meses.
+            try:
+                _cron_state["anadidos"] = (_cron_state.get("anadidos", 0)
+                                           + rellenar_cola_vendibles())
+            except Exception as e:
+                _cron_state["errors"].append(f"rellenar: {e!r}"[:200])
+                print(f"[EnrichCron] No se pudo rellenar la cola: {e!r}")
+
             corriendo = (enrichment_job or {}).get("status") == "running"
             if not corriendo:
                 pendientes = _count_queue_by_status().get("pending", 0)

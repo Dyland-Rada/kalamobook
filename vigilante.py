@@ -527,19 +527,24 @@ def _revisar_libros_sin_titulo() -> dict:
         huerfanos = 0
         pendientes = 0
         try:
+            # El mismo criterio EXACTO que usa enrichment.rellenar_cola_
+            # vendibles. Si se mide mas ancho que lo que se arregla, el
+            # numero no baja a cero nunca y el parte se queda en ambar
+            # permanente, que es como se consigue que nadie lo mire. Medido
+            # el 19/10/2026: con el criterio ancho salian 30.289, de los que
+            # 26.734 ni siquiera estaban en el catalogo -no se pueden
+            # vender tengan titulo o no- y solo 3.563 eran accionables.
             db.execute_query(cur, """
-                SELECT COUNT(*) FROM odoo_books_mirror m
+                SELECT COUNT(*) FROM catalogo_publicable c
+                JOIN odoo_books_mirror m ON m.odoo_id = c.odoo_id
                 WHERE (m.name IS NULL OR TRIM(m.name) = ''
                        OR TRIM(m.name) = m.barcode)
-                  -- LEFT() y no LIKE: psycopg2 lee el comodin del LIKE
-                  -- como marcador de parametro y la consulta revienta con
-                  -- un IndexError que el try de abajo se traga entero. Y
-                  -- da igual que vaya dentro de un comentario SQL: el
-                  -- driver mira la cadena, no el SQL.
-                  AND LEFT(m.barcode, 3) IN ('978', '979')
-                  AND EXISTS (SELECT 1 FROM libros_proveedor lp
-                              WHERE lp.isbn = m.barcode
-                                AND lp.stock_disponible > 0)
+                  AND c.proveedor IS NOT NULL
+                  AND c.precio_marketplace >= 2.90
+                  -- LEFT() y no LIKE: psycopg2 lee el comodin como
+                  -- marcador de parametro y revienta con un IndexError que
+                  -- el try de abajo se traga entero, dejando el check mudo.
+                  AND LEFT(c.isbn, 3) IN ('978', '979')
                   AND NOT EXISTS (SELECT 1 FROM enrichment_queue e
                                   WHERE e.odoo_id = m.odoo_id)
             """)
@@ -577,16 +582,21 @@ def _revisar_libros_sin_titulo() -> dict:
 
     # Un huerfano es un libro que nacio sin titulo y no fue a la cola: eso
     # solo pasa si el encolado al crear dejo de funcionar.
-    if huerfanos > 500:
+    # El supervisor rellena cada 10 minutos, asi que un pico pequeno es
+    # normal entre dos vueltas. Sostenido y grande significa que el relleno
+    # o el encolado al crear han dejado de funcionar.
+    if huerfanos > 2000:
         return _chequeo(
             "libros_sin_titulo", "Libros sin titulo", AVISO,
-            f"{huerfanos:,} libros con stock sin titulo y FUERA de la cola: "
-            f"nadie los va a arreglar. Revisar el encolado al crear la ficha "
-            f"(enrichment.encolar_sin_titulo)")
+            f"{huerfanos:,} libros VENDIBLES sin titulo y fuera de la cola: "
+            f"nadie los va a titular. Revisar el relleno del supervisor "
+            f"(enrichment.rellenar_cola_vendibles) y el encolado al crear "
+            f"la ficha (enrichment.encolar_sin_titulo)",
+            accion="POST /api/v1/odoo/sync/cron/start")
 
     return _chequeo(
         "libros_sin_titulo", "Libros sin titulo", OK,
-        f"{sin_titulo:,} sin titulo ({huerfanos:,} sin encolar), "
+        f"{sin_titulo:,} sin titulo ({huerfanos:,} vendibles sin encolar), "
         f"{pendientes:,} en cola, "
         f"enriquecedor {'corriendo' if corriendo else 'en reposo'}")
 
