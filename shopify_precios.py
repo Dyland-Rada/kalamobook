@@ -41,6 +41,7 @@ publicado, y eso se mira a mano antes de aplicarlo. La corrida en seco
 dice cuantas bajarian y cuanto, que es el numero que hay que leer primero.
 """
 import os
+import re
 import time
 from datetime import datetime
 
@@ -54,6 +55,42 @@ TABLA_REF = "pvp_referencia"
 # Por debajo de esto no se toca: no merece una escritura ni mover el precio
 # de un escaparate por dos centimos.
 MINIMO_CAMBIO = float(os.environ.get("SHOPIFY_PRECIO_MIN_CAMBIO", "0.05"))
+
+# El mismo interruptor que usa catalogo_publicable, resuelto igual y al
+# cargar el modulo. Si la web y los marketplaces no leen la Capa 0 del
+# mismo sitio, acaban cobrando cosas distintas por el mismo libro.
+_CAPA0 = ("r.pvp_ajustado" if pricing_engine.USAR_CAPA0 else "NULL::numeric")
+
+# Precios en pesos colombianos cobrados como euros.
+#
+# El cliente HTTP de CDL va al dominio .com.co a proposito -desde Espana
+# redirige alli igual y asi se ahorra el 301-, y ese sitio cotiza en pesos.
+# El equipo ya lo sabia y por eso cdl_price es TEXT y no se usa para
+# vender. Pero en algun momento esos importes entraron en la tienda.
+#
+# "$ 66.499 COP" son sesenta y seis mil pesos. Leido como decimal europeo
+# da 66,499 -> 66,50 EUR, y el libro se queda publicado a cuatro veces su
+# precio. Medido el 19/10/2026: 18.648 fichas con el importe en pesos
+# clavado, 9.098 de ellas con referencia buena, 558.740 EUR de exceso.
+#
+# Estas SI se bajan aunque solo_subidas este puesto. La regla de no bajar
+# existe para no fiarse de una referencia peor que lo publicado; aqui no
+# hay duda que valga: se demuestra que el precio de la tienda es el
+# importe en pesos, al centimo.
+_NUM = re.compile(r"([\d.,]+)")
+
+
+def _es_precio_en_pesos(precio_tienda, cdl_price) -> bool:
+    if precio_tienda is None or not cdl_price or "COP" not in cdl_price:
+        return False
+    m = _NUM.search(cdl_price)
+    if not m:
+        return False
+    try:
+        return abs(round(float(m.group(1).replace(",", ".")), 2)
+                   - float(precio_tienda)) <= 0.02
+    except ValueError:
+        return False
 LOTE_JSONL = int(os.environ.get("SHOPIFY_PRECIO_LOTE", "50000"))
 
 _job: dict | None = None
@@ -203,31 +240,61 @@ def _objetivos(solo_subidas: bool, limite: int | None):
     """
     Devuelve (handle, product_gid, variant_gid, precio_tienda, objetivo).
 
-    Solo se mira lo que tiene referencia NO dudosa: un PVP que no hemos
-    podido confirmar no entra en la tienda.
+    DE DONDE SALE EL PRECIO, en este orden:
+
+        1. pvp_referencia, con la Capa 0 si esta encendida.
+        2. Si ese ISBN no tiene referencia -o es dudosa-, el precio_odoo
+           del catalogo publicable, que es la misma cadena ya calculada
+           sobre el MAX de los proveedores que pueden servir.
+
+    EL PUNTO 1 LLEVABA LA CAPA 0 FUERA. Esta consulta leia r.pvp y nunca
+    r.pvp_ajustado, mientras catalogo_publicable usa COALESCE(ajustado,
+    pvp). Resultado: la Capa 0 se aplicaba a los marketplaces y no a la
+    web. Medido el 19/10/2026: 102.384 fichas cobrando de menos, 155.063
+    EUR, 86.534 de ellas vendibles ese dia.
+
+    Y no daba ninguna señal, que es lo peor: el cron comparaba contra el
+    mismo PVP crudo que el ya habia escrito, asi que terminaba con
+    "a_cambiar: 0". Estaba de acuerdo consigo mismo y equivocado.
+
+    EL PUNTO 2 NO EXISTIA. El JOIN contra pvp_referencia dejaba fuera
+    414.058 fichas -el libro extranjero que AZETA no cubre- con su precio
+    congelado desde el dia del alta. De esas, 3.818 se podian vender el
+    19/10/2026: 3.265 por debajo de lo que toca, 5.741 EUR.
     """
     conn = db.get_connection()
     cur = conn.cursor()
     try:
         db.execute_query(cur, f"""
             SELECT s.handle, s.product_gid, s.variant_gid, s.precio_tienda,
-                   r.pvp
+                   COALESCE({_CAPA0}, r.pvp) AS pvp,
+                   c.precio_odoo, m.cdl_price
             FROM {TABLA} s
-            JOIN {TABLA_REF} r ON r.isbn = s.handle
+            LEFT JOIN {TABLA_REF} r
+                   ON r.isbn = s.handle AND r.pvp > 0 AND NOT r.dudoso
+            LEFT JOIN catalogo_publicable c
+                   ON c.isbn = s.handle AND c.stock > 0
+            LEFT JOIN odoo_books_mirror m ON m.barcode = s.handle
             WHERE s.product_gid IS NOT NULL
               AND s.variant_gid IS NOT NULL
-              AND r.pvp > 0
-              AND NOT r.dudoso
+              AND (r.isbn IS NOT NULL OR c.precio_odoo IS NOT NULL)
         """)
         salida = []
-        for handle, pgid, vgid, tienda, pvp in cur.fetchall():
-            obj = pricing_engine.web_price(float(pvp))
+        for (handle, pgid, vgid, tienda, pvp, precio_cat,
+             cdl_price) in cur.fetchall():
+            if pvp is not None:
+                obj = pricing_engine.web_price(float(pvp))
+            else:
+                # Ya es un precio web: el catalogo le paso la Capa 1 al
+                # guardarlo. Volver a aplicarsela lo subiria dos veces.
+                obj = float(precio_cat)
             if obj is None:
                 continue
             actual = float(tienda) if tienda is not None else None
             if actual is not None and abs(obj - actual) < MINIMO_CAMBIO:
                 continue
-            if solo_subidas and actual is not None and obj < actual:
+            if (solo_subidas and actual is not None and obj < actual
+                    and not _es_precio_en_pesos(actual, cdl_price)):
                 continue
             salida.append((handle, pgid, vgid, actual, obj))
             if limite and len(salida) >= limite:
