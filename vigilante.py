@@ -492,6 +492,105 @@ def _revisar_feeds_topados() -> dict:
         conn.close()
 
 
+def _revisar_libros_sin_titulo() -> dict:
+    """
+    Un libro cuyo titulo es su propio codigo de barras no se puede vender:
+    el catalogo lo apaga y el cliente nunca lo ve.
+
+    No lo veia nadie. El worker que los arregla -enrichment.py- estuvo
+    parado del 09/06 al 19/10/2026, cuatro meses, sin cron que lo levantara
+    ni comprobacion que avisara. Mientras tanto el 88,5% de las fichas
+    creadas cada mes nacian asi, y se juntaron 58.140 con stock: 2,98 M EUR
+    de catalogo apagado.
+
+    Se miran dos cosas distintas: cuantos hay, y si quien los arregla esta
+    vivo. Lo segundo importa mas, porque lo primero se cura solo si lo
+    segundo funciona.
+    """
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        db.execute_query(cur, """
+            SELECT COUNT(*) FROM odoo_books_mirror m
+            WHERE (m.name IS NULL OR TRIM(m.name) = ''
+                   OR TRIM(m.name) = m.barcode)
+              AND EXISTS (SELECT 1 FROM libros_proveedor lp
+                          WHERE lp.isbn = m.barcode
+                            AND lp.stock_disponible > 0)
+        """)
+        sin_titulo = int(cur.fetchone()[0])
+
+        # Los que nadie va a arreglar: sin titulo, con stock, ISBN de verdad
+        # -un EAN de puzle no lo encuentra ni CdL ni Google Books- y fuera de
+        # la cola. Esta es la cifra que avisa de una recaida: si el encolado
+        # al crear funciona, se queda en cero sola.
+        huerfanos = 0
+        pendientes = 0
+        try:
+            db.execute_query(cur, """
+                SELECT COUNT(*) FROM odoo_books_mirror m
+                WHERE (m.name IS NULL OR TRIM(m.name) = ''
+                       OR TRIM(m.name) = m.barcode)
+                  -- LEFT() y no LIKE: psycopg2 lee el comodin del LIKE
+                  -- como marcador de parametro y la consulta revienta con
+                  -- un IndexError que el try de abajo se traga entero. Y
+                  -- da igual que vaya dentro de un comentario SQL: el
+                  -- driver mira la cadena, no el SQL.
+                  AND LEFT(m.barcode, 3) IN ('978', '979')
+                  AND EXISTS (SELECT 1 FROM libros_proveedor lp
+                              WHERE lp.isbn = m.barcode
+                                AND lp.stock_disponible > 0)
+                  AND NOT EXISTS (SELECT 1 FROM enrichment_queue e
+                                  WHERE e.odoo_id = m.odoo_id)
+            """)
+            huerfanos = int(cur.fetchone()[0])
+            db.execute_query(cur, "SELECT COUNT(*) FROM enrichment_queue "
+                                  "WHERE status = 'pending'")
+            pendientes = int(cur.fetchone()[0])
+        except Exception:
+            pass
+    finally:
+        conn.close()
+
+    import enrichment
+    corriendo = (enrichment.enrichment_job or {}).get("status") == "running"
+    supervisor = enrichment.get_cron_status().get("enabled")
+
+    # El worker caido HABIENDO cola es el fallo de verdad: significa que el
+    # agujero se esta llenando y no lo esta vaciando nadie.
+    if pendientes > 0 and not corriendo:
+        estado = ERROR if not supervisor else AVISO
+        return _chequeo(
+            "libros_sin_titulo", "Libros sin titulo", estado,
+            f"{sin_titulo:,} libros con stock sin titulo utilizable y el "
+            f"enriquecedor PARADO con {pendientes:,} en cola"
+            + ("" if supervisor else " (y el supervisor tambien apagado)"),
+            accion="POST /api/v1/odoo/sync/cron/start")
+
+    if not supervisor:
+        return _chequeo(
+            "libros_sin_titulo", "Libros sin titulo", AVISO,
+            f"el supervisor del enriquecedor esta APAGADO ({sin_titulo:,} "
+            f"sin titulo, {pendientes:,} en cola). Sin el, el dia que el "
+            f"trabajo se caiga no lo levanta nadie",
+            accion="POST /api/v1/odoo/sync/cron/start")
+
+    # Un huerfano es un libro que nacio sin titulo y no fue a la cola: eso
+    # solo pasa si el encolado al crear dejo de funcionar.
+    if huerfanos > 500:
+        return _chequeo(
+            "libros_sin_titulo", "Libros sin titulo", AVISO,
+            f"{huerfanos:,} libros con stock sin titulo y FUERA de la cola: "
+            f"nadie los va a arreglar. Revisar el encolado al crear la ficha "
+            f"(enrichment.encolar_sin_titulo)")
+
+    return _chequeo(
+        "libros_sin_titulo", "Libros sin titulo", OK,
+        f"{sin_titulo:,} sin titulo ({huerfanos:,} sin encolar), "
+        f"{pendientes:,} en cola, "
+        f"enriquecedor {'corriendo' if corriendo else 'en reposo'}")
+
+
 # ─── Revision completa ───────────────────────────────────────────────
 async def revisar(arreglar: bool = True) -> dict:
     """Pasa todas las comprobaciones. Devuelve el parte completo."""
@@ -510,7 +609,8 @@ async def revisar(arreglar: bool = True) -> dict:
     for fn in (_revisar_ventas_sin_stock,
                _revisar_proveedores_mudos_con_almacen,
                _revisar_stock_sin_almacen,
-               _revisar_feeds_topados):
+               _revisar_feeds_topados,
+               _revisar_libros_sin_titulo):
         try:
             chequeos.append(fn())
         except Exception as e:

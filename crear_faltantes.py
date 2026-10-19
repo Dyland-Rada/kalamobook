@@ -150,6 +150,15 @@ async def _crear(odoo: OdooClient, tag_ids: dict, targets: list[dict],
                 t.get("image_url"), t.get("description"),
                 t.get("weight"), t.get("height"), t.get("width"))
         auto_scrape._mirror_upsert(lote)
+        # Igual que en auto_scrape: la que nace sin titulo va a la cola de
+        # enriquecido ya mismo. Aqui importa mas todavia, porque este modulo
+        # crea tambien los que vienen con stock 0 y son los que mas veces
+        # llegan sin ficha.
+        try:
+            import enrichment
+            enrichment.encolar_sin_titulo(lote)
+        except Exception as e:
+            job["errors"].append(f"encolar enriquecido: {str(e)[:100]}")
 
         por_tag: dict[str, list[int]] = {}
         for t in lote:

@@ -23,6 +23,7 @@ from bulk_scraper import (
     get_categories, get_all_books, get_books_count,
     discover_categories,
 )
+import enrichment
 from enrichment import (
     run_enrichment_job, stop_enrichment_job,
     get_enrichment_status, get_notfound_count,
@@ -319,6 +320,21 @@ async def startup():
                       f"(cada {vigilante.INTERVALO_S}s)")
         except Exception as e:
             print(f"[Startup] Vigilante FALLO: {type(e).__name__}: {e}")
+
+    # El supervisor del enriquecedor. No es un cron de intervalo: vigila que
+    # el trabajo no se quede caido habiendo cola. Estuvo parado del 09/06 al
+    # 19/10/2026 sin que nadie se enterara, y mientras tanto se acumularon
+    # 58.140 libros cuyo titulo era su codigo de barras -invendibles-. Va
+    # encendido por defecto a proposito: apagarlo es lo que costo caro.
+    if enrichment.CRON_ENABLED:
+        try:
+            if enrichment.start_cron():
+                print(f"[Startup] Enriquecedor: supervisor AUTO-ARRANCADO "
+                      f"(revisa cada {enrichment.CRON_INTERVAL_S}s)")
+            else:
+                print("[Startup] Enriquecedor: supervisor NO arrancado (ya activo)")
+        except Exception as e:
+            print(f"[Startup] Enriquecedor supervisor FALLO: {type(e).__name__}: {e}")
 
     # Auto-arrancar el ciclo diario de libros nuevos (auto-scrape)
     if os.environ.get("AUTO_SCRAPE_CRON_ENABLED", "").lower() in ("1", "true", "yes"):
@@ -628,6 +644,34 @@ async def odoo_sync_stop():
 async def odoo_sync_status():
     """Estado del job de enriquecimiento + conteos de la cola."""
     return JSONResponse(content=get_enrichment_status())
+
+
+@app.get("/api/v1/odoo/sync/cron/status", tags=["Odoo"])
+async def odoo_sync_cron_status():
+    """Estado del supervisor: cuantas veces ha tenido que levantar el job."""
+    return JSONResponse(content=enrichment.get_cron_status())
+
+
+@app.post("/api/v1/odoo/sync/cron/start", tags=["Odoo"])
+async def odoo_sync_cron_start():
+    """Enciende el supervisor del enriquecedor."""
+    if enrichment.start_cron():
+        return JSONResponse(content={"status": "started",
+                                     "cron": enrichment.get_cron_status()})
+    return JSONResponse(status_code=400, content={
+        "status": "error", "message": "Ya estaba activo."})
+
+
+@app.post("/api/v1/odoo/sync/cron/stop", tags=["Odoo"])
+async def odoo_sync_cron_stop():
+    """
+    Apaga el supervisor. Ojo: sin el, si el job se cae -o se despliega- no
+    lo levanta nadie, que es justo lo que paso entre junio y octubre de 2026.
+    """
+    if enrichment.stop_cron():
+        return JSONResponse(content={"status": "stopped"})
+    return JSONResponse(status_code=400, content={
+        "status": "error", "message": "No estaba activo."})
 
 
 @app.get("/api/v1/odoo/notfound/count", tags=["Odoo"])

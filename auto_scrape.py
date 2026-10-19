@@ -260,6 +260,14 @@ async def _create_and_tag(odoo, tag_ids, targets, chunk=200):
             t["tag"] = _classify(t.get("image_url"), t.get("description"),
                                  t.get("weight"), t.get("height"), t.get("width"))
         _mirror_upsert(batch)
+        # Si ha nacido sin titulo, a la cola de enriquecido en el acto. Si no,
+        # queda invisible para siempre: _detect_new solo mira lo que NO esta
+        # en el espejo, y esta ficha acaba de entrar en el.
+        try:
+            import enrichment
+            enrichment.encolar_sin_titulo(batch)
+        except Exception as e:
+            print(f"[AutoScrape] No se pudo encolar para enriquecer: {e}")
         by_tag = {}
         for t in batch:
             by_tag.setdefault(t["tag"], []).append(t["odoo_id"])

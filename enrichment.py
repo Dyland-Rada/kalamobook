@@ -23,6 +23,7 @@ import json
 import os
 import random
 import re
+import sys
 from datetime import datetime
 from typing import Any
 
@@ -106,6 +107,43 @@ def _queue_insert_many(rows: list[dict]) -> int:
     conn.commit()
     conn.close()
     return inserted
+
+
+def encolar_sin_titulo(creados: list[dict]) -> int:
+    """
+    Encolar para enriquecer las fichas que acaban de nacer sin titulo.
+
+    LA CAUSA DE RAIZ ESTA AQUI. Cuando un proveedor declara stock de un ISBN
+    que no conocemos, la ficha se crea igual y, si no hay titulo, se le pone
+    el ISBN como nombre. A partir de ese momento es invisible para quien
+    podria arreglarla: auto_scrape._detect_new filtra por `m.barcode IS NULL`,
+    o sea solo mira lo que NO esta en el espejo todavia.
+
+    Asi que nacia invendible y nadie volvia a mirarla nunca. Medido el
+    19/10/2026: el 88,5% de las fichas creadas en octubre nacen sin titulo
+    -18.327 de 20.702- y habia 58.140 con stock acumuladas.
+
+    Encolarlas en el acto de crearlas cierra el circuito sin tocar la
+    creacion, que tiene que seguir ocurriendo: una ficha sin titulo es
+    invendible, pero sin ficha se pierde el stock del proveedor.
+
+    Espera lo que devuelven los creadores: dicts con odoo_id, isbn y title.
+    """
+    pendientes = []
+    for t in creados or []:
+        oid = t.get("odoo_id")
+        isbn = (t.get("isbn") or "").strip()
+        if not oid or not isbn:
+            continue
+        if _titulo_utilizable(t.get("title"), isbn):
+            continue
+        pendientes.append({"id": oid, "barcode": isbn, "name": ""})
+    if not pendientes:
+        return 0
+    n = _queue_insert_many(pendientes)
+    if n:
+        print(f"[Enrich] {n} fichas nuevas sin titulo encoladas al crearlas")
+    return n
 
 
 def _claim_pending(limit: int = 1) -> list[dict]:
@@ -1093,3 +1131,117 @@ async def run_build_isbn_index_job() -> str:
 
 def get_isbn_index_job_status() -> dict:
     return dict(isbn_index_job) if isbn_index_job else {"status": "idle"}
+
+
+# ── Supervisor: que no se vuelva a morir en silencio ────────────────────
+#
+# Este worker estuvo PARADO desde el 09/06/2026 hasta el 19/10/2026 y nadie
+# se entero. Corre como hilo daemon dentro de la app, asi que cualquier
+# despliegue lo mata a media pasada, y no tenia ni cron que lo rearrancara
+# ni check en el vigilante que avisara. Cuatro meses.
+#
+# Mientras tanto se acumularon 58.140 libros con stock cuyo titulo era su
+# propio codigo de barras -el 88,5% de las fichas creadas en octubre nacen
+# asi-, invendibles en los cuatro canales.
+#
+# Por eso esto no es un cron de intervalo como los demas: es un supervisor.
+# No lanza una pasada cada N horas; comprueba si el trabajo esta caido
+# habiendo cola y, si lo esta, lo levanta.
+CRON_INTERVAL_S = int(os.environ.get("ENRICH_CRON_INTERVAL_S", "600"))
+CRON_ENABLED = os.environ.get("ENRICH_CRON_ENABLED", "1") == "1"
+
+_cron_state: dict = {
+    "enabled": False,
+    "interval_s": CRON_INTERVAL_S,
+    "last_check_at": None,
+    "last_revival_at": None,
+    "revividos": 0,
+    "checks_total": 0,
+    "errors": [],
+}
+_cron_task = None
+
+
+def get_cron_status() -> dict:
+    st = dict(_cron_state)
+    st["job_status"] = (enrichment_job or {}).get("status", "idle")
+    try:
+        st["pendientes"] = _count_queue_by_status().get("pending", 0)
+    except Exception:
+        st["pendientes"] = None
+    return st
+
+
+def _lanzar_en_hilo():
+    """
+    Igual que lo hace el endpoint: hilo propio con su event loop. El trabajo
+    tira de Playwright y de la red a saco, y en el loop principal le robaria
+    el aire a la API.
+    """
+    import threading
+
+    def _run():
+        if sys.platform == "win32":
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(run_enrichment_job())
+        except Exception as e:
+            print(f"[EnrichCron] El trabajo murio: {e!r}")
+        finally:
+            loop.close()
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+async def _cron_loop():
+    print(f"[EnrichCron] Supervisor arrancado, revisa cada {CRON_INTERVAL_S}s")
+    while _cron_state["enabled"]:
+        try:
+            _cron_state["checks_total"] += 1
+            _cron_state["last_check_at"] = datetime.now().isoformat()
+            corriendo = (enrichment_job or {}).get("status") == "running"
+            if not corriendo:
+                pendientes = _count_queue_by_status().get("pending", 0)
+                if pendientes > 0:
+                    _cron_state["revividos"] += 1
+                    _cron_state["last_revival_at"] = datetime.now().isoformat()
+                    print(f"[EnrichCron] Caido con {pendientes:,} en cola. "
+                          f"Levantando (revival #{_cron_state['revividos']})")
+                    _lanzar_en_hilo()
+        except Exception as e:
+            _cron_state["errors"].append(f"{type(e).__name__}: {e!r}"[:300])
+            _cron_state["errors"] = _cron_state["errors"][-5:]
+            print(f"[EnrichCron] Error en la revision: {e!r}")
+
+        for _ in range(CRON_INTERVAL_S):
+            if not _cron_state["enabled"]:
+                break
+            await asyncio.sleep(1)
+    print("[EnrichCron] Supervisor detenido")
+
+
+def start_cron() -> bool:
+    global _cron_task
+    if _cron_task and not _cron_task.done():
+        return False
+    _cron_state["enabled"] = True
+    _cron_state["errors"] = []
+    try:
+        _cron_task = asyncio.create_task(_cron_loop())
+        return True
+    except RuntimeError:
+        _cron_state["enabled"] = False
+        return False
+
+
+def stop_cron() -> bool:
+    global _cron_task
+    if not _cron_state["enabled"]:
+        return False
+    _cron_state["enabled"] = False
+    if _cron_task:
+        _cron_task.cancel()
+        _cron_task = None
+    return True
