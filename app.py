@@ -1451,11 +1451,12 @@ async def precios_ref_estado():
 @app.get("/api/v1/precios/referencia/impacto", tags=["Precios"])
 async def precios_ref_impacto(
     limite: int = Query(40, ge=1, le=500, description="filas de muestra"),
+    capa0: bool = Query(False, description="partir del PVP ajustado al margen"),
 ):
     """Cuanto subiria cada precio si se aplicase la referencia. No escribe."""
     import asyncio as _a
     import precios_referencia as pr
-    return JSONResponse(content=await _a.to_thread(pr.impacto, limite))
+    return JSONResponse(content=await _a.to_thread(pr.impacto, limite, capa0))
 
 
 @app.post("/api/v1/shopify/precios/leer", tags=["Shopify"])

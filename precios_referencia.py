@@ -507,7 +507,7 @@ def construir(dry_run: bool = True) -> dict:
 
 
 # ── 4. Que cambiaria de precio si se aplica ─────────────────────────────
-def impacto(limite: int = 40) -> dict:
+def impacto(limite: int = 40, capa0: bool = False) -> dict:
     """
     Compara el precio que se publica hoy con el que saldria de la
     referencia. Es lo que hay que mirar ANTES de enchufar nada.
@@ -519,7 +519,7 @@ def impacto(limite: int = 40) -> dict:
     try:
         db.execute_query(cur, f"""
             SELECT c.isbn, c.titulo, c.precio_marketplace, r.pvp, r.origen,
-                   r.precio_recibido, r.dudoso
+                   r.precio_recibido, r.dudoso, r.descuento, r.pvp_ajustado
             FROM catalogo_publicable c
             JOIN {TABLA_PVP} r ON r.isbn = c.isbn
             WHERE c.stock > 0 AND r.pvp > 0 AND NOT r.dudoso
@@ -527,7 +527,12 @@ def impacto(limite: int = 40) -> dict:
         suben = igual = bajan = 0
         euros = 0.0
         muestra = []
-        for isbn, tit, hoy, pvp, origen, recibido, _dud in cur.fetchall():
+        for (isbn, tit, hoy, pvp, origen, recibido, _dud,
+             desc, ajust) in cur.fetchall():
+            # Con capa0 el PVP del que se parte es el ajustado al margen.
+            # Sin ajustado -no sabemos el descuento- se usa el de siempre.
+            if capa0 and ajust is not None:
+                pvp = ajust
             nuevo = pricing_engine.precio_marketplace(
                 pricing_engine.web_price(float(pvp)))
             if nuevo is None or hoy is None:
@@ -543,14 +548,20 @@ def impacto(limite: int = 40) -> dict:
                         "cobramos_hoy": hoy, "pasaria_a": nuevo,
                         "diferencia": d, "pvp_referencia": float(pvp),
                         "origen": origen,
+                        "descuento_proveedor": (float(desc)
+                                                if desc is not None else None),
                         "precio_del_proveedor": (float(recibido)
                                                  if recibido is not None else None)})
             elif d < -0.01:
                 bajan += 1
             else:
                 igual += 1
-        return {"status": "ok", "suben": suben, "sin_cambio": igual,
+        return {"status": "ok", "capa0": capa0,
+                "suben": suben, "sin_cambio": igual,
                 "bajan": bajan, "euros_que_suben": round(euros, 2),
+                "nota": ("Con capa0=true el PVP de partida es el ajustado al "
+                         "margen objetivo. Los euros son la subida unitaria "
+                         "acumulada, no ingresos."),
                 "muestra": muestra}
     finally:
         conn.close()
