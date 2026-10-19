@@ -430,6 +430,21 @@ def construir(dry_run: bool = True) -> dict:
             # descuenta; sin ese dato no hay margen que corregir.
             import pricing_engine as _pe
             ajust = _pe.pvp_por_margen(fila[1], desc_az) if desc_az is not None else None
+            # GUARDA: la Capa 0 no puede bajar un precio, y puede hacerlo sin
+            # querer. El suplemento de la Capa 1 es un importe FIJO por tramo,
+            # asi que la funcion no es monotona: un PVP de 7,50 sale a 8,49 y
+            # uno de 7,51 a 7,50. Lo mismo en los bordes de la Capa 3. Si el
+            # ajuste empuja el PVP por encima de uno de esos bordes, el precio
+            # final CAE. Medido el 19/10/2026: 2.133 de 390.903 filas.
+            #
+            # Cuando pasa, se deja el PVP sin tocar. Perder margen en esos
+            # libros es preferible a bajarles el precio publicado.
+            if ajust is not None and fila[1]:
+                antes = _pe.precio_marketplace(_pe.web_price(float(fila[1])))
+                despues = _pe.precio_marketplace(_pe.web_price(ajust))
+                if antes is not None and despues is not None and despues < antes:
+                    ajust = float(fila[1])
+                    job["capa0_frenados"] = job.get("capa0_frenados", 0) + 1
             if ajust is not None and fila[1] and ajust > float(fila[1]) + 0.005:
                 job["capa0_subirian"] = job.get("capa0_subirian", 0) + 1
                 job["capa0_euros"] = round(
