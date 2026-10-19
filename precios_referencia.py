@@ -527,6 +527,7 @@ def impacto(limite: int = 40, capa0: bool = False) -> dict:
         suben = igual = bajan = 0
         euros = 0.0
         muestra = []
+        bajadas = []
         for (isbn, tit, hoy, pvp, origen, recibido, _dud,
              desc, ajust) in cur.fetchall():
             # Con capa0 el PVP del que se parte es el ajustado al margen.
@@ -554,6 +555,16 @@ def impacto(limite: int = 40, capa0: bool = False) -> dict:
                                                  if recibido is not None else None)})
             elif d < -0.01:
                 bajan += 1
+                if len(bajadas) < limite:
+                    bajadas.append({
+                        "isbn": isbn, "titulo": (tit or "")[:50],
+                        "cobramos_hoy": hoy, "pasaria_a": nuevo,
+                        "diferencia": d, "pvp_referencia": float(pvp),
+                        "descuento_proveedor": (float(desc)
+                                                if desc is not None else None),
+                        "pvp_ajustado": (float(ajust)
+                                         if ajust is not None else None),
+                        "origen": origen})
             else:
                 igual += 1
         return {"status": "ok", "capa0": capa0,
@@ -562,7 +573,8 @@ def impacto(limite: int = 40, capa0: bool = False) -> dict:
                 "nota": ("Con capa0=true el PVP de partida es el ajustado al "
                          "margen objetivo. Los euros son la subida unitaria "
                          "acumulada, no ingresos."),
-                "muestra": muestra}
+                "muestra": muestra,
+                "muestra_bajadas": bajadas}
     finally:
         conn.close()
 
