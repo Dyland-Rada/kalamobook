@@ -247,19 +247,21 @@ def _claim_scraped_batch(limit: int) -> list[dict]:
                 LIMIT ?
                 FOR UPDATE SKIP LOCKED
             )
-            RETURNING odoo_id, scraped_data
+            RETURNING odoo_id, scraped_data, barcode, name
         """, (WORKER_NAME, limit))
         rows = [
-            {"odoo_id": r[0], "data": json.loads(r[1])}
+            {"odoo_id": r[0], "data": json.loads(r[1]),
+             "barcode": r[2], "name": r[3]}
             for r in cur.fetchall() if r[1]
         ]
         conn.commit()
     else:
         db.execute_query(cur, """
-            SELECT odoo_id, scraped_data FROM enrichment_queue
+            SELECT odoo_id, scraped_data, barcode, name FROM enrichment_queue
             WHERE status = 'scraped' ORDER BY updated_at ASC LIMIT ?
         """, (limit,))
-        rows = [{"odoo_id": r[0], "data": json.loads(r[1])} for r in cur.fetchall() if r[1]]
+        rows = [{"odoo_id": r[0], "data": json.loads(r[1]),
+                 "barcode": r[2], "name": r[3]} for r in cur.fetchall() if r[1]]
         if rows:
             ids = [r["odoo_id"] for r in rows]
             placeholders = ",".join(["?"] * len(ids))
@@ -271,6 +273,49 @@ def _claim_scraped_batch(limit: int) -> list[dict]:
             conn.commit()
     conn.close()
     return rows
+
+
+def _titulo_utilizable(crudo, barcode: str) -> str | None:
+    """
+    El titulo que vale para vender. Descarta el que es el propio codigo de
+    barras o un numero suelto, que es justo lo que ya tienen estos libros.
+    """
+    t = (crudo or "").strip()
+    if not t or t == (barcode or "").strip():
+        return None
+    if t.replace("-", "").replace(" ", "").isdigit():
+        return None
+    return t[:250]
+
+
+def _espejar_titulos(pares: list[tuple]):
+    """
+    Deja el titulo nuevo tambien en odoo_books_mirror.
+
+    Sin esto el arreglo no sirve de nada: el catalogo publicable lee del
+    espejo, no de Odoo, y el espejo solo se re-sincroniza a mano -unas mil
+    filas al dia-. El libro tendria nombre en Odoo y seguiria apagado aqui.
+    """
+    if not pares:
+        return
+    conn = db.get_connection()
+    cur = conn.cursor()
+    try:
+        if db.IS_POSTGRES:
+            from psycopg2.extras import execute_values
+            execute_values(cur, """
+                UPDATE odoo_books_mirror m SET name = v.name
+                FROM (VALUES %s) AS v(odoo_id, name)
+                WHERE m.odoo_id = v.odoo_id
+            """, [(int(i), n) for i, n in pares])
+        else:
+            for i, n in pares:
+                db.execute_query(cur,
+                    "UPDATE odoo_books_mirror SET name=? WHERE odoo_id=?",
+                    (n, int(i)))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _mark_written(odoo_ids: list[int]):
@@ -737,10 +782,32 @@ async def push_loop(odoo: OdooClient, job: dict):
 
         written_ids: list[int] = []
         failed_ids: list[int] = []
+        titulados: list[tuple] = []
         for item in batch:
             try:
                 html_desc = render_html_description(item["data"])
-                if not html_desc:
+                # EL TITULO TAMBIEN SE ESCRIBE, no solo la descripcion.
+                #
+                # 58.140 libros con stock se llamaban como su codigo de
+                # barras (medido el 19/10/2026) y por eso el catalogo los
+                # apaga: nadie compra un numero. Este worker era el unico
+                # camino que podia arreglarlos -reescribe fichas que ya
+                # existen, sin crear nada- pero solo tocaba `description`,
+                # asi que los dejaba igual de invendibles.
+                #
+                # Solo se pone cuando el nombre de ahora NO sirve, para no
+                # pisar nunca uno bueno puesto a mano, y se escribe aunque
+                # no haya descripcion: son dos cosas distintas y el titulo
+                # es la que decide si el libro se puede vender.
+                titulo = _titulo_utilizable(item["data"].get("title"),
+                                            item.get("barcode") or "")
+                actual = (item.get("name") or "").strip()
+                pon_titulo = bool(titulo) and (
+                    not actual
+                    or actual == (item.get("barcode") or "").strip()
+                    or actual.replace("-", "").replace(" ", "").isdigit()
+                )
+                if not html_desc and not pon_titulo:
                     _mark_notfound(
                         item["odoo_id"],
                         item["data"].get("isbn", ""),
@@ -748,10 +815,16 @@ async def push_loop(odoo: OdooClient, job: dict):
                         "Scraped but no usable content",
                     )
                     continue
-                values = {"description": html_desc}
+                values = {}
+                if html_desc:
+                    values["description"] = html_desc
+                if pon_titulo:
+                    values["name"] = titulo
                 ok = await odoo.write("product.template", [item["odoo_id"]], values)
                 if ok:
                     written_ids.append(item["odoo_id"])
+                    if pon_titulo:
+                        titulados.append((item["odoo_id"], titulo))
                 else:
                     failed_ids.append(item["odoo_id"])
             except Exception as e:
@@ -759,10 +832,18 @@ async def push_loop(odoo: OdooClient, job: dict):
                 print(f"[Enrich] Push error for odoo_id={item['odoo_id']}: {e}")
                 failed_ids.append(item["odoo_id"])
 
+        if titulados:
+            try:
+                _espejar_titulos(titulados)
+                job["titulos_puestos"] = job.get("titulos_puestos", 0) + len(titulados)
+            except Exception as e:
+                job["errors"].append(f"espejar titulos: {str(e)[:120]}")
+                print(f"[Enrich] Mirror title error: {e}")
         if written_ids:
             _mark_written(written_ids)
             job["written"] += len(written_ids)
-            print(f"[Enrich] Pushed {len(written_ids)} to Odoo (total written: {job['written']})")
+            print(f"[Enrich] Pushed {len(written_ids)} to Odoo "
+                  f"({len(titulados)} con titulo nuevo; total: {job['written']})")
         if failed_ids:
             _revert_pushing(failed_ids)
 
