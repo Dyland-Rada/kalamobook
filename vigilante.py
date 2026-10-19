@@ -114,6 +114,17 @@ def _revisar_crones(arreglar: bool) -> list[dict]:
         # manual y no lo lanzaba nadie.
         ("cron_precios", "Cron de precios a Odoo", "pricing_engine",
          "get_cron_status", "start_cron"),
+        # Nuevo el 19/10/2026. Hasta ese dia solo corria a mano, y por eso
+        # el campo llevaba meses a medias: Grupo Anaya con CERO relaciones
+        # y AZETA saliendo como proveedor de sus libros.
+        ("cron_proveedores_odoo", "Cron de proveedores en Odoo",
+         "odoo_proveedores", "get_cron_status", "start_cron"),
+        # El supervisor del enriquecedor. No es un cron de intervalo -mira
+        # si el trabajo esta caido habiendo cola-, pero se vigila igual:
+        # estuvo parado del 09/06 al 19/10/2026, cuatro meses, sin que
+        # nadie se enterara.
+        ("cron_enriquecedor", "Supervisor del enriquecedor", "enrichment",
+         "get_cron_status", "start_cron"),
     ]
     for clave, titulo, modulo, fn_estado, fn_arrancar in definicion:
         try:

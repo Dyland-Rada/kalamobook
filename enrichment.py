@@ -1210,6 +1210,10 @@ _cron_task = None
 
 def get_cron_status() -> dict:
     st = dict(_cron_state)
+    # El vigilante mira estas dos: enabled Y task_running. Sin la segunda
+    # daria por parado un supervisor que esta corriendo.
+    st["task_running"] = bool(_cron_task and not _cron_task.done())
+    st["apagado_por_config"] = not CRON_ENABLED
     st["job_status"] = (enrichment_job or {}).get("status", "idle")
     try:
         st["pendientes"] = _count_queue_by_status().get("pending", 0)

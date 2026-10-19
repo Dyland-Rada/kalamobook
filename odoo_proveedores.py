@@ -233,6 +233,97 @@ async def sincronizar(dry_run: bool = True, limite: int | None = None) -> dict:
     return job
 
 
+# ── Cron ────────────────────────────────────────────────────────────────
+#
+# Hasta el 19/10/2026 esto solo corria a mano, y por eso el campo llevaba
+# meses a medias: la carga de mayo dejo a AZETA con 1.035.632 relaciones y
+# a Grupo Anaya con CERO, asi que al mirar un libro de Anaya en Odoo
+# aparecia AZETA como proveedor. El dato correcto estaba en
+# libros_proveedor desde el primer dia; simplemente no lo escribia nadie.
+#
+# Cada 24 horas, como el resto del catalogo. Es seguro repetirlo: solo
+# AÑADE lo que falta, nunca borra -ver la cabecera del modulo-, asi que
+# una vuelta de mas no cuesta nada.
+CRON_INTERVAL_S = int(os.environ.get("ODOO_PROV_CRON_INTERVAL_S", "86400"))
+CRON_ENABLED = os.environ.get("ODOO_PROV_CRON_ENABLED", "1") == "1"
+
+_cron_state: dict = {
+    "enabled": False,
+    "interval_s": CRON_INTERVAL_S,
+    "last_run_at": None,
+    "last_run_status": None,
+    "last_summary": None,
+    "next_run_at": None,
+    "runs_total": 0,
+    "errors": [],
+}
+_cron_task = None
+
+
+def get_cron_status() -> dict:
+    st = dict(_cron_state)
+    # El vigilante exige enabled Y task_running.
+    st["task_running"] = bool(_cron_task and not _cron_task.done())
+    st["apagado_por_config"] = not CRON_ENABLED
+    return st
+
+
+async def _cron_loop():
+    from datetime import timedelta
+    print(f"[OdooProvCron] Arrancado, intervalo {_cron_state['interval_s']}s")
+    while _cron_state["enabled"]:
+        try:
+            r = await sincronizar(dry_run=False)
+            _cron_state["last_run_at"] = datetime.now().isoformat()
+            _cron_state["last_run_status"] = r.get("status")
+            _cron_state["last_summary"] = (
+                f"{r.get('creadas', 0):,} relaciones nuevas, "
+                f"{r.get('faltan', 0):,} faltaban")
+            _cron_state["runs_total"] += 1
+            print(f"[OdooProvCron] Run #{_cron_state['runs_total']}: "
+                  f"{_cron_state['last_summary']}")
+        except Exception as e:
+            _cron_state["last_run_status"] = "error"
+            _cron_state["errors"].append(f"{type(e).__name__}: {e!r}"[:300])
+            _cron_state["errors"] = _cron_state["errors"][-5:]
+            print(f"[OdooProvCron] Fatal: {e!r}")
+
+        _cron_state["next_run_at"] = (
+            datetime.now() + timedelta(seconds=_cron_state["interval_s"])
+        ).isoformat()
+        for _ in range(_cron_state["interval_s"]):
+            if not _cron_state["enabled"]:
+                break
+            await asyncio.sleep(1)
+    print("[OdooProvCron] Detenido")
+    _cron_state["next_run_at"] = None
+
+
+def start_cron() -> bool:
+    global _cron_task
+    if _cron_task and not _cron_task.done():
+        return False
+    _cron_state["enabled"] = True
+    _cron_state["errors"] = []
+    try:
+        _cron_task = asyncio.create_task(_cron_loop())
+        return True
+    except RuntimeError:
+        _cron_state["enabled"] = False
+        return False
+
+
+def stop_cron() -> bool:
+    global _cron_task
+    if not _cron_state["enabled"]:
+        return False
+    _cron_state["enabled"] = False
+    if _cron_task:
+        _cron_task.cancel()
+        _cron_task = None
+    return True
+
+
 if __name__ == "__main__":
     import sys
     seco = "--apply" not in sys.argv

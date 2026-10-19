@@ -24,6 +24,7 @@ from bulk_scraper import (
     discover_categories,
 )
 import enrichment
+import odoo_proveedores
 from enrichment import (
     run_enrichment_job, stop_enrichment_job,
     get_enrichment_status, get_notfound_count,
@@ -336,6 +337,20 @@ async def startup():
         except Exception as e:
             print(f"[Startup] Enriquecedor supervisor FALLO: {type(e).__name__}: {e}")
 
+    # Que proveedor sirve cada libro (product.supplierinfo). Hasta el
+    # 19/10/2026 solo corria a mano y por eso el campo llevaba meses a
+    # medias: Grupo Anaya con cero relaciones y AZETA saliendo como
+    # proveedor de sus libros.
+    if odoo_proveedores.CRON_ENABLED:
+        try:
+            if odoo_proveedores.start_cron():
+                print(f"[Startup] Proveedores en Odoo: cron AUTO-ARRANCADO "
+                      f"(intervalo {odoo_proveedores.CRON_INTERVAL_S}s)")
+            else:
+                print("[Startup] Proveedores en Odoo: cron NO arrancado (ya activo)")
+        except Exception as e:
+            print(f"[Startup] Proveedores en Odoo FALLO: {type(e).__name__}: {e}")
+
     # Auto-arrancar el ciclo diario de libros nuevos (auto-scrape)
     if os.environ.get("AUTO_SCRAPE_CRON_ENABLED", "").lower() in ("1", "true", "yes"):
         try:
@@ -644,6 +659,48 @@ async def odoo_sync_stop():
 async def odoo_sync_status():
     """Estado del job de enriquecimiento + conteos de la cola."""
     return JSONResponse(content=get_enrichment_status())
+
+
+@app.get("/api/v1/odoo/proveedores/estado", tags=["Odoo"])
+async def odoo_prov_estado():
+    """Estado del relleno de product.supplierinfo y de su cron."""
+    return JSONResponse(content={
+        "job": odoo_proveedores.get_status(),
+        "cron": odoo_proveedores.get_cron_status()})
+
+
+@app.post("/api/v1/odoo/proveedores/sincronizar", tags=["Odoo"])
+async def odoo_prov_sincronizar(
+    dry_run: bool = Query(True, description="en seco no escribe nada"),
+    limite: int | None = Query(None),
+):
+    """
+    Anade a Odoo las relaciones libro-proveedor que falten. Nunca borra.
+    Empezar siempre en seco: dice cuantas crearia y cuantas sobran.
+    """
+    if odoo_proveedores.get_status().get("status") == "running":
+        return JSONResponse(status_code=409, content={
+            "status": "error", "message": "Ya hay una sincronizacion en marcha."})
+    import asyncio as _a
+    _a.create_task(odoo_proveedores.sincronizar(dry_run=dry_run, limite=limite))
+    return JSONResponse(content={"status": "started", "dry_run": dry_run})
+
+
+@app.post("/api/v1/odoo/proveedores/cron/start", tags=["Odoo"])
+async def odoo_prov_cron_start():
+    if odoo_proveedores.start_cron():
+        return JSONResponse(content={"status": "started",
+                                     "cron": odoo_proveedores.get_cron_status()})
+    return JSONResponse(status_code=400, content={
+        "status": "error", "message": "Ya estaba activo."})
+
+
+@app.post("/api/v1/odoo/proveedores/cron/stop", tags=["Odoo"])
+async def odoo_prov_cron_stop():
+    if odoo_proveedores.stop_cron():
+        return JSONResponse(content={"status": "stopped"})
+    return JSONResponse(status_code=400, content={
+        "status": "error", "message": "No estaba activo."})
 
 
 @app.get("/api/v1/odoo/sync/cron/status", tags=["Odoo"])
