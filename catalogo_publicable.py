@@ -548,22 +548,28 @@ def _filas(totales: dict[int, float]) -> list[tuple]:
                 if brecha_grande:
                     _brecha_grande[0] += 1
 
-                # Un libro cuyo titulo es su propio codigo de barras no se
-                # puede poner a la venta: el cliente ve un numero. Son fichas
-                # que crea crear_faltantes cuando un proveedor declara stock
-                # de un ISBN que nunca se enriquecio, y en Odoo el name queda
-                # literalmente igual que el barcode.
+                # SOLO SE CUENTA. No apaga el stock, y la razon importa.
                 #
-                # Esto ya se vigilaba, pero mal: la tabla productos_sin_titulo
-                # la llenaba un workflow de n8n que corrio UNA vez -el
-                # 08/09/2026, 64.688 filas- y no ha vuelto a correr. CdL y
-                # Fnac filtran contra esa foto congelada, asi que cubren los
-                # de entonces y no los de despues. Medido el 19/10/2026:
-                # 58.140 libros con stock sin titulo, de los que 7.240 no
-                # estaban en la foto y se estaban ofertando.
+                # El 19/10/2026 esto SI lo apagaba: un libro cuyo titulo es su
+                # codigo de barras parecia invendible en todas partes. Falso, y
+                # lo desmintio el propio dato el 23/10:
                 #
-                # Calculado aqui sale de m.name en cada vuelta y vale para
-                # los cuatro canales a la vez, sin depender del workflow.
+                #   ofertas vivas en Casa del Libro   ventas por 1.000 ofertas
+                #      con titulo    343.169                    1,04
+                #      SIN titulo      2.320                    1,29
+                #
+                # En CdL y Fnac la oferta se engancha por ISBN a la ficha del
+                # marketplace, asi que el titulo lo pone ELLOS. Que el nuestro
+                # este vacio no lo ve el comprador, y se venden igual de bien.
+                #
+                # Donde si importa el titulo ya se filtra en su sitio:
+                # shopify_pub exige name <> barcode para publicar, y AbeBooks
+                # tampoco los lista -solo 2 han tenido ficha de oferta nunca-.
+                # Asi que apagarlos aqui no protegia a nadie y quitaba ventas
+                # en los dos canales donde si se vendian.
+                #
+                # Se sigue contando porque es la medida de cuanto catalogo
+                # tenemos a medio enriquecer, y el vigilante la mira.
                 sin_titulo = (not nombre or not str(nombre).strip()
                               or str(nombre).strip() == isbn)
                 if sin_titulo:
@@ -571,8 +577,7 @@ def _filas(totales: dict[int, float]) -> list[tuple]:
                 filas.append((
                     isbn, nombre,
                     0 if (castigado or desmentido or sin_precio_valido
-                          or no_elegible or brecha_grande
-                          or sin_titulo) else neto,
+                          or no_elegible or brecha_grande) else neto,
                     pm,
                     None,          # precio_web: falta la Capa 2
                     pw, prov,
@@ -677,7 +682,7 @@ async def refrescar(dry_run: bool = False) -> dict:
         job["apagados_por_precio"] = _sin_precio_apagados[0]
         job["no_elegibles_menos_290"] = _no_elegibles[0]
         job["apagados_por_brecha"] = _brecha_grande[0]
-        job["apagados_sin_titulo"] = _sin_titulo[0]
+        job["sin_titulo"] = _sin_titulo[0]   # se cuentan, no se apagan
         job["filas"] = len(filas)
         job["sin_precio"] = sum(1 for f in filas if f[3] is None)
 
