@@ -484,7 +484,11 @@ _SQL_FILAS = """
 """.replace(
     "%USAR_REF%", "true" if USAR_PVP_REFERENCIA else "false"
 ).replace(
-    "%CAPA0%", "r.pvp_ajustado" if USAR_CAPA0 else "NULL::numeric")
+    # La Capa 0 solo si es aplicable: es el ajuste del descuento de AZETA y
+    # no le corresponde a un libro que va a servir el distribuidor oficial.
+    "%CAPA0%",
+    ("CASE WHEN r.capa0_aplicable THEN r.pvp_ajustado END" if USAR_CAPA0
+     else "NULL::numeric"))
 
 
 def _filas(totales: dict[int, float]) -> list[tuple]:

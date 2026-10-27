@@ -59,7 +59,11 @@ MINIMO_CAMBIO = float(os.environ.get("SHOPIFY_PRECIO_MIN_CAMBIO", "0.05"))
 # El mismo interruptor que usa catalogo_publicable, resuelto igual y al
 # cargar el modulo. Si la web y los marketplaces no leen la Capa 0 del
 # mismo sitio, acaban cobrando cosas distintas por el mismo libro.
-_CAPA0 = ("r.pvp_ajustado" if pricing_engine.USAR_CAPA0 else "NULL::numeric")
+# La Capa 0 solo si es aplicable: el ajuste nace del descuento de AZETA y
+# no le toca a un libro que va a servir el distribuidor oficial. Ver el
+# comentario largo en precios_referencia.cierra().
+_CAPA0 = ("CASE WHEN r.capa0_aplicable THEN r.pvp_ajustado END"
+          if pricing_engine.USAR_CAPA0 else "NULL::numeric")
 
 # Precios en pesos colombianos cobrados como euros.
 #
@@ -268,7 +272,15 @@ def _objetivos(solo_subidas: bool, limite: int | None):
         db.execute_query(cur, f"""
             SELECT s.handle, s.product_gid, s.variant_gid, s.precio_tienda,
                    COALESCE({_CAPA0}, r.pvp) AS pvp,
-                   c.precio_odoo, m.cdl_price
+                   c.precio_odoo, m.cdl_price,
+                   -- El precio baja porque le quitamos un recargo que no le
+                   -- tocaba. Esa bajada SI se escribe aunque solo_subidas
+                   -- este puesto: el seguro existe para no fiarse de una
+                   -- referencia peor que lo publicado, no para blindar un
+                   -- error nuestro.
+                   (r.pvp_ajustado IS NOT NULL
+                    AND NOT r.capa0_aplicable
+                    AND r.pvp_ajustado > r.pvp + 0.005) AS quita_recargo
             FROM {TABLA} s
             LEFT JOIN {TABLA_REF} r
                    ON r.isbn = s.handle AND r.pvp > 0 AND NOT r.dudoso
@@ -281,7 +293,7 @@ def _objetivos(solo_subidas: bool, limite: int | None):
         """)
         salida = []
         for (handle, pgid, vgid, tienda, pvp, precio_cat,
-             cdl_price) in cur.fetchall():
+             cdl_price, quita_recargo) in cur.fetchall():
             if pvp is not None:
                 obj = pricing_engine.web_price(float(pvp))
             else:
@@ -294,6 +306,7 @@ def _objetivos(solo_subidas: bool, limite: int | None):
             if actual is not None and abs(obj - actual) < MINIMO_CAMBIO:
                 continue
             if (solo_subidas and actual is not None and obj < actual
+                    and not quita_recargo
                     and not _es_precio_en_pesos(actual, cdl_price)):
                 continue
             salida.append((handle, pgid, vgid, actual, obj))

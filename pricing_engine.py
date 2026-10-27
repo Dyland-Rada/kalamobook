@@ -225,10 +225,21 @@ def _load_targets(limit=None, solo_suplemento: bool = False,
         #
         # Los dudosos quedan fuera: un PVP que no se ha podido confirmar no
         # entra en el ERP.
-        pvp_col = ("COALESCE(r.pvp_ajustado, r.pvp)" if USAR_CAPA0
-                   else "r.pvp")
+        # La Capa 0 solo cuenta si ADEMAS es aplicable: el ajuste nace del
+        # descuento de AZETA y no le toca a un libro que va a servir otro.
+        # Ver el comentario largo en precios_referencia.cierra().
+        pvp_col = ("COALESCE(CASE WHEN r.capa0_aplicable THEN r.pvp_ajustado END, r.pvp)"
+                   if USAR_CAPA0 else "r.pvp")
         q = f"""
-            SELECT m.odoo_id, {pvp_col}, m.list_price
+            SELECT m.odoo_id, {pvp_col}, m.list_price,
+                   -- TRUE = el precio baja porque le estabamos aplicando un
+                   -- recargo que no le tocaba. Esa bajada SI se escribe
+                   -- aunque solo_subidas este puesto: el seguro existe para
+                   -- no fiarse de un PVP peor que el publicado, no para
+                   -- blindar un error nuestro.
+                   (r.pvp_ajustado IS NOT NULL
+                    AND NOT r.capa0_aplicable
+                    AND r.pvp_ajustado > r.pvp + 0.005) AS quita_recargo
             FROM odoo_books_mirror m
             JOIN pvp_referencia r ON r.isbn = m.barcode
             WHERE m.odoo_id IS NOT NULL
@@ -238,7 +249,7 @@ def _load_targets(limit=None, solo_suplemento: bool = False,
             q += f" AND {pvp_col} >= 2.90 AND {pvp_col} < 7.51"
     else:
         q = """
-            SELECT odoo_id, pvp_base, list_price
+            SELECT odoo_id, pvp_base, list_price, false AS quita_recargo
             FROM odoo_books_mirror
             WHERE odoo_id IS NOT NULL
         """
@@ -267,6 +278,7 @@ async def run_price_update(dry_run: bool = True, limit: int | None = None,
                  "total": 0, "precio_actualizado": 0, "apagados": 0,
                  "sin_cambio": 0, "calls": 0, "bajarian": 0,
                  "omitidos_por_bajar": 0, "omitidos_por_apagar": 0,
+                 "recargos_quitados": 0,
                  "euros_que_suben": 0.0, "euros_que_bajan": 0.0,
                  "errors": []}
     job = price_job
@@ -277,7 +289,7 @@ async def run_price_update(dry_run: bool = True, limit: int | None = None,
 
         price_updates = defaultdict(list)   # web_price -> [odoo_id] (solo los que cambian)
         to_deactivate = []                  # odoo_id a apagar
-        for odoo_id, pvp_base, list_price in rows:
+        for odoo_id, pvp_base, list_price, quita_recargo in rows:
             wp = web_price(pvp_base)
             if wp is None:
                 # El apagado va por rama aparte y solo_subidas NO lo frena:
@@ -299,9 +311,11 @@ async def run_price_update(dry_run: bool = True, limit: int | None = None,
                 # editoriales distintas con precios reales de 30, 27 y 25
                 # EUR. Ahi el 5,72 es basura, no un PVP, y la regla no tiene
                 # de donde partir. Se dejan quietos y se revisan a mano.
-                if baja and solo_subidas:
+                if baja and solo_subidas and not quita_recargo:
                     job["omitidos_por_bajar"] += 1
                 elif cur_lp != wp:
+                    if baja and quita_recargo:
+                        job["recargos_quitados"] += 1
                     price_updates[wp].append(odoo_id)
                     if cur_lp is not None:
                         if wp > cur_lp:

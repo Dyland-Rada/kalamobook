@@ -163,6 +163,12 @@ def ensure_schema():
                 -- KALAMO_CAPA0_ENABLED en quien lee esta tabla.
                 descuento        NUMERIC(5,2),
                 pvp_ajustado     NUMERIC(10,2),
+                -- FALSE = el ajuste esta calculado pero NO se aplica,
+                -- porque otro proveedor puede servir el libro y la Capa 0
+                -- es de AZETA. Se guarda en vez de borrar el ajustado para
+                -- que quien escribe precios sepa POR QUE baja: sin eso, su
+                -- seguro de "solo subidas" frenaria la correccion.
+                capa0_aplicable  BOOLEAN NOT NULL DEFAULT TRUE,
                 dudoso           BOOLEAN NOT NULL DEFAULT FALSE,
                 motivo           TEXT,
                 calculado_en     TIMESTAMP NOT NULL DEFAULT NOW()
@@ -172,7 +178,8 @@ def ensure_schema():
                               f"ON {TABLA_PVP} (origen)")
         # La tabla puede venir de antes de la Capa 0. Cada ALTER va suelto
         # porque en Postgres uno fallido aborta la transaccion entera.
-        for col in ("descuento NUMERIC(5,2)", "pvp_ajustado NUMERIC(10,2)"):
+        for col in ("descuento NUMERIC(5,2)", "pvp_ajustado NUMERIC(10,2)",
+                    "capa0_aplicable BOOLEAN NOT NULL DEFAULT TRUE"):
             try:
                 db.execute_query(cur, f"ALTER TABLE {TABLA_PVP} "
                                       f"ADD COLUMN IF NOT EXISTS {col}")
@@ -494,8 +501,8 @@ def construir(dry_run: bool = True) -> dict:
             # Asi que el ajuste solo se aplica cuando AZETA es el UNICO que
             # puede servirlo. Si hay otro con stock, se publica el PVP del
             # editor tal cual y se compra al oficial.
-            ajust = (_pe.pvp_por_margen(fila[1], desc_az)
-                     if desc_az is not None and not otro_con_stock else None)
+            ajust = _pe.pvp_por_margen(fila[1], desc_az) if desc_az is not None else None
+            aplicable = not otro_con_stock
             if desc_az is not None and otro_con_stock:
                 job["capa0_otro_proveedor"] = job.get("capa0_otro_proveedor", 0) + 1
             # GUARDA: la Capa 0 no puede bajar un precio, y puede hacerlo sin
@@ -517,11 +524,17 @@ def construir(dry_run: bool = True) -> dict:
                 job["capa0_subirian"] = job.get("capa0_subirian", 0) + 1
                 job["capa0_euros"] = round(
                     job.get("capa0_euros", 0.0) + ajust - float(fila[1]), 2)
-            fila = fila[:6] + (desc_az, ajust) + fila[6:]
+            # El orden tiene que coincidir con el INSERT de vuelca().
+            es_dudoso = bool(fila[6])
+            fila = fila[:6] + (desc_az, ajust, aplicable) + fila[6:]
 
             job["origen"][org] = job["origen"].get(org, 0) + 1
             job["fuente_iva"][fiva] = job["fuente_iva"].get(fiva, 0) + 1
-            if fila[6]:
+            # Se lee ANTES de insertar las tres columnas nuevas: al meterlas
+            # en la posicion 6, fila[6] pasaba a ser el descuento y el
+            # contador llevaba meses contando libros con descuento en vez de
+            # dudosos -379.884 frente a los 124.848 reales-.
+            if es_dudoso:
                 job["dudosos"] += 1
             if fila[1] and fila[1] > crudo_max + TOL_MIN:
                 job["subidas"] += 1
@@ -537,7 +550,8 @@ def construir(dry_run: bool = True) -> dict:
             execute_values(escritor, f"""
                 INSERT INTO {TABLA_PVP}
                     (isbn, pvp, iva, origen, proveedor_email, precio_recibido,
-                     descuento, pvp_ajustado, dudoso, motivo, calculado_en)
+                     descuento, pvp_ajustado, capa0_aplicable, dudoso, motivo,
+                     calculado_en)
                 VALUES %s
                 ON CONFLICT (isbn) DO UPDATE SET
                     pvp = EXCLUDED.pvp, iva = EXCLUDED.iva,
@@ -546,9 +560,10 @@ def construir(dry_run: bool = True) -> dict:
                     precio_recibido = EXCLUDED.precio_recibido,
                     descuento = EXCLUDED.descuento,
                     pvp_ajustado = EXCLUDED.pvp_ajustado,
+                    capa0_aplicable = EXCLUDED.capa0_aplicable,
                     dudoso = EXCLUDED.dudoso, motivo = EXCLUDED.motivo,
                     calculado_en = NOW()
-            """, lote, template="(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())",
+            """, lote, template="(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())",
                 page_size=2000)
             job["escritos"] += len(lote)
             conn_esc.commit()
