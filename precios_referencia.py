@@ -86,6 +86,10 @@ from informe_stock import get_letra, _podar
 
 CARPETA = os.environ.get("INFORME_STOCK_DIR", "/tmp")
 
+# AZETA es la fuente del descuento y, por tanto, la unica a la que le
+# corresponde la Capa 0. Ver el comentario en cierra().
+AZETA = "info@azetadistribuciones.es"
+
 TABLA_MODO = "proveedor_precio_modo"
 TABLA_PVP = "pvp_referencia"
 TABLA_IVA_ED = "editorial_iva"
@@ -339,7 +343,18 @@ CONSULTA_PVP = f"""
            ed.iva  AS iva_editorial,
            m.cdl_editorial,
            lp.proveedor_email, lp.precio_con_iva,
-           mo.modo
+           mo.modo,
+           -- Stock que DE VERDAD compite: un proveedor sin almacen en Odoo
+           -- no puede servir -su cantidad no se escribe en ningun sitio- y
+           -- un pausado tiene su almacen a cero. Si el unico que puede
+           -- servirlo es AZETA, la Capa 0 si le toca.
+           CASE WHEN lp.stock_disponible > 0
+                 AND EXISTS (SELECT 1 FROM proveedor_almacen_odoo pa
+                             WHERE pa.proveedor_email = lp.proveedor_email)
+                 AND NOT EXISTS (SELECT 1 FROM proveedor_pausa pp
+                                 WHERE pp.proveedor_email = lp.proveedor_email
+                                   AND pp.activo = false)
+                THEN lp.stock_disponible ELSE 0 END AS stock_servible
     FROM libros_proveedor lp
     LEFT JOIN azeta_feed_descuentos f  ON f.isbn = lp.isbn
     LEFT JOIN odoo_books_mirror m      ON m.barcode = lp.isbn
@@ -419,7 +434,9 @@ def construir(dry_run: bool = True) -> dict:
             mejor = None          # (pvp_normalizado, email, recibido, dudoso, motivo)
             crudo_max = 0.0
             desc_az = None
-            for (p_az, i_az, d_az, i_ed, _ed, email, precio, modo) in acc:
+            otro_con_stock = any(
+                e != AZETA and (st or 0) > 0 for *_r, e, _p, _m, st in acc)
+            for (p_az, i_az, d_az, i_ed, _ed, email, precio, modo, _st) in acc:
                 if d_az is not None:
                     desc_az = float(d_az)
                 precio = float(precio)
@@ -460,7 +477,27 @@ def construir(dry_run: bool = True) -> dict:
             # Capa 0. Solo se calcula cuando AZETA nos dice cuanto
             # descuenta; sin ese dato no hay margen que corregir.
             import pricing_engine as _pe
-            ajust = _pe.pvp_por_margen(fila[1], desc_az) if desc_az is not None else None
+            # LA CAPA 0 ES DE AZETA, NO DEL LIBRO.
+            #
+            # El ajuste nace de lo que nos descuenta AZETA: si descuentan
+            # menos del margen objetivo, se sube el PVP hasta recuperarlo.
+            # Pero AZETA es un REVENDEDOR. Cuando el distribuidor oficial
+            # tambien tiene el libro -y suele tenerlo a mejor precio-, subir
+            # el PVP por el descuento de AZETA encarece un libro que no
+            # vamos a comprarle a AZETA.
+            #
+            # Lo que eso cuesta no es teorico: Javier Vela reporto el
+            # 26/10/2026 perdida de posiciones en AbeBooks por PVP marcado.
+            # En un marketplace el precio ordena los resultados, asi que
+            # encarecer sin motivo es dejar de vender.
+            #
+            # Asi que el ajuste solo se aplica cuando AZETA es el UNICO que
+            # puede servirlo. Si hay otro con stock, se publica el PVP del
+            # editor tal cual y se compra al oficial.
+            ajust = (_pe.pvp_por_margen(fila[1], desc_az)
+                     if desc_az is not None and not otro_con_stock else None)
+            if desc_az is not None and otro_con_stock:
+                job["capa0_otro_proveedor"] = job.get("capa0_otro_proveedor", 0) + 1
             # GUARDA: la Capa 0 no puede bajar un precio, y puede hacerlo sin
             # querer. El suplemento de la Capa 1 es un importe FIJO por tramo,
             # asi que la funcion no es monotona: un PVP de 7,50 sale a 8,49 y
