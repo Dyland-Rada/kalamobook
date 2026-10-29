@@ -409,6 +409,16 @@ def _revisar_stock_sin_almacen() -> dict:
     conn = db.get_connection()
     cur = conn.cursor()
     try:
+        # Solo cuentan los feeds VIVOS. Un proveedor que dejo de mandar no
+        # esta "mandando stock sin donde ponerlo": sus lineas son una foto
+        # vieja que nadie va a refrescar, y dejarlo en rojo para siempre es
+        # como se consigue que nadie mire el parte.
+        #
+        # Nace del 29/10/2026: Dismalibro mando once dias desde una segunda
+        # direccion -sinli.dismalibro@, sin almacen- y dejo de hacerlo el
+        # 20/10. Sus 11.931 ISBN resultaron ser un subconjunto exacto de los
+        # 12.740 que manda a diario por la direccion de siempre, asi que no
+        # faltaba nada: era un duplicado muerto encendiendo una alarma real.
         db.execute_query(cur, """
             SELECT lp.proveedor_email, COUNT(*)
             FROM libros_proveedor lp
@@ -416,7 +426,12 @@ def _revisar_stock_sin_almacen() -> dict:
               AND NOT EXISTS (
                   SELECT 1 FROM proveedor_almacen_odoo m
                   WHERE m.proveedor_email = lp.proveedor_email)
+              AND NOT EXISTS (
+                  SELECT 1 FROM proveedor_pausa pp
+                  WHERE pp.proveedor_email = lp.proveedor_email
+                    AND pp.activo = false)
             GROUP BY lp.proveedor_email
+            HAVING MAX(lp.stock_actualizado_en) > NOW() - INTERVAL '7 days'
             ORDER BY 2 DESC
         """)
         filas = [(r[0], int(r[1])) for r in cur.fetchall()]
