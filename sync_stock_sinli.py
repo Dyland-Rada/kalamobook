@@ -1028,6 +1028,25 @@ CEGALD_VENTANA_HORAS = float(os.environ.get("CEGALD_VENTANA_HORAS", "12"))
 # que reemplazar (evita apagar con datos rancios).
 CEGALD_FRESCURA_HORAS = float(os.environ.get("CEGALD_FRESCURA_HORAS", "48"))
 
+# Pero 48 horas vale para quien manda a diario, que son catorce de los
+# quince. UDL manda cada ~15 dias -no mandan CEGALD, sino un fichero de
+# disponibilidad que ingiere udl_stock.py-, asi que con el umbral normal
+# su catalogo entero se daria por rancio a los dos dias de cada envio y el
+# apagado no se ejecutaria nunca.
+#
+# La frescura NO es el plazo tras el cual se apaga: es el plazo dentro del
+# cual los datos se consideran buenos para DECIDIR un apagado. Subirlo a
+# 15 dias para UDL es lo que hace que su apagado por ausencia funcione.
+CEGALD_FRESCURA_POR_PROVEEDOR = {
+    "info@udllibros.com": float(
+        os.environ.get("CEGALD_FRESCURA_HORAS_UDL", "360")),   # 15 dias
+}
+
+
+def _frescura_horas(proveedor_email: str) -> float:
+    return CEGALD_FRESCURA_POR_PROVEEDOR.get(
+        proveedor_email, CEGALD_FRESCURA_HORAS)
+
 cegald_job: dict | None = None
 
 
@@ -1302,10 +1321,12 @@ async def run_cegald_replacement(proveedor_email: str,
                 max_dt = max_dt.astimezone(_tz.utc).replace(tzinfo=None)
             age_h = (datetime.utcnow() - max_dt).total_seconds() / 3600
             job["cegald_age_hours"] = round(age_h, 1)
-            if age_h > CEGALD_FRESCURA_HORAS:
+            frescura = _frescura_horas(proveedor_email)
+            job["frescura_horas"] = frescura
+            if age_h > frescura:
                 job["salvaguarda_activada"] = True
                 job["salvaguarda_motivo"] = (
-                    f"CEGALD viejo ({age_h:.0f}h > {CEGALD_FRESCURA_HORAS:.0f}h). "
+                    f"CEGALD viejo ({age_h:.0f}h > {frescura:.0f}h). "
                     "Sin datos frescos, apagado omitido."
                 )
 
