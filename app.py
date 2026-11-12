@@ -5255,6 +5255,63 @@ async def distributors_stats():
     })
 
 
+# ─── REST API — UDL (fichero de disponibilidad quincenal) ────────────
+
+@app.post("/api/v1/udl/import", tags=["UDL"])
+async def udl_import(
+    file: UploadFile = File(..., description="Fichero de disponibilidad de UDL (TXT, CP850, tabulado)"),
+    dry_run: bool = Query(True, description="En seco no escribe nada: solo dice que haria"),
+):
+    """
+    Mete el fichero de disponibilidad de UDL en libros_proveedor.
+
+    UDL es el unico de los dieciseis proveedores que no manda CEGALD.
+    Mandan este fichero cada ~15 dias y hasta ahora habia que cargarlo a
+    mano. Estar en el fichero significa estar disponible, asi que todo
+    entra con stock 1 y lo que no viene se apaga.
+
+    VA EN SECO POR DEFECTO. Para escribir de verdad, dry_run=false. Es al
+    reves que el resto de la casa a proposito: este fichero reemplaza el
+    catalogo entero de un proveedor, y una pasada en seco antes cuesta
+    diez segundos.
+    """
+    import udl_stock
+    import threading
+    import sys
+
+    if udl_stock.get_status().get("status") == "running":
+        return JSONResponse(status_code=409, content={
+            "status": "error", "message": "Ya hay una importacion de UDL corriendo."
+        })
+
+    contenido = await file.read()
+    nombre = file.filename or "udl.txt"
+
+    def _run_in_thread():
+        if sys.platform == 'win32':
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        try:
+            udl_stock.importar_bytes(contenido, nombre, dry_run=dry_run)
+        except Exception:
+            pass
+
+    t = threading.Thread(target=_run_in_thread, daemon=True)
+    t.start()
+    return JSONResponse(content={
+        "status": "started",
+        "filename": nombre,
+        "dry_run": dry_run,
+        "size_bytes": len(contenido),
+    })
+
+
+@app.get("/api/v1/udl/status", tags=["UDL"])
+async def udl_status():
+    """Estado de la ultima importacion de UDL."""
+    import udl_stock
+    return JSONResponse(content=udl_stock.get_status())
+
+
 # ─── REST API — CDL ISBN Index (sitemap-based fast path) ─────────────
 
 @app.post("/api/v1/cdl/build-isbn-index", tags=["Odoo"])

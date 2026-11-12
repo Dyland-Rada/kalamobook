@@ -241,3 +241,25 @@ def importar(ruta, dry_run=True, archivo_nombre=None):
         return job
     finally:
         job["elapsed_s"] = round(time.monotonic() - t0, 1)
+
+
+def importar_bytes(contenido, nombre, dry_run=True):
+    """
+    Lo mismo que importar(), pero con el fichero en memoria.
+
+    Es lo que necesita el endpoint. El fichero de UDL llega como adjunto
+    de un correo cada ~15 dias y nunca toca el disco del servidor, pero
+    parsear() abre por ruta. Se escribe en un temporal y se borra pase lo
+    que pase, incluso si la importacion revienta a medias.
+    """
+    import tempfile
+    fd, tmp = tempfile.mkstemp(suffix=".txt", prefix="udl_")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(contenido)
+        return importar(tmp, dry_run=dry_run, archivo_nombre=nombre)
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
