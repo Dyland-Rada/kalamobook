@@ -30,6 +30,14 @@ CORTE_LARGO = {"sinli@podiprint.com", "fandite@distriforma.es"}
 DIAS_LARGO = 7
 DIAS_NORMAL = 5
 
+# UDL va aparte porque su cadencia no se parece a la de nadie: mandan un
+# fichero de disponibilidad cada ~15 dias, no un CEGALD diario. Con el
+# corte normal salian en rojo ocho de cada quince dias sin que pasara
+# nada, y un panel que esta en rojo la mitad del mes no lo mira nadie.
+CORTE_POR_PROVEEDOR = {
+    "info@udllibros.com": 15,
+}
+
 
 def _cuando(v):
     """Los ficheros vienen como {'cuando': ...} o sueltos."""
@@ -111,7 +119,8 @@ def resumen(forzar: bool = False) -> dict:
         libros = int(p.get("con_stock_bd") or 0)
         fichero = _cuando(p.get("ultimo_fichero")) or _cuando(p.get("ultimo_cegald"))
         h = _horas(fichero)
-        corte = DIAS_LARGO if email in CORTE_LARGO else DIAS_NORMAL
+        corte = CORTE_POR_PROVEEDOR.get(
+            email, DIAS_LARGO if email in CORTE_LARGO else DIAS_NORMAL)
         if h is None:
             estado = "sin_datos"
         elif h >= corte * 24:
